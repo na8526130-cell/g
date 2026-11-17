@@ -1,7 +1,7 @@
 import { Innertube } from 'youtubei.js';
 import { GoogleGenAI, Type } from '@google/genai';
-import { kvCache } from './kvCache';
-import { normalizeArtistName } from '../utils/artistNames';
+import { kvCache } from './kvCache.js';
+import { normalizeArtistName } from '../utils/artistNames.js';
 
 export type MoodId =
   | 'energy'
@@ -804,7 +804,7 @@ export async function generateCommentBasedMoodRecommendations(
   const artistCounts = new Map<string, number>();
 
   // Interleave results across queries so multi-artist queries are balanced before slicing
-  const maxLen = Math.max(...searchResults.map((l) => l.length), 0);
+  const maxLen = Math.max(...searchResults.map((l: any[]) => l.length), 0);
   for (let i = 0; i < maxLen; i++) {
     for (const list of searchResults) {
       const v = list[i];

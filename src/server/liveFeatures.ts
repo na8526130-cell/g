@@ -1,7 +1,7 @@
 import { Innertube } from 'youtubei.js';
-import { kvCache } from './kvCache';
-import { parseLikesCount, resolveRealYouTubeVideoId } from './commentEmotion';
-import { normalizeArtistName } from '../utils/artistNames';
+import { kvCache } from './kvCache.js';
+import { parseLikesCount, resolveRealYouTubeVideoId } from './commentEmotion.js';
+import { normalizeArtistName } from '../utils/artistNames.js';
 
 export interface TrackTimestampItem {
   timeSeconds: number;

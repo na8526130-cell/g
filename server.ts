@@ -7,19 +7,19 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { Innertube, UniversalCache } from 'youtubei.js';
-import { kvCache } from './src/server/kvCache';
+import { kvCache } from './src/server/kvCache.js';
 import {
   MOOD_DEFINITIONS,
   MoodId,
   analyzeTrackCommentsEmotion,
   generateCommentBasedMoodRecommendations,
-} from './src/server/commentEmotion';
+} from './src/server/commentEmotion.js';
 import {
   extractTrackTimestampsAndHeatmap,
   fetchRealArtistLiveSetlists,
-} from './src/server/liveFeatures';
-import { normalizeArtistName } from './src/utils/artistNames';
-import { expandSearchQuery, getSearchConversions } from './src/utils/searchConverter';
+} from './src/server/liveFeatures.js';
+import { normalizeArtistName } from './src/utils/artistNames.js';
+import { expandSearchQuery, getSearchConversions } from './src/utils/searchConverter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -164,20 +164,28 @@ export async function createApp(options?: {
 
   // Health check with KV cache stats
   app.get('/api/health', async (_req, res) => {
-    try {
-      const yt = await getInnertube();
-      res.json({
-        status: 'ok',
-        innertubeReady: !!yt,
-        version: 'youtubei.js v18.3.0',
-        runtime: isVercel ? 'vercel-serverless' : 'node-server',
-        websocketSupported: !isVercel,
-        cachedLogsCount: apiLogs.length,
-        kvCache: kvCache.getStats(),
-      });
-    } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+    let yt: Innertube | null = innertubeInstance;
+    let innertubeError: string | undefined;
+    if (!yt) {
+      try {
+        yt = await Promise.race([
+          getInnertube(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+      } catch (err: any) {
+        innertubeError = err?.message || 'InnerTube init error';
+      }
     }
+    res.json({
+      status: 'ok',
+      innertubeReady: !!yt,
+      ...(innertubeError ? { innertubeError } : {}),
+      version: 'youtubei.js v18.3.0',
+      runtime: isVercel ? 'vercel-serverless' : 'node-server',
+      websocketSupported: !isVercel,
+      cachedLogsCount: apiLogs.length,
+      kvCache: kvCache.getStats(),
+    });
   });
 
   // KV Cache Admin & Monitoring
@@ -648,7 +656,7 @@ export async function createApp(options?: {
       });
       res.json({ suggestions: flat, conversions });
     } catch {
-      res.json({ suggestions: conversions.map((c) => c.query), conversions });
+      res.json({ suggestions: conversions.map((c: any) => c.query), conversions });
     }
   });
 
@@ -5316,7 +5324,8 @@ export async function createApp(options?: {
         res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
       });
     } else {
-      const { createServer: createViteServer } = await import('vite');
+      const vitePkg = 'vite';
+      const { createServer: createViteServer } = await import(vitePkg);
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: 'spa',

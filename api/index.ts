@@ -1,10 +1,10 @@
-import { createApp } from '../server';
+import { createApp } from '../server.js';
 
 let appPromise: ReturnType<typeof createApp> | null = null;
 
 function getApp() {
   if (!appPromise) {
-    appPromise = createApp({ attachWs: false, skipStatic: true }).catch((err) => {
+    appPromise = createApp({ attachWs: false, skipStatic: true }).catch((err: unknown) => {
       appPromise = null;
       throw err;
     });
