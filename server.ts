@@ -6,7 +6,6 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { Innertube, UniversalCache } from 'youtubei.js';
 import { kvCache } from './src/server/kvCache';
 import {
@@ -152,9 +151,13 @@ function parseDurationToSeconds(durationText: string): number {
   return 0;
 }
 
-async function startServer() {
+export async function createApp(options?: {
+  attachWs?: boolean;
+  skipStatic?: boolean;
+  server?: http.Server;
+}) {
   const app = express();
-  const PORT = 3000;
+  const isVercel = Boolean(process.env.VERCEL);
 
   app.use(cors());
   app.use(express.json());
@@ -167,6 +170,8 @@ async function startServer() {
         status: 'ok',
         innertubeReady: !!yt,
         version: 'youtubei.js v18.3.0',
+        runtime: isVercel ? 'vercel-serverless' : 'node-server',
+        websocketSupported: !isVercel,
         cachedLogsCount: apiLogs.length,
         kvCache: kvCache.getStats(),
       });
@@ -1276,9 +1281,22 @@ async function startServer() {
       let contentType = 'image/jpeg';
 
       if (imageUrl.startsWith('/assets/')) {
-        const publicAssetsRoot = path.resolve(__dirname, 'public/assets');
-        const resolvedLocal = path.resolve(__dirname, 'public', imageUrl.replace(/^\/+/, ''));
-        if (!resolvedLocal.startsWith(publicAssetsRoot) || !fs.existsSync(resolvedLocal)) {
+        const relAsset = imageUrl.replace(/^\/+/, '');
+        const candidateRoots = [
+          path.resolve(__dirname, 'public'),
+          path.resolve(process.cwd(), 'public'),
+          path.resolve(process.cwd(), 'dist'),
+        ];
+        let resolvedLocal: string | null = null;
+        for (const rootDir of candidateRoots) {
+          const assetsRoot = path.resolve(rootDir, 'assets');
+          const candidate = path.resolve(rootDir, relAsset);
+          if (candidate.startsWith(assetsRoot) && fs.existsSync(candidate)) {
+            resolvedLocal = candidate;
+            break;
+          }
+        }
+        if (!resolvedLocal) {
           return res.status(404).send('Local asset not found');
         }
         buffer = await fs.promises.readFile(resolvedLocal);
@@ -2993,7 +3011,15 @@ async function startServer() {
   });
 
   // Persistent JSON file storage for real access metrics and accounts (no fake data)
-  const DATA_DIR = path.resolve(__dirname, 'data');
+  const SEED_STORAGE_PATHS = [
+    path.resolve(__dirname, 'data', 'app_storage.json'),
+    path.resolve(process.cwd(), 'data', 'app_storage.json'),
+  ];
+  const DATA_DIR = process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : isVercel
+    ? '/tmp/zero-music-data'
+    : path.resolve(__dirname, 'data');
   const STORAGE_FILE = path.resolve(DATA_DIR, 'app_storage.json');
 
   interface StoredAccount {
@@ -3355,8 +3381,11 @@ async function startServer() {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      if (fs.existsSync(STORAGE_FILE)) {
-        const raw = fs.readFileSync(STORAGE_FILE, 'utf8');
+      const targetStorageFile = fs.existsSync(STORAGE_FILE)
+        ? STORAGE_FILE
+        : SEED_STORAGE_PATHS.find((p) => fs.existsSync(p));
+      if (targetStorageFile && fs.existsSync(targetStorageFile)) {
+        const raw = fs.readFileSync(targetStorageFile, 'utf8');
         const parsed = JSON.parse(raw);
         return {
           totalAccessCount: Math.max(1, Number(parsed.totalAccessCount) || 1),
@@ -4209,9 +4238,10 @@ async function startServer() {
     return entry;
   }
 
-  // --- Real-time WebSocket Server Setup ---
-  const server = http.createServer(app);
-  const wss = new WebSocketServer({ server });
+  // --- Real-time WebSocket & Serverless Polling Fallback Setup ---
+  const shouldAttachWs = options?.attachWs !== false && !isVercel;
+  const server = shouldAttachWs ? (options?.server ?? http.createServer(app)) : null;
+  const wss = server ? new WebSocketServer({ server }) : null;
 
   interface WsClientMeta {
     username?: string;
@@ -4221,11 +4251,33 @@ async function startServer() {
     nowPlaying?: { title: string; artist: string; videoId: string };
   }
 
+  interface RealtimeEventItem {
+    seq: number;
+    target: { all?: boolean; roomId?: string; videoId?: string; username?: string };
+    event: any;
+    ts: number;
+  }
+
   const wsClients = new Map<WebSocket, WsClientMeta>();
+  const realtimeQueue: RealtimeEventItem[] = [];
+  let realtimeSeq = 0;
+
+  function pushRealtimeEvent(
+    target: { all?: boolean; roomId?: string; videoId?: string; username?: string },
+    event: any
+  ): number {
+    realtimeSeq += 1;
+    realtimeQueue.push({ seq: realtimeSeq, target, event, ts: Date.now() });
+    if (realtimeQueue.length > 150) {
+      realtimeQueue.splice(0, realtimeQueue.length - 150);
+    }
+    return realtimeSeq;
+  }
 
   function broadcast(data: any) {
+    pushRealtimeEvent({ all: true }, data);
     const msg = JSON.stringify(data);
-    for (const [client, meta] of wsClients.entries()) {
+    for (const [client] of wsClients.entries()) {
       if (client.readyState === WebSocket.OPEN) {
         try {
           client.send(msg);
@@ -4236,6 +4288,7 @@ async function startServer() {
 
   function broadcastToUser(targetUsername: string, data: any) {
     if (!targetUsername) return;
+    pushRealtimeEvent({ username: targetUsername }, data);
     const clean = targetUsername.toLowerCase();
     const msg = JSON.stringify(data);
     for (const [client, meta] of wsClients.entries()) {
@@ -4248,6 +4301,7 @@ async function startServer() {
   }
 
   function broadcastToRoom(roomId: string, data: any) {
+    pushRealtimeEvent({ roomId }, data);
     const msg = JSON.stringify(data);
     for (const [client, meta] of wsClients.entries()) {
       if (meta.currentRoomId === roomId && client.readyState === WebSocket.OPEN) {
@@ -4259,6 +4313,7 @@ async function startServer() {
   }
 
   function broadcastToVideo(videoId: string, data: any) {
+    pushRealtimeEvent({ videoId }, data);
     const msg = JSON.stringify(data);
     for (const [client, meta] of wsClients.entries()) {
       if (meta.currentVideoId === videoId && client.readyState === WebSocket.OPEN) {
@@ -4289,7 +4344,128 @@ async function startServer() {
     });
   }
 
-  wss.on('connection', (ws: WebSocket) => {
+  app.get('/api/realtime/poll', (req, res) => {
+    const sinceSeq = Number(req.query.sinceSeq || 0) || 0;
+    const roomId = String(req.query.roomId || '');
+    const videoId = String(req.query.videoId || '');
+    const username = String(req.query.username || '').toLowerCase();
+
+    const events = realtimeQueue
+      .filter((item) => {
+        if (item.seq <= sinceSeq) return false;
+        const t = item.target;
+        return Boolean(
+          t.all ||
+            (t.roomId && t.roomId === roomId) ||
+            (t.videoId && t.videoId === videoId) ||
+            (t.username && username && t.username.toLowerCase() === username)
+        );
+      })
+      .map((item) => item.event);
+
+    res.json({ seq: realtimeSeq, events });
+  });
+
+  app.post('/api/realtime/send', (req, res) => {
+    const payload = req.body || {};
+    const events: any[] = [];
+
+    if (payload.type === 'party:join' && payload.roomId) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room && payload.username) {
+        const existingIdx = room.participants.findIndex((p) => p.username === payload.username);
+        if (existingIdx === -1) {
+          room.participants.push({
+            username: payload.username,
+            joinedAt: new Date().toISOString(),
+            isHost: room.participants.length === 0 || room.hostUsername === payload.username,
+          });
+          room.chatMessages.push({
+            id: `sys_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+            username: 'System',
+            text: `${payload.username} さんが入室しました`,
+            timestamp: new Date().toISOString(),
+            type: 'system',
+          });
+          saveStorage();
+        }
+        const ev = { type: 'party:room_state', room };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'party:leave' && payload.roomId && payload.username) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room) {
+        room.participants = room.participants.filter((p) => p.username !== payload.username);
+        room.chatMessages.push({
+          id: `sys_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          username: 'System',
+          text: `${payload.username} さんが退室しました`,
+          timestamp: new Date().toISOString(),
+          type: 'system',
+        });
+        saveStorage();
+        const ev = { type: 'party:room_state', room };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'party:sync' && payload.roomId) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room) {
+        if (payload.currentTrack !== undefined) room.currentTrack = payload.currentTrack;
+        if (payload.isPlaying !== undefined) room.isPlaying = Boolean(payload.isPlaying);
+        if (payload.positionSec !== undefined) room.positionSec = Number(payload.positionSec);
+        room.updatedAt = Date.now();
+
+        if (payload.trackChanged && payload.currentTrack) {
+          room.chatMessages.push({
+            id: `tc_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+            username: payload.username || room.hostUsername,
+            text: `🎵 再生曲変更: ${payload.currentTrack.title} - ${payload.currentTrack.artist}`,
+            timestamp: new Date().toISOString(),
+            type: 'track_change',
+          });
+          if (room.chatMessages.length > 200) room.chatMessages.splice(0, room.chatMessages.length - 200);
+        }
+
+        saveStorage();
+        const ev = {
+          type: 'party:playback_sync',
+          currentTrack: room.currentTrack,
+          isPlaying: room.isPlaying,
+          positionSec: room.positionSec,
+          updatedAt: room.updatedAt,
+          sender: payload.username,
+        };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'party:chat' && payload.roomId && payload.text) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room) {
+        const { sanitized } = sanitizeText(payload.text);
+        const chatMsg = {
+          id: `chat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          username: payload.username || '匿名リスナー',
+          text: sanitized,
+          timestamp: new Date().toISOString(),
+          type: 'chat' as const,
+        };
+        room.chatMessages.push(chatMsg);
+        if (room.chatMessages.length > 200) room.chatMessages.splice(0, room.chatMessages.length - 200);
+        saveStorage();
+        const ev = { type: 'party:new_chat', roomId: payload.roomId, message: chatMsg };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'dm:typing' && payload.recipient) {
+      broadcastToUser(payload.recipient, { type: 'dm:typing', sender: payload.username });
+    }
+
+    res.json({ success: true, seq: realtimeSeq, events });
+  });
+
+  wss?.on('connection', (ws: WebSocket) => {
     wsClients.set(ws, {});
 
     // Initial greeting & active presence count
@@ -5128,30 +5304,42 @@ async function startServer() {
     res.json({ success: true, message: 'DMメッセージを強制削除しました', deletedId: id });
   });
 
-  // Explicitly serve static assets from public
-  app.use('/assets', express.static(path.resolve(__dirname, 'public/assets')));
-  app.use(express.static(path.resolve(__dirname, 'public')));
+  if (!options?.skipStatic) {
+    // Explicitly serve static assets from public
+    app.use('/assets', express.static(path.resolve(__dirname, 'public/assets')));
+    app.use(express.static(path.resolve(__dirname, 'public')));
 
-  // Serve Vite or static files
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-  } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    // Serve Vite or static files
+    if (process.env.NODE_ENV === 'production' || isVercel) {
+      app.use(express.static(path.resolve(__dirname, 'dist')));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      });
+    } else {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    }
   }
 
-  server.listen(Number(PORT), '0.0.0.0', () => {
+  return { app, server, wss };
+}
+
+export async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
+  const { server } = await createApp({ attachWs: true, skipStatic: false });
+
+  server?.listen(PORT, '0.0.0.0', () => {
     console.log(`[Server] YT Music InnerTube backend with WebSockets listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer().catch((err) => {
-  console.error('[Server] Fatal startup error:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL && !process.env.NO_SERVER_LISTEN) {
+  startServer().catch((err) => {
+    console.error('[Server] Fatal startup error:', err);
+    process.exit(1);
+  });
+}

@@ -15,7 +15,8 @@ export class PersistentKVCache {
   private misses = 0;
 
   constructor(filename = 'kv_store.json') {
-    const cacheDir = path.resolve(process.cwd(), '.cache');
+    const baseDir = process.env.CACHE_DIR || (process.env.VERCEL ? '/tmp' : process.cwd());
+    const cacheDir = path.resolve(baseDir, '.cache');
     if (!fs.existsSync(cacheDir)) {
       try {
         fs.mkdirSync(cacheDir, { recursive: true });
@@ -27,7 +28,8 @@ export class PersistentKVCache {
     this.loadFromDisk();
 
     // Clean up expired keys every 15 minutes
-    setInterval(() => this.cleanupExpired(), 15 * 60 * 1000);
+    const timer = setInterval(() => this.cleanupExpired(), 15 * 60 * 1000);
+    if (typeof timer.unref === 'function') timer.unref();
   }
 
   private loadFromDisk() {
