@@ -1,0 +1,1120 @@
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { usePlayer } from '../context/PlayerContext';
+import { api } from '../services/api';
+import { LyricsData, SyncedLine } from '../types/music';
+import { SafeImage } from './SafeImage';
+import { isSameArtist } from '../utils/artistNames';
+import {
+  X,
+  Copy,
+  Check,
+  Sparkles,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  Radio,
+  AlignLeft,
+  ChevronDown,
+  Search,
+  Sliders,
+  RotateCcw,
+  ListPlus,
+  Zap,
+  UserCheck,
+  AlertTriangle,
+  ArrowLeftRight,
+} from 'lucide-react';
+
+function formatSeconds(secs: number): string {
+  if (isNaN(secs) || secs < 0) return '0:00';
+  const total = Math.floor(secs);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+}
+
+export const LyricsDrawer: React.FC = () => {
+  const {
+    currentTrack,
+    lyricsOpen,
+    setLyricsOpen,
+    progress,
+    duration,
+    seekTo,
+    openAddToPlaylistModal,
+    currentLyrics,
+    lyricsLoading,
+    hasManualLyricsOverride,
+    overrideCurrentLyrics,
+    clearLyricsOverride,
+    lyricsSwitcherTrigger,
+  } = usePlayer();
+
+  const data = currentLyrics;
+  const loading = lyricsLoading;
+  const [copied, setCopied] = useState(false);
+  const [fontSize, setFontSize] = useState<'normal' | 'large'>('large');
+  const [isImmersive, setIsImmersive] = useState(false);
+  const [viewMode, setViewMode] = useState<'synced' | 'plain'>('synced');
+  const [userScrolled, setUserScrolled] = useState(false);
+
+  // Timing offset in seconds (+: lyrics display earlier, -: lyrics display later)
+  const [timingOffset, setTimingOffset] = useState<number>(0);
+  const [showOffsetControls, setShowOffsetControls] = useState(false);
+
+  // Manual lyrics search & candidate switcher
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const lastSearchedTrackIdRef = useRef<string | null>(null);
+  const lastTriggerRef = useRef<number>(0);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const userScrollTimeoutRef = useRef<any>(null);
+  const activeLineElementRef = useRef<HTMLDivElement | null>(null);
+
+  const matchedArtist = data?.matchedArtist?.trim() || '';
+  const matchedTitle = data?.matchedTitle?.trim() || '';
+  const isArtistMismatch = Boolean(
+    currentTrack?.artist && matchedArtist && !isSameArtist(matchedArtist, currentTrack.artist)
+  );
+
+  // Reset UI controls when track changes
+  useEffect(() => {
+    setUserScrolled(false);
+    setTimingOffset(0);
+    setSearchOpen(false);
+    setSearchResults([]);
+    lastSearchedTrackIdRef.current = null;
+  }, [currentTrack?.id]);
+
+  // Sync viewMode / offset / telemetry when lyrics data updates
+  useEffect(() => {
+    if (!data) return;
+    if (typeof data.globalOffset === 'number' && data.globalOffset !== 0) {
+      setTimingOffset(data.globalOffset);
+    }
+    setViewMode(data.isSynced && data.syncedLyrics && data.syncedLyrics.length > 0 ? 'synced' : 'plain');
+    if (lyricsOpen) {
+      api.recordLyricsTelemetry({
+        isSynced: !!data.isSynced,
+        isAvailable: !!data.available,
+      });
+    }
+  }, [data, lyricsOpen]);
+
+  const runCandidateSearch = async (query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    setSearchLoading(true);
+    try {
+      const results = await api.searchLyrics(q);
+      setSearchResults(results);
+      if (currentTrack) {
+        lastSearchedTrackIdRef.current = currentTrack.id;
+      }
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const openSwitcherPanel = (customQuery?: string) => {
+    setSearchOpen(true);
+    if (!currentTrack) return;
+    const defaultQuery =
+      customQuery ??
+      (isArtistMismatch
+        ? `${currentTrack.title} ${currentTrack.artist || ''}`.trim()
+        : currentTrack.title.trim());
+    setSearchQuery(defaultQuery);
+    if (customQuery || lastSearchedTrackIdRef.current !== currentTrack.id || searchResults.length === 0) {
+      runCandidateSearch(defaultQuery);
+    }
+  };
+
+  // Open switcher immediately when requested externally (e.g. FullScreenPlayerModal)
+  useEffect(() => {
+    if (lyricsSwitcherTrigger > 0 && lyricsSwitcherTrigger !== lastTriggerRef.current) {
+      lastTriggerRef.current = lyricsSwitcherTrigger;
+      openSwitcherPanel();
+    }
+  }, [lyricsSwitcherTrigger, currentTrack?.id]);
+
+  // Determine active singing line with timing offset applied
+  const effectiveProgress = progress + timingOffset;
+
+  // Detect whether the song starts immediately without a long intro (< 3.0s)
+  const isNoIntroSong = Boolean(
+    data?.syncedLyrics?.[0]?.time !== undefined && data.syncedLyrics[0].time < 3.0
+  );
+
+  const activeLineIndex = useMemo(() => {
+    if (!data?.syncedLyrics || data.syncedLyrics.length === 0) return -1;
+    const lines = data.syncedLyrics;
+
+    // If currently playing before the first line's actual vocal onset, return -1 (still in intro/preparation)
+    if (effectiveProgress < lines[0].time - 0.1) {
+      return -1;
+    }
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (effectiveProgress >= lines[i].time - 0.1) {
+        return i;
+      }
+    }
+    return -1;
+  }, [data?.syncedLyrics, effectiveProgress]);
+
+  // Smooth auto-scroll to center the active singing line
+  useEffect(() => {
+    if (userScrolled || viewMode !== 'synced') return;
+
+    if (activeLineElementRef.current && containerRef.current) {
+      activeLineElementRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }
+  }, [activeLineIndex, userScrolled, viewMode]);
+
+  // Detect user manual scroll to prevent fighting the user
+  const handleScroll = () => {
+    setUserScrolled(true);
+    if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+    userScrollTimeoutRef.current = setTimeout(() => {
+      setUserScrolled(false);
+    }, 4500);
+  };
+
+  const handleResumeAutoScroll = () => {
+    setUserScrolled(false);
+    if (activeLineElementRef.current) {
+      activeLineElementRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }
+  };
+
+  if (!lyricsOpen) return null;
+
+  const handleCopy = () => {
+    const textToCopy =
+      data?.syncedLyrics && data.syncedLyrics.length > 0
+        ? data.syncedLyrics.map((l) => l.text).join('\n')
+        : data?.lyrics;
+
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleLineClick = (line: SyncedLine) => {
+    seekTo(Math.max(0, line.time - timingOffset));
+    setUserScrolled(false);
+  };
+
+  const handleManualSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runCandidateSearch(searchQuery);
+  };
+
+  const handleApplySearchResult = (item: any) => {
+    if (!currentTrack) return;
+    const nextLyrics: LyricsData = {
+      available: true,
+      isSynced: !!item.isSynced,
+      syncedLyrics: item.syncedLyrics || [],
+      lyrics: item.plainLyrics || (item.syncedLyrics ? item.syncedLyrics.map((l: any) => l.text).join('\n') : ''),
+      source: `手動選択 (${item.source || '歌詞検索'})`,
+      matchedTitle: item.trackName || currentTrack.title,
+      matchedArtist: item.artistName || '',
+      matchedTrackName: `${item.trackName}${item.artistName ? ` - ${item.artistName}` : ''}`,
+    };
+    overrideCurrentLyrics(currentTrack.id, nextLyrics);
+    setViewMode(item.isSynced ? 'synced' : 'plain');
+    setSearchOpen(false);
+    setUserScrolled(false);
+  };
+
+  return (
+    <aside
+      className={`fixed inset-y-0 right-0 z-[60] bg-[#0a0a0d]/98 border-l border-neutral-800 shadow-2xl flex flex-col backdrop-blur-3xl transition-all duration-300 ${
+        isImmersive
+          ? 'w-full md:w-[720px] lg:w-[860px]'
+          : 'w-full sm:w-[460px] md:w-[500px]'
+      }`}
+      aria-label="同期歌詞パネル"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800/80 bg-[#101014]/90 backdrop-blur-md">
+        <div className="flex items-center gap-2.5">
+          <Sparkles className="w-4 h-4 text-red-500" />
+          <h3 className="text-sm font-bold text-white tracking-wide flex items-center gap-2 flex-wrap">
+            <span>リアルタイム同期歌詞</span>
+            {isNoIntroSong && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-mono text-amber-300">
+                <Zap className="w-2.5 h-2.5 text-amber-400" />
+                <span>即歌い出し (イントロ無)</span>
+              </span>
+            )}
+            {data?.isSynced && (
+              data.isApproximate ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-mono text-amber-300">
+                  <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                  <span>大体の位置を追従</span>
+                </span>
+              ) : data.source?.includes('字幕') ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[10px] font-mono text-cyan-300">
+                  <Radio className="w-2.5 h-2.5 animate-pulse text-cyan-400" />
+                  <span>字幕同期</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-600/20 border border-red-500/30 text-[10px] font-mono text-red-400">
+                  <Radio className="w-2.5 h-2.5 animate-pulse text-red-500" />
+                  <span>SYNC (高精度)</span>
+                </span>
+              )
+            )}
+          </h3>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Manual Search Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              if (searchOpen) {
+                setSearchOpen(false);
+              } else {
+                openSwitcherPanel();
+              }
+            }}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              searchOpen ? 'bg-red-600/30 text-red-400' : 'text-neutral-400 hover:text-white'
+            }`}
+            title="別の歌詞・アーティストを検索して切り替え"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+
+          {/* Timing Offset Toggle */}
+          {data?.isSynced && (
+            <button
+              type="button"
+              onClick={() => setShowOffsetControls((prev) => !prev)}
+              className={`p-1.5 rounded-lg text-xs font-mono transition-colors flex items-center gap-1 cursor-pointer ${
+                timingOffset !== 0
+                  ? 'bg-amber-600/30 text-amber-300 border border-amber-500/30'
+                  : showOffsetControls
+                  ? 'bg-neutral-800 text-white'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+              title="歌詞のタイミング微調整（ズレ補正）"
+            >
+              <Sliders className="w-4 h-4" />
+              {timingOffset !== 0 && <span>{timingOffset > 0 ? `+${timingOffset}s` : `${timingOffset}s`}</span>}
+            </button>
+          )}
+
+          {/* Mode Switcher: Synced / Full text */}
+          {data?.syncedLyrics && data.syncedLyrics.length > 0 && (
+            <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode('synced')}
+                className={`px-2 py-1 rounded flex items-center gap-1 font-medium transition-colors ${
+                  viewMode === 'synced'
+                    ? 'bg-neutral-800 text-white shadow'
+                    : 'text-neutral-400 hover:text-white'
+                }`}
+                title="リアルタイム同期（カラオケ）表示"
+              >
+                <Radio className="w-3 h-3 text-red-500" />
+                <span>同期</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('plain')}
+                className={`px-2 py-1 rounded flex items-center gap-1 font-medium transition-colors ${
+                  viewMode === 'plain'
+                    ? 'bg-neutral-800 text-white shadow'
+                    : 'text-neutral-400 hover:text-white'
+                }`}
+                title="全文テキスト表示"
+              >
+                <AlignLeft className="w-3 h-3" />
+                <span>全文</span>
+              </button>
+            </div>
+          )}
+
+          {/* Font Size Toggle */}
+          <button
+            type="button"
+            onClick={() => setFontSize((f) => (f === 'normal' ? 'large' : 'normal'))}
+            className="px-2 py-1 text-xs text-neutral-400 hover:text-white bg-neutral-900 border border-neutral-800 rounded-lg font-mono transition-colors"
+            title="文字サイズ変更"
+          >
+            {fontSize === 'normal' ? 'A+' : 'A-'}
+          </button>
+
+          {/* Immersive / Full-width toggle */}
+          <button
+            type="button"
+            onClick={() => setIsImmersive((prev) => !prev)}
+            className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors hidden sm:inline-flex"
+            title={isImmersive ? '通常表示に戻す' : '歌詞をワイド表示'}
+          >
+            {isImmersive ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+
+          {/* Add to Playlist Button */}
+          {currentTrack && (
+            <button
+              type="button"
+              onClick={() => openAddToPlaylistModal(currentTrack)}
+              className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
+              title="この曲をプレイリストに追加"
+            >
+              <ListPlus className="w-4 h-4 text-red-500" />
+            </button>
+          )}
+
+          {/* Copy Button */}
+          {(data?.lyrics || data?.syncedLyrics) && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+              title="歌詞をコピー"
+            >
+              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+            </button>
+          )}
+
+          {/* Close Button */}
+          <button
+            type="button"
+            onClick={() => setLyricsOpen(false)}
+            className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Manual Search & Artist Switcher Panel */}
+      {searchOpen && (
+        <div className="p-4 bg-[#121216] border-b border-neutral-800 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-neutral-200 flex items-center gap-1.5">
+              <ArrowLeftRight className="w-3.5 h-3.5 text-red-500" />
+              <span>別の歌詞候補に切り替え</span>
+            </span>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {currentTrack && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const q = currentTrack.title.trim();
+                      setSearchQuery(q);
+                      runCandidateSearch(q);
+                    }}
+                    className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] text-neutral-300 cursor-pointer"
+                  >
+                    曲名のみで探す
+                  </button>
+                  {currentTrack.artist && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const q = `${currentTrack.title} ${currentTrack.artist}`.trim();
+                        setSearchQuery(q);
+                        runCandidateSearch(q);
+                      }}
+                      className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] text-neutral-300 cursor-pointer"
+                    >
+                      + アーティスト名
+                    </button>
+                  )}
+                  {hasManualLyricsOverride && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearLyricsOverride(currentTrack.id);
+                        setSearchOpen(false);
+                      }}
+                      className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 text-[10px] text-amber-300 cursor-pointer"
+                    >
+                      自動取得に戻す
+                    </button>
+                  )}
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setSearchOpen(false)}
+                className="text-neutral-400 hover:text-white p-0.5 cursor-pointer"
+                title="閉じる"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <form onSubmit={handleManualSearch} className="flex gap-2">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="曲名やアーティスト名で歌詞を検索..."
+              className="flex-1 bg-neutral-900 border border-neutral-700 text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-red-500"
+            />
+            <button
+              type="submit"
+              disabled={searchLoading}
+              className="px-3.5 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              {searchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+              <span>検索</span>
+            </button>
+          </form>
+
+          {searchLoading ? (
+            <div className="py-5 flex items-center justify-center gap-2 text-xs text-neutral-400">
+              <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+              <span>歌詞候補を検索中...</span>
+            </div>
+          ) : searchResults.length > 0 ? (
+            <div className="max-h-60 overflow-y-auto divide-y divide-neutral-800/70 border border-neutral-800 rounded-lg bg-neutral-900/60">
+              {searchResults.map((item) => {
+                const candidateArtist = item.artistName || 'アーティスト不明';
+                const matchesPlayingArtist = Boolean(
+                  currentTrack?.artist && item.artistName && isSameArtist(item.artistName, currentTrack.artist)
+                );
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => handleApplySearchResult(item)}
+                    className="p-2.5 hover:bg-neutral-800/80 cursor-pointer flex items-center justify-between gap-2.5 text-xs transition-colors"
+                  >
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="font-semibold text-white truncate max-w-[200px] sm:max-w-none">
+                          {item.trackName}
+                        </p>
+                        <span
+                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                            matchesPlayingArtist
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-neutral-800 text-neutral-200 border border-neutral-700'
+                          }`}
+                        >
+                          <UserCheck className="w-2.5 h-2.5" />
+                          <span>{candidateArtist}</span>
+                        </span>
+                      </div>
+                      {item.previewLine && (
+                        <p className="text-[11px] text-neutral-400 italic truncate">
+                          「{item.previewLine}」
+                        </p>
+                      )}
+                      <p className="text-[10px] text-neutral-500 truncate">
+                        {item.source}{item.albumName ? ` • ${item.albumName}` : ''}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {item.isSynced ? (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-600/30 text-red-300 font-mono">同期可</span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-neutral-800 text-neutral-400 font-mono">テキスト</span>
+                      )}
+                      <button
+                        type="button"
+                        className="px-2.5 py-1 bg-white hover:bg-neutral-200 text-black text-[11px] font-bold rounded cursor-pointer"
+                      >
+                        適用
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : lastSearchedTrackIdRef.current === currentTrack?.id ? (
+            <p className="text-xs text-neutral-400 py-3 text-center">
+              一致する歌詞候補が見つかりませんでした。キーワードを変えて再検索してください。
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {/* Timing Offset Adjuster Bar */}
+      {showOffsetControls && data?.isSynced && (
+        <div className="px-6 py-3 bg-[#13131c] border-b border-neutral-800/80 space-y-2.5 text-xs text-neutral-300 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Sliders className="w-3.5 h-3.5 text-amber-400" />
+              <span className="font-semibold text-white">ズレ補正:</span>
+              <span className="font-mono font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/30">
+                {timingOffset > 0 ? `+${timingOffset.toFixed(1)}s` : `${timingOffset.toFixed(1)}s`}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev - 2.0) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を2秒遅らせる"
+              >
+                -2s
+              </button>
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev - 1.0) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を1秒遅らせる"
+              >
+                -1s
+              </button>
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev - 0.5) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を0.5秒遅らせる"
+              >
+                -0.5s
+              </button>
+              <button
+                onClick={() => setTimingOffset(0)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded text-[11px] cursor-pointer"
+                title="リセット (0秒)"
+              >
+                <RotateCcw className="w-3 h-3 inline mr-1" />
+                リセット
+              </button>
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev + 0.5) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を0.5秒早める"
+              >
+                +0.5s
+              </button>
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev + 1.0) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を1秒早める"
+              >
+                +1s
+              </button>
+              <button
+                onClick={() => setTimingOffset((prev) => Math.round((prev + 2.0) * 10) / 10)}
+                className="px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                title="歌詞を2秒早める"
+              >
+                +2s
+              </button>
+
+              {activeLineIndex >= 0 && data?.syncedLyrics?.[activeLineIndex] && (
+                <button
+                  onClick={() => {
+                    const targetLine = data.syncedLyrics![activeLineIndex];
+                    const neededOffset = Math.round((targetLine.time - progress) * 10) / 10;
+                    setTimingOffset(neededOffset);
+                  }}
+                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded text-[11px] transition-colors cursor-pointer shadow-md"
+                  title="今の再生時間に歌詞行を瞬時にロック"
+                >
+                  今の位置に合わせる
+                </button>
+              )}
+
+              {activeLineIndex === -1 && data?.syncedLyrics?.[0] && (
+                <button
+                  onClick={() => {
+                    const firstLine = data.syncedLyrics![0];
+                    const neededOffset = Math.round((firstLine.time - progress) * 10) / 10;
+                    setTimingOffset(neededOffset);
+                  }}
+                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded text-[11px] transition-colors cursor-pointer shadow-md flex items-center gap-1"
+                  title="1行目の歌い出しを今の再生時間に瞬時に合わせる"
+                >
+                  <Zap className="w-3 h-3" />
+                  <span>歌い出しを今すぐ合わせる</span>
+                </button>
+              )}
+            </div>
+
+            {/* Quick Presets for No-Intro / Video Delay */}
+            {isNoIntroSong && (
+              <div className="flex items-center gap-1.5 flex-wrap pt-1.5 border-t border-amber-500/20 w-full">
+                <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
+                  <Zap className="w-3 h-3 text-amber-400" />
+                  <span>イントロなし専用補正:</span>
+                </span>
+                <button
+                  onClick={() => setTimingOffset(0)}
+                  className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded text-[11px] font-mono cursor-pointer"
+                  title="CD音源標準 (0.0s)"
+                >
+                  標準 (0.0s)
+                </button>
+                <button
+                  onClick={() => setTimingOffset(0.5)}
+                  className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-amber-300 rounded text-[11px] font-mono cursor-pointer"
+                  title="わずかな遅延を補正 (+0.5s)"
+                >
+                  +0.5s
+                </button>
+                <button
+                  onClick={() => setTimingOffset(0.8)}
+                  className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-amber-300 rounded text-[11px] font-mono cursor-pointer"
+                  title="YouTube再生遅延を補正 (+0.8s)"
+                >
+                  YouTube遅延 (+0.8s)
+                </button>
+                <button
+                  onClick={() => setTimingOffset(1.2)}
+                  className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-amber-300 rounded text-[11px] font-mono cursor-pointer"
+                  title="MVロゴ・空白を補正 (+1.2s)"
+                >
+                  MVロゴ遅延 (+1.2s)
+                </button>
+                <button
+                  onClick={() => setTimingOffset(-0.5)}
+                  className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded text-[11px] font-mono cursor-pointer"
+                  title="早めに表示 (-0.5s)"
+                >
+                  -0.5s
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-4 pt-1 border-t border-neutral-800/60">
+            <div className="flex items-center gap-2 flex-1 max-w-sm">
+              <span className="text-[10px] text-neutral-400 shrink-0 font-mono">-10s</span>
+              <input
+                type="range"
+                min="-10"
+                max="10"
+                step="0.1"
+                value={timingOffset}
+                onChange={(e) => setTimingOffset(Math.round(parseFloat(e.target.value) * 10) / 10)}
+                className="w-full h-1.5 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-amber-400"
+              />
+              <span className="text-[10px] text-neutral-400 shrink-0 font-mono">+10s</span>
+            </div>
+            <p className="text-[11px] text-amber-300/90 font-medium hidden sm:inline">
+              💡 下の歌詞行にある「🎯今ここ」を押しても即座にピタッと合います
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Song Info Bar & Matched Lyrics Artist Bar */}
+      {currentTrack && (
+        <div className="px-5 py-3 bg-neutral-900/40 border-b border-neutral-800/50 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <SafeImage
+                src={currentTrack.thumbnail}
+                alt={currentTrack.title}
+                useBase64
+                className="w-11 h-11 rounded-lg object-cover shadow bg-neutral-800 shrink-0"
+              />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-white truncate">{currentTrack.title}</p>
+                <p className="text-[11px] text-neutral-400 truncate">{currentTrack.artist}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => openSwitcherPanel()}
+                className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg transition-colors inline-flex items-center gap-1.5 cursor-pointer border ${
+                  isArtistMismatch
+                    ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/40'
+                    : 'bg-neutral-800/90 hover:bg-neutral-700 text-neutral-200 border-neutral-700'
+                }`}
+                title="歌詞が違う場合に別の候補へ切り替え"
+              >
+                <ArrowLeftRight className="w-3 h-3 text-red-400" />
+                <span>歌詞変更</span>
+              </button>
+              <span className="text-xs font-mono font-medium text-neutral-400 tabular-nums hidden sm:inline">
+                {formatSeconds(progress)} / {formatSeconds(duration)}
+              </span>
+            </div>
+          </div>
+
+          {/* Displayed Lyrics Attribution Row */}
+          {data?.available && (matchedArtist || matchedTitle || data.source) && (
+            <div className="flex items-center justify-between gap-2 flex-wrap text-[11px]">
+              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-medium max-w-full ${
+                    isArtistMismatch
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      : 'bg-white/5 text-neutral-300 border border-white/10'
+                  }`}
+                >
+                  {isArtistMismatch ? (
+                    <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                  ) : (
+                    <UserCheck className="w-3 h-3 text-red-400 shrink-0" />
+                  )}
+                  <span className="truncate">
+                    歌詞アーティスト: {matchedArtist || '不明'}
+                    {matchedTitle && matchedTitle !== currentTrack.title ? `（${matchedTitle}）` : ''}
+                  </span>
+                </span>
+                {hasManualLyricsOverride && (
+                  <span className="px-1.5 py-0.5 rounded bg-red-600/20 text-red-300 border border-red-500/30 text-[10px]">
+                    手動選択
+                  </span>
+                )}
+              </div>
+              {data.source && (
+                <span className="text-[10px] text-neutral-500 font-mono truncate">
+                  {data.source}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Resume Auto-scroll floating toast */}
+      {userScrolled && viewMode === 'synced' && data?.isSynced && (
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 z-20">
+          <button
+            type="button"
+            onClick={handleResumeAutoScroll}
+            className="px-3 py-1.5 bg-red-600/90 hover:bg-red-500 text-white text-xs font-semibold rounded-full shadow-xl flex items-center gap-1.5 backdrop-blur transition-all animate-bounce"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+            <span>再生中の歌詞にスクロール</span>
+          </button>
+        </div>
+      )}
+
+      {/* Lyrics Body */}
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-6 sm:px-10 pt-[32vh] pb-[42vh] text-neutral-200 scroll-smooth space-y-4 relative"
+      >
+        {loading ? (
+          <div className="h-full flex flex-col items-center justify-center gap-3 text-neutral-400 py-20">
+            <Loader2 className="w-8 h-8 animate-spin text-red-500" />
+            <p className="text-xs">リアルタイム同期歌詞を取得中...</p>
+          </div>
+        ) : data?.syncedLyrics && data.syncedLyrics.length > 0 ? (
+          /* Real-time Synchronized Lyrics View */
+          <div className="space-y-4">
+            {/* Mismatch warning banner with 1-tap switch */}
+            {isArtistMismatch && !searchOpen && (
+              <div className="mb-3 p-3 rounded-xl bg-amber-950/30 border border-amber-500/35 flex items-center justify-between gap-3 text-xs text-amber-200">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="truncate">
+                    別アーティスト「{matchedArtist}」の歌詞が表示中の可能性があります
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openSwitcherPanel()}
+                  className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 text-[11px] font-bold shrink-0 cursor-pointer"
+                >
+                  変更する
+                </button>
+              </div>
+            )}
+
+            {/* Informational banner when approximate section-aware sync is active */}
+            {data.isApproximate && (
+              <div className="mb-4 p-3 rounded-xl bg-amber-950/20 border border-amber-500/25 flex items-center justify-between gap-3 text-xs text-amber-200/90 shadow-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="truncate">曲の構成から現在地をハイライト追従中（行タップで移動）</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowOffsetControls(true)}
+                  className="text-[11px] underline text-amber-300 hover:text-white shrink-0 font-medium cursor-pointer"
+                >
+                  ズレ補正
+                </button>
+              </div>
+            )}
+
+            {/* Intro State when track is playing before vocal onset */}
+            {activeLineIndex === -1 && data.syncedLyrics.length > 0 && (
+              <div
+                className={`mb-6 p-4 rounded-2xl flex items-center justify-between shadow-lg transition-all ${
+                  isNoIntroSong
+                    ? 'bg-gradient-to-r from-amber-600/25 via-amber-500/10 to-transparent border border-amber-500/40 shadow-amber-950/30'
+                    : 'bg-gradient-to-r from-red-600/20 via-red-500/10 to-transparent border border-red-500/30 shadow-red-950/30 animate-pulse'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex items-end gap-1 h-5">
+                    <span
+                      className={`w-1 rounded-full animate-bounce h-3 ${isNoIntroSong ? 'bg-amber-400' : 'bg-red-500'}`}
+                      style={{ animationDelay: '0ms' }}
+                    />
+                    <span
+                      className={`w-1 rounded-full animate-bounce h-5 ${isNoIntroSong ? 'bg-amber-300' : 'bg-red-400'}`}
+                      style={{ animationDelay: '150ms' }}
+                    />
+                    <span
+                      className={`w-1 rounded-full animate-bounce h-4 ${isNoIntroSong ? 'bg-rose-400' : 'bg-rose-400'}`}
+                      style={{ animationDelay: '300ms' }}
+                    />
+                    <span
+                      className={`w-1 rounded-full animate-bounce h-2 ${isNoIntroSong ? 'bg-yellow-300' : 'bg-amber-400'}`}
+                      style={{ animationDelay: '450ms' }}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-white tracking-wide flex items-center gap-2">
+                      {isNoIntroSong ? (
+                        <>
+                          <span className="text-amber-300">⚡ イントロなし楽曲 (即歌い出し)</span>
+                          <span className="text-[10px] bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full font-mono">
+                            FAST START
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span>イントロ演奏中...</span>
+                          <span className="text-[10px] bg-red-500/30 text-red-300 px-2 py-0.5 rounded-full font-mono">
+                            INTRO
+                          </span>
+                        </>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-neutral-400 mt-0.5">
+                      {isNoIntroSong
+                        ? `歌い出し直前: あと ${Math.max(0, data.syncedLyrics[0].time - effectiveProgress).toFixed(1)} 秒`
+                        : '間もなく歌唱パートが始まります'}
+                    </p>
+                  </div>
+                </div>
+
+                {data.syncedLyrics[0] && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const needed = Math.round((data.syncedLyrics![0].time - progress) * 10) / 10;
+                      setTimingOffset(needed);
+                      setShowOffsetControls(true);
+                    }}
+                    className="text-xs font-mono font-bold text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 px-3 py-1.5 rounded-full border border-amber-500/40 cursor-pointer flex items-center gap-1.5 transition-colors"
+                    title="歌い出しタイミングを今すぐ同期"
+                  >
+                    <span>歌い出し {data.syncedLyrics[0].time.toFixed(2)}s</span>
+                    <span className="text-[10px] bg-amber-400 text-neutral-950 px-1 rounded font-bold">
+                      🎯合致
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {data.syncedLyrics.map((line, idx) => {
+              const isActive = idx === activeLineIndex;
+              const isPast = activeLineIndex !== -1 && idx < activeLineIndex;
+              const pastDistance = activeLineIndex !== -1 && isPast ? activeLineIndex - idx : 0;
+              const futureDistance = activeLineIndex !== -1 && idx > activeLineIndex ? idx - activeLineIndex : 0;
+
+              // Calculate active line singing progress percentage
+              let lineProgress = 0;
+              if (isActive && data.syncedLyrics) {
+                const nextLine = data.syncedLyrics[idx + 1];
+                const lineDuration = nextLine ? Math.max(0.5, nextLine.time - line.time) : 4.0;
+                const elapsed = Math.max(0, effectiveProgress - line.time);
+                lineProgress = Math.min(100, Math.max(0, (elapsed / lineDuration) * 100));
+              }
+
+              // Determine inline style for exact opacity and blur depth
+              let lineStyle: React.CSSProperties = {};
+              if (isActive) {
+                lineStyle = {};
+              } else if (isPast) {
+                if (pastDistance === 1) {
+                  lineStyle = { opacity: 0.6 };
+                } else if (pastDistance === 2) {
+                  lineStyle = { opacity: 0.4 };
+                } else {
+                  lineStyle = { opacity: 0.25, filter: 'blur(0.6px)' };
+                }
+              } else {
+                if (futureDistance === 1) {
+                  lineStyle = { opacity: 0.7 };
+                } else if (futureDistance === 2) {
+                  lineStyle = { opacity: 0.45 };
+                } else {
+                  lineStyle = { opacity: 0.25 };
+                }
+              }
+
+              return (
+                <div
+                  key={`${line.time}-${idx}`}
+                  ref={isActive ? activeLineElementRef : null}
+                  onClick={() => handleLineClick(line)}
+                  style={lineStyle}
+                  className={`group relative rounded-xl transition-all duration-300 cursor-pointer select-none ${
+                    isActive
+                      ? 'py-4 px-5 bg-gradient-to-r from-red-600/30 via-red-500/15 to-transparent border-l-4 border-red-500 rounded-r-2xl shadow-[0_0_35px_rgba(239,68,68,0.35)] scale-[1.02]'
+                      : isPast
+                      ? pastDistance === 1
+                        ? 'py-2 px-4 hover:opacity-100 hover:bg-white/[0.04]'
+                        : pastDistance === 2
+                        ? 'py-1.5 px-4 hover:opacity-90'
+                        : 'py-1 px-4 hover:opacity-80'
+                      : futureDistance === 1
+                      ? 'py-2 px-4 hover:opacity-100 hover:bg-white/[0.04]'
+                      : futureDistance === 2
+                      ? 'py-1.5 px-4 hover:opacity-90'
+                      : 'py-1 px-4 hover:opacity-80'
+                  }`}
+                >
+                  <div className="flex items-baseline justify-between gap-4">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {isActive && (
+                        <span className="flex h-3 w-3 relative shrink-0">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-80"></span>
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 shadow-[0_0_12px_#ef4444]"></span>
+                        </span>
+                      )}
+
+                      <p
+                        style={
+                          isActive
+                            ? {
+                                textShadow:
+                                  '0 0 16px rgba(255, 255, 255, 0.9), 0 0 32px rgba(239, 68, 68, 0.85), 0 0 60px rgba(220, 38, 38, 0.6)',
+                              }
+                            : undefined
+                        }
+                        className={`leading-relaxed tracking-normal font-sans transition-all duration-200 flex-1 ${
+                          isActive
+                            ? 'text-white font-black text-2xl sm:text-3xl tracking-wide'
+                            : isPast
+                            ? pastDistance === 1
+                              ? 'text-neutral-400 font-medium text-lg sm:text-xl'
+                              : pastDistance === 2
+                              ? 'text-neutral-500 font-normal text-base sm:text-lg'
+                              : 'text-neutral-600 font-normal text-sm sm:text-base'
+                            : futureDistance === 1
+                            ? 'text-neutral-300 font-medium text-lg sm:text-xl'
+                            : futureDistance === 2
+                            ? 'text-neutral-400 font-normal text-base sm:text-lg'
+                            : 'text-neutral-500 font-normal text-sm sm:text-base'
+                        } ${fontSize === 'large' ? 'sm:scale-105' : ''}`}
+                      >
+                        {line.text}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {showOffsetControls && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const neededOffset = Math.round((line.time - progress) * 10) / 10;
+                            setTimingOffset(neededOffset);
+                          }}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                          title="この行が今歌われている！として同期タイミングを合わせる"
+                        >
+                          <Sparkles className="w-2.5 h-2.5" />
+                          <span>今ここ</span>
+                        </button>
+                      )}
+                      <span
+                        className={`text-[11px] font-mono shrink-0 tabular-nums transition-colors ${
+                          isActive
+                            ? 'text-red-400 font-bold opacity-100 shadow-sm'
+                            : 'text-neutral-600 opacity-0 group-hover:opacity-100'
+                        }`}
+                      >
+                        {formatSeconds(line.time)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Active line singing progress bar (lyrics progress shimmer) */}
+                  {isActive && (
+                    <div className="w-full h-1.5 bg-white/15 rounded-full mt-3 overflow-hidden shadow-inner">
+                      <div
+                        className="h-full bg-gradient-to-r from-red-500 via-rose-400 to-amber-300 rounded-full shadow-[0_0_14px_rgba(239,68,68,1)] transition-all duration-75 ease-linear"
+                        style={{ width: `${lineProgress}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : data?.available && data?.lyrics ? (
+          /* Plain Text Lyrics View */
+          <div className="space-y-6 pt-4 max-w-xl mx-auto">
+            <div className="p-3.5 rounded-xl bg-neutral-900/90 border border-white/10 text-xs text-neutral-300 flex items-center justify-between gap-3 shadow-md">
+              <div className="flex items-center gap-2.5">
+                <AlignLeft className="w-4 h-4 shrink-0 text-amber-400" />
+                <div>
+                  <p className="font-semibold text-white">公式テキスト歌詞</p>
+                  <p className="text-[11px] text-neutral-400">この楽曲は公式未同期のため、ズレ防止のため全行を表示しています</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => openSwitcherPanel(currentTrack?.title)}
+                className="px-2.5 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 rounded-lg font-medium text-[11px] shrink-0 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <Search className="w-3 h-3" />
+                <span>同期歌詞を検索</span>
+              </button>
+            </div>
+            <div
+              className={`leading-relaxed whitespace-pre-line font-sans text-neutral-200 px-2 ${
+                fontSize === 'large' ? 'text-lg md:text-xl font-medium' : 'text-sm md:text-base'
+              }`}
+            >
+              {data.lyrics}
+            </div>
+            {data.footer && (
+              <p className="pt-6 text-xs text-neutral-500 italic border-t border-neutral-800/60">
+                {data.footer}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center text-center px-4 gap-3 text-neutral-400 py-24">
+            <p className="text-sm font-medium text-neutral-300">歌詞が見つかりませんでした</p>
+            <p className="text-xs text-neutral-500 max-w-sm">
+              曲名表記が異なる場合は、上部の検索アイコンから曲名で直接検索して適用できます。
+            </p>
+            <button
+              onClick={() => openSwitcherPanel(currentTrack?.title)}
+              className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+            >
+              <Search className="w-3.5 h-3.5 text-red-500" />
+              <span>曲名で手動検索する</span>
+            </button>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+};
