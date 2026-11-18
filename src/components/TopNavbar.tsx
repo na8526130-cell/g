@@ -4,7 +4,6 @@ import { api } from '../services/api';
 import {
   Search,
   Terminal,
-  Disc3,
   X,
   Link2,
   User,
@@ -163,8 +162,15 @@ export const TopNavbar: React.FC = () => {
           onClick={() => navigateTo('home')}
           className="flex items-center gap-2 text-left group whitespace-nowrap shrink-0 focus:outline-none cursor-pointer"
         >
-          <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center text-white shadow-lg shadow-red-600/30 group-hover:scale-105 transition-transform">
-            <Disc3 className="w-4.5 h-4.5 animate-[spin_6s_linear_infinite]" />
+          <div className="w-8 h-8 rounded-full bg-black ring-1 ring-white/15 flex items-center justify-center shadow-lg shadow-red-600/30 group-hover:scale-105 transition-transform overflow-hidden">
+            <svg viewBox="0 0 64 64" className="w-7 h-7" aria-hidden="true">
+              <circle cx="32" cy="32" r="28" fill="#EF1D36" />
+              <g transform="rotate(8.5 32 32)" fill="none" stroke="#000000" strokeLinecap="round">
+                <path d="M 15.47 25.41 A 58.8 58.8 0 0 1 48.53 25.41" strokeWidth="4.7" />
+                <path d="M 18.39 33.17 A 54.6 54.6 0 0 1 45.61 33.17" strokeWidth="3.9" />
+                <path d="M 21.25 40.16 A 50.4 50.4 0 0 1 42.75 40.16" strokeWidth="3.25" />
+              </g>
+            </svg>
           </div>
           <div className="flex flex-col">
             <span className="text-sm sm:text-lg font-black tracking-tight text-white leading-tight">

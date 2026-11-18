@@ -38,83 +38,120 @@ function makeChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, body, crc]);
 }
 
-function generatePng(size: number, isMaskable = false): Buffer {
+interface WaveArcSpec {
+  topYNorm: number; // Top apex y relative to circle center (in units of R, negative = above center)
+  arcRNorm: number; // Radius of arc in units of R
+  halfAngleRad: number; // Angular half-span
+  halfThickNorm: number; // Half stroke thickness in units of R
+}
+
+const WAVE_ARCS: WaveArcSpec[] = [
+  { topYNorm: -0.32, arcRNorm: 2.1, halfAngleRad: 0.285, halfThickNorm: 0.084 },
+  { topYNorm: -0.02, arcRNorm: 1.95, halfAngleRad: 0.252, halfThickNorm: 0.070 },
+  { topYNorm: 0.25, arcRNorm: 1.8, halfAngleRad: 0.215, halfThickNorm: 0.058 },
+];
+
+const TILT_RAD = (8.5 * Math.PI) / 180;
+const COS_TILT = Math.cos(TILT_RAD);
+const SIN_TILT = Math.sin(TILT_RAD);
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function distanceToWaveArc(rx: number, ry: number, R: number, spec: WaveArcSpec): number {
+  const arcR = spec.arcRNorm * R;
+  const arcCenterY = spec.topYNorm * R + arcR;
+  const halfThick = spec.halfThickNorm * R;
+
+  const vx = rx;
+  const vy = arcCenterY - ry;
+  const angle = Math.atan2(vx, vy);
+
+  let distToCenterline: number;
+  if (Math.abs(angle) <= spec.halfAngleRad) {
+    distToCenterline = Math.abs(Math.hypot(vx, vy) - arcR);
+  } else {
+    const clampedAngle = angle >= 0 ? spec.halfAngleRad : -spec.halfAngleRad;
+    const ex = arcR * Math.sin(clampedAngle);
+    const ey = arcR * Math.cos(clampedAngle);
+    distToCenterline = Math.hypot(vx - ex, vy - ey);
+  }
+
+  return distToCenterline - halfThick;
+}
+
+function generatePng(size: number, options?: { isMaskable?: boolean; roundedBackground?: boolean }): Buffer {
   const width = size;
   const height = size;
   const rawBytes = Buffer.alloc(height * (1 + width * 4));
 
   const cx = width / 2;
   const cy = height / 2;
-  const radius = isMaskable ? width * 0.35 : width * 0.42;
+  const isMaskable = Boolean(options?.isMaskable);
+  const roundedBackground = Boolean(options?.roundedBackground);
+  const radius = isMaskable ? width * 0.325 : width * 0.375;
+  const aaWidth = Math.max(0.75, width / 512);
+
+  // Spotify Red & Black Palette
+  const redR = 239; // #EF1D36
+  const redG = 29;
+  const redB = 54;
+  const bgR = 0;
+  const bgG = 0;
+  const bgB = 0;
 
   let offset = 0;
   for (let y = 0; y < height; y++) {
     rawBytes[offset++] = 0; // Filter byte: None
 
     for (let x = 0; x < width; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
+      const dist = Math.hypot(dx, dy);
 
-      // Background gradient (Dark futuristic carbon `#07070a` to `#160a12`)
-      const grad = (y / height) * 0.5 + (x / width) * 0.5;
-      let r = Math.round(7 + grad * 15);
-      let g = Math.round(7 + grad * 6);
-      let b = Math.round(10 + grad * 12);
-      let a = 255;
-
-      // Outer glowing ring
-      if (dist < radius + 8 && dist > radius - 16) {
-        const ringDist = Math.abs(dist - (radius - 4));
-        const glow = Math.max(0, 1 - ringDist / 12);
-        r = Math.min(255, Math.round(r + glow * 230));
-        g = Math.min(255, Math.round(g + glow * 40));
-        b = Math.min(255, Math.round(b + glow * 60));
+      // Alpha coverage for optional rounded squircle background (favicon)
+      let bgAlpha = 255;
+      if (roundedBackground) {
+        const halfBox = width * 0.48;
+        const cornerR = width * 0.22;
+        const qx = Math.abs(dx) - (halfBox - cornerR);
+        const qy = Math.abs(dy) - (halfBox - cornerR);
+        const sdfBox =
+          Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) +
+          Math.min(Math.max(qx, qy), 0) -
+          cornerR;
+        bgAlpha = Math.round((1 - smoothstep(-aaWidth, aaWidth, sdfBox)) * 255);
       }
 
-      // Disc surface
-      if (dist <= radius) {
-        // Grooves
-        const groove = Math.sin(dist * 0.6) * 0.5 + 0.5;
-        r = Math.min(255, Math.round(r + 15 + groove * 25));
-        g = Math.min(255, Math.round(g + 5 + groove * 10));
-        b = Math.min(255, Math.round(b + 10 + groove * 15));
-      }
+      // Circle coverage (1 inside, 0 outside)
+      const circleCov = 1 - smoothstep(-aaWidth, aaWidth, dist - radius);
 
-      // Inner Red Neon Record Label
-      const labelRadius = radius * 0.42;
-      if (dist <= labelRadius) {
-        // Vibrant Crimson Gradient
-        r = 225;
-        g = 29;
-        b = 72;
-      }
+      let redMask = 0;
+      if (circleCov > 0) {
+        // Inverse-rotate sample around center so wave arcs tilt clockwise by TILT_RAD
+        const rx = dx * COS_TILT + dy * SIN_TILT;
+        const ry = -dx * SIN_TILT + dy * COS_TILT;
 
-      // Center Spindle Hole
-      const holeRadius = radius * 0.12;
-      if (dist <= holeRadius) {
-        r = 7;
-        g = 7;
-        b = 10;
-      }
-
-      // Music note / Play triangle in the middle ring
-      if (dist > holeRadius + 2 && dist < labelRadius - 4) {
-        // Play triangle centered
-        const tx = dx + 3;
-        const ty = dy;
-        const inTriangle = tx >= -labelRadius * 0.3 && tx <= labelRadius * 0.35 && Math.abs(ty) <= (labelRadius * 0.35 - tx * 0.6);
-        if (inTriangle) {
-          r = 255;
-          g = 255;
-          b = 255;
+        // Cut out each wave arc in black (#000000)
+        let waveCutout = 0;
+        for (const arc of WAVE_ARCS) {
+          const sdfArc = distanceToWaveArc(rx, ry, radius, arc);
+          const cov = 1 - smoothstep(-aaWidth, aaWidth, sdfArc);
+          if (cov > waveCutout) waveCutout = cov;
         }
+        redMask = circleCov * (1 - waveCutout);
       }
+
+      const r = Math.round(bgR * (1 - redMask) + redR * redMask);
+      const g = Math.round(bgG * (1 - redMask) + redG * redMask);
+      const b = Math.round(bgB * (1 - redMask) + redB * redMask);
 
       rawBytes[offset++] = r;
       rawBytes[offset++] = g;
       rawBytes[offset++] = b;
-      rawBytes[offset++] = a;
+      rawBytes[offset++] = bgAlpha;
     }
   }
 
@@ -142,47 +179,41 @@ function generatePng(size: number, isMaskable = false): Buffer {
   return Buffer.concat([signature, ihdrChunk, idatChunk, iendChunk]);
 }
 
+function buildWaveArcSvgPath(R: number, cx: number, cy: number, spec: WaveArcSpec): string {
+  const arcR = spec.arcRNorm * R;
+  const arcCenterY = cy + spec.topYNorm * R + arcR;
+  const x1 = cx - arcR * Math.sin(spec.halfAngleRad);
+  const y1 = arcCenterY - arcR * Math.cos(spec.halfAngleRad);
+  const x2 = cx + arcR * Math.sin(spec.halfAngleRad);
+  const y2 = arcCenterY - arcR * Math.cos(spec.halfAngleRad);
+  const strokeWidth = (spec.halfThickNorm * 2 * R).toFixed(2);
+  return `<path d="M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${arcR.toFixed(2)} ${arcR.toFixed(2)} 0 0 1 ${x2.toFixed(2)} ${y2.toFixed(2)}" fill="none" stroke="#000000" stroke-width="${strokeWidth}" stroke-linecap="round"/>`;
+}
+
 const publicDir = path.resolve(process.cwd(), 'public');
 if (!fs.existsSync(publicDir)) {
   fs.mkdirSync(publicDir, { recursive: true });
 }
 
-// Generate PWA icons
-console.log('Generating PWA Icons...');
+// Generate PWA icons (Spotify-inspired Red & Black theme)
+console.log('Generating Spotify-style Red & Black PWA Icons...');
 fs.writeFileSync(path.join(publicDir, 'pwa-192x192.png'), generatePng(192));
 fs.writeFileSync(path.join(publicDir, 'pwa-512x512.png'), generatePng(512));
-fs.writeFileSync(path.join(publicDir, 'pwa-maskable-512x512.png'), generatePng(512, true));
+fs.writeFileSync(path.join(publicDir, 'pwa-maskable-512x512.png'), generatePng(512, { isMaskable: true }));
 fs.writeFileSync(path.join(publicDir, 'apple-touch-icon.png'), generatePng(180));
-fs.writeFileSync(path.join(publicDir, 'favicon.ico'), generatePng(32));
+fs.writeFileSync(path.join(publicDir, 'favicon.ico'), generatePng(32, { roundedBackground: true }));
 
-// SVG Icon
+// SVG Icon matching exact geometry
+const R = 192;
+const wavePaths = WAVE_ARCS.map((spec) => buildWaveArcSvgPath(R, 256, 256, spec)).join('\n    ');
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#1e0a14"/>
-      <stop offset="100%" stop-color="#08080a"/>
-    </radialGradient>
-    <linearGradient id="neon" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ff1744"/>
-      <stop offset="100%" stop-color="#e11d48"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="10" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>
-  <rect width="512" height="512" rx="100" fill="url(#bg)"/>
-  <circle cx="256" cy="256" r="190" fill="#0f0f14" stroke="#252530" stroke-width="4"/>
-  <circle cx="256" cy="256" r="160" fill="none" stroke="#1c1c24" stroke-width="2"/>
-  <circle cx="256" cy="256" r="130" fill="none" stroke="#1c1c24" stroke-width="2"/>
-  <circle cx="256" cy="256" r="100" fill="none" stroke="#1c1c24" stroke-width="2"/>
-  <circle cx="256" cy="256" r="80" fill="url(#neon)" filter="url(#glow)"/>
-  <circle cx="256" cy="256" r="22" fill="#08080a"/>
-  <polygon points="244,232 278,256 244,280" fill="#ffffff"/>
-</svg>`;
+  <rect width="512" height="512" rx="112" fill="#000000"/>
+  <circle cx="256" cy="256" r="${R}" fill="#EF1D36"/>
+  <g transform="rotate(8.5 256 256)">
+    ${wavePaths}
+  </g>
+</svg>
+`;
 fs.writeFileSync(path.join(publicDir, 'icon.svg'), svg, 'utf-8');
 
-console.log('PWA icons created successfully in public/');
+console.log('Spotify-style Red & Black PWA icons created successfully in public/');
