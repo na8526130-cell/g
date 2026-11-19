@@ -5,6 +5,7 @@ import { ExploreData, Track, OriconTrack, Artist } from '../types/music';
 import { SafeImage } from '../components/SafeImage';
 import { MoodRecommendationSection } from '../components/MoodRecommendationSection';
 import { getOfflineMeta, saveOfflineMeta } from '../services/offlineStorage';
+import { getApiCacheEntry, setApiCacheEntry } from '../services/apiCacheDb';
 import {
   Play,
   Plus,
@@ -367,20 +368,38 @@ export const HomeExploreView: React.FC = () => {
 
   // Oricon Chart States
   const [oriconList, setOriconList] = useState<OriconTrack[]>([]);
-  const [artistMetaMap, setArtistMetaMap] = useState<Record<string, CachedArtistMeta>>(() => {
-    try {
-      const raw = localStorage.getItem(ARTIST_META_CACHE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
-          return parsed.data;
-        }
-      }
-    } catch {}
-    return {};
-  });
+  const [artistMetaMap, setArtistMetaMap] = useState<Record<string, CachedArtistMeta>>({});
+  const [artistMetaLoaded, setArtistMetaLoaded] = useState(false);
 
   useEffect(() => {
+    let active = true;
+    (async () => {
+      let initialMap = (await getApiCacheEntry<Record<string, CachedArtistMeta>>(ARTIST_META_CACHE_KEY)) || {};
+      try {
+        const legacyRaw = localStorage.getItem(ARTIST_META_CACHE_KEY);
+        if (legacyRaw) {
+          const parsed = JSON.parse(legacyRaw);
+          if (!Object.keys(initialMap).length && parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
+            initialMap = parsed.data;
+            await setApiCacheEntry(ARTIST_META_CACHE_KEY, initialMap, 12 * 60 * 60 * 1000);
+          }
+          localStorage.removeItem(ARTIST_META_CACHE_KEY);
+        }
+      } catch {}
+      if (active) {
+        if (Object.keys(initialMap).length > 0) {
+          setArtistMetaMap(initialMap);
+        }
+        setArtistMetaLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!artistMetaLoaded) return;
     const targets = ['Mrs. GREEN APPLE', 'Vaundy', 'YOASOBI', 'King Gnu', 'RADWIMPS', 'back number'];
     const missing = targets.filter((name) => !artistMetaMap[name]?.thumbnail);
     if (missing.length === 0) return;
@@ -422,19 +441,14 @@ export const HomeExploreView: React.FC = () => {
       });
       if (changed) {
         setArtistMetaMap(next);
-        try {
-          localStorage.setItem(
-            ARTIST_META_CACHE_KEY,
-            JSON.stringify({ ts: Date.now(), data: next })
-          );
-        } catch {}
+        setApiCacheEntry(ARTIST_META_CACHE_KEY, next, 12 * 60 * 60 * 1000).catch(() => {});
       }
     });
 
     return () => {
       active = false;
     };
-  }, [artistMetaMap]);
+  }, [artistMetaLoaded, artistMetaMap]);
 
   useEffect(() => {
     let active = true;

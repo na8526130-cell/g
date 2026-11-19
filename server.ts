@@ -626,8 +626,9 @@ export async function createApp(options?: {
     const conversions = getSearchConversions(query);
     const expanded = expandSearchQuery(query);
     const suggestSeed = expanded.effectiveQuery || query;
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
     const suggestCacheKey = `suggest_ja_v1:${suggestSeed.toLowerCase()}`;
-    const cachedSuggest = kvCache.get<{ suggestions: string[] }>(suggestCacheKey);
+    const cachedSuggest = !forceRefresh ? kvCache.get<{ suggestions: string[] }>(suggestCacheKey) : null;
     if (cachedSuggest) {
       return res.json({
         suggestions: cachedSuggest.suggestions || [],
@@ -691,8 +692,9 @@ export async function createApp(options?: {
       : expandSearchQuery(rawQuery);
     const query = effectiveQuery;
 
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
     const cacheKey = `search_ja_v3:${type}:${query.toLowerCase()}`;
-    const cachedSearch = kvCache.get<any>(cacheKey);
+    const cachedSearch = !forceRefresh ? kvCache.get<any>(cacheKey) : null;
     if (cachedSearch) {
       return res.json({
         ...cachedSearch,
@@ -1126,8 +1128,9 @@ export async function createApp(options?: {
       ? { effectiveQuery: rawQuery, matchedAlias: undefined }
       : expandSearchQuery(rawQuery);
     const query = effectiveQuery;
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
     const cacheKey = `spotify_search_ja_v3:${query.toLowerCase()}`;
-    const cached = kvCache.get<any>(cacheKey);
+    const cached = !forceRefresh ? kvCache.get<any>(cacheKey) : null;
     if (cached) {
       return res.json({
         ...cached,
@@ -3381,6 +3384,27 @@ export async function createApp(options?: {
     : path.resolve(__dirname, 'data');
   const STORAGE_FILE = path.resolve(DATA_DIR, 'app_storage.json');
 
+  interface SyncedAccountLibrary {
+    playlists?: any[];
+    likedTracks?: any[];
+    likedAlbums?: any[];
+    likedPlaylists?: any[];
+    followedArtists?: any[];
+    recentTracks?: any[];
+    recentSearches?: string[];
+    userFolders?: any[];
+    hiddenTracks?: any[];
+    blockedArtists?: string[];
+    pinnedBestTracks?: any[];
+    listeningHistory?: any[];
+    settings?: {
+      audioQuality?: 'auto' | 'low' | 'normal' | 'high';
+      floatingLyricsOverlay?: boolean;
+      canvasEnabled?: boolean;
+      backgroundPlaybackEnabled?: boolean;
+    };
+  }
+
   interface StoredAccount {
     id: string;
     username: string;
@@ -3394,6 +3418,8 @@ export async function createApp(options?: {
       lyricsSync: boolean;
     };
     playlists?: any[];
+    library?: SyncedAccountLibrary;
+    libraryUpdatedAt?: string;
   }
 
   interface StoredNotification {
@@ -3965,7 +3991,9 @@ export async function createApp(options?: {
         registeredAt: acc.registeredAt,
         lastActive: acc.lastActive,
         preferences: acc.preferences,
-        playlists: acc.playlists || [],
+        playlists: acc.playlists || acc.library?.playlists || [],
+        library: acc.library || { playlists: acc.playlists || [] },
+        libraryUpdatedAt: acc.libraryUpdatedAt || acc.lastActive,
       },
       notificationsCount: userNotifs.length,
       stats: {
@@ -3977,7 +4005,7 @@ export async function createApp(options?: {
 
   // Register account: username (必須), password (必須), email (任意)
   app.post('/api/account/register', (req, res) => {
-    const { username, password, email, playlists } = req.body;
+    const { username, password, email, playlists, library } = req.body;
     const cleanUsername = String(username || '').trim();
     const cleanPassword = String(password || '').trim();
     const cleanEmail = String(email || '').trim().toLowerCase();
@@ -3998,6 +4026,11 @@ export async function createApp(options?: {
     }
 
     const now = new Date().toISOString();
+    const initialLibrary: SyncedAccountLibrary =
+      library && typeof library === 'object'
+        ? { ...library, playlists: Array.isArray(library.playlists) ? library.playlists : playlists || [] }
+        : { playlists: playlists || [] };
+
     const newAccount: StoredAccount = {
       id: `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       username: cleanUsername,
@@ -4010,7 +4043,9 @@ export async function createApp(options?: {
         playlistUpdates: true,
         lyricsSync: true,
       },
-      playlists: playlists || [],
+      playlists: initialLibrary.playlists || [],
+      library: initialLibrary,
+      libraryUpdatedAt: now,
     };
 
     appState.accounts.push(newAccount);
@@ -4022,7 +4057,7 @@ export async function createApp(options?: {
         username: cleanUsername,
         email: cleanEmail,
         subject: '【Zero Music】アカウント登録が完了しました',
-        body: `${cleanUsername} 様、Zero Musicへのご登録ありがとうございます。プレイリストのクラウド同期とお気に入りアーティストの最新通知が有効になりました。`,
+        body: `${cleanUsername} 様、Zero Musicへのご登録ありがとうございます。プレイリスト・お気に入り・履歴のクラウド同期とお気に入りアーティストの最新通知が有効になりました。`,
         type: 'welcome',
         timestamp: now,
         status: 'delivered',
@@ -4042,6 +4077,8 @@ export async function createApp(options?: {
         email: newAccount.email,
         registeredAt: newAccount.registeredAt,
         playlists: newAccount.playlists,
+        library: newAccount.library,
+        libraryUpdatedAt: newAccount.libraryUpdatedAt,
       },
       stats: {
         totalAccessCount: appState.totalAccessCount,
@@ -4072,6 +4109,7 @@ export async function createApp(options?: {
           email: 'admin@zeromusic.local',
           registeredAt: '2026-01-01T00:00:00.000Z',
           playlists: [],
+          library: {},
           preferences: { newReleases: true, playlistUpdates: true, lyricsSync: true },
           role: 'admin',
         },
@@ -4105,7 +4143,9 @@ export async function createApp(options?: {
         username: account.username,
         email: account.email || '',
         registeredAt: account.registeredAt,
-        playlists: account.playlists || [],
+        playlists: account.playlists || account.library?.playlists || [],
+        library: account.library || { playlists: account.playlists || [] },
+        libraryUpdatedAt: account.libraryUpdatedAt || account.lastActive,
         preferences: account.preferences,
       },
       stats: {
@@ -4115,9 +4155,9 @@ export async function createApp(options?: {
     });
   });
 
-  // Sync user playlists to cloud account
+  // Sync user playlists and full library snapshot across devices
   app.post('/api/account/sync', (req, res) => {
-    const { username, playlists } = req.body;
+    const { username, playlists, library } = req.body;
     const cleanUser = String(username || '').trim().toLowerCase();
     if (!cleanUser) {
       return res.status(400).json({ error: 'Username is required' });
@@ -4126,15 +4166,28 @@ export async function createApp(options?: {
     const acc = appState.accounts.find(
       (a) => a.username.toLowerCase() === cleanUser || (a.email && a.email.toLowerCase() === cleanUser)
     );
+    const now = new Date().toISOString();
     if (acc) {
-      acc.playlists = playlists || [];
-      acc.lastActive = new Date().toISOString();
+      const nextLibrary: SyncedAccountLibrary = {
+        ...(acc.library || {}),
+        ...(library && typeof library === 'object' ? library : {}),
+      };
+      if (Array.isArray(playlists)) {
+        nextLibrary.playlists = playlists;
+        acc.playlists = playlists;
+      } else if (Array.isArray(nextLibrary.playlists)) {
+        acc.playlists = nextLibrary.playlists;
+      }
+      acc.library = nextLibrary;
+      acc.libraryUpdatedAt = now;
+      acc.lastActive = now;
       saveStorage();
     }
 
     res.json({
       success: true,
-      count: playlists?.length || 0,
+      count: playlists?.length || acc?.playlists?.length || 0,
+      libraryUpdatedAt: acc?.libraryUpdatedAt || now,
       stats: {
         totalAccessCount: appState.totalAccessCount,
         totalAccountsCount: appState.accounts.length,

@@ -44,9 +44,15 @@ export const AccountModal: React.FC = () => {
     adminLoginWithPassword,
     setTermsModalOpen,
     likedTracks,
+    followedArtists,
     recentTracks,
     currentTrack,
     playTrack,
+    pinnedBestTracks,
+    setPinnedBestTracks,
+    lastCloudSyncAt,
+    isSyncingCloud,
+    syncAccountNow,
   } = usePlayer();
 
   const [authMode, setAuthMode] = useState<'register' | 'login' | 'admin'>('register');
@@ -55,36 +61,20 @@ export const AccountModal: React.FC = () => {
   const [email, setEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
 
-  // Pinned "My All-Time Best 4 Tracks" state
-  const [pinnedBestTracks, setPinnedBestTracks] = useState<Track[]>(() => {
-    try {
-      const saved = localStorage.getItem('yt_music_pinned_best4_v1');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
   const [pinPickerOpen, setPinPickerOpen] = useState(false);
-
-  const savePinnedTracks = (tracks: Track[]) => {
-    setPinnedBestTracks(tracks);
-    try {
-      localStorage.setItem('yt_music_pinned_best4_v1', JSON.stringify(tracks));
-    } catch {}
-  };
 
   const handlePinTrack = (track: Track) => {
     if (pinnedBestTracks.some((t) => t.id === track.id)) return;
     if (pinnedBestTracks.length >= 4) {
-      savePinnedTracks([...pinnedBestTracks.slice(1), track]);
+      setPinnedBestTracks([...pinnedBestTracks.slice(1), track]);
     } else {
-      savePinnedTracks([...pinnedBestTracks, track]);
+      setPinnedBestTracks([...pinnedBestTracks, track]);
     }
     setPinPickerOpen(false);
   };
 
   const handleUnpinTrack = (trackId: string) => {
-    savePinnedTracks(pinnedBestTracks.filter((t) => t.id !== trackId));
+    setPinnedBestTracks(pinnedBestTracks.filter((t) => t.id !== trackId));
   };
   const [loading, setLoading] = useState(false);
   const [sendingNotification, setSendingNotification] = useState(false);
@@ -567,7 +557,7 @@ export const AccountModal: React.FC = () => {
               {/* Guest mode reassurance */}
               <div className="p-3.5 rounded-xl bg-neutral-900/40 border border-neutral-800/70 text-xs text-neutral-400 flex items-center gap-2.5">
                 <Sparkles className="w-4 h-4 text-red-400 shrink-0" />
-                <span>アカウントなし（ゲスト）のままでも、全機能（再生・同期歌詞・プレイリスト）を端末保存でそのままご利用いただけます。</span>
+                <span>ゲストのままでも全機能を利用できます。登録・ログインすると、お気に入り・プレイリスト・再生履歴・フォロー中アーティストがスマホとPC間で自動同期されます。</span>
               </div>
             </div>
           ) : (
@@ -604,15 +594,36 @@ export const AccountModal: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-neutral-800/80 text-xs">
-                  <div className="flex items-center gap-2 text-neutral-300">
-                    <Cloud className="w-4 h-4 text-emerald-400" />
-                    <span>プレイリスト {userPlaylists.length}件 同期中</span>
+                <div className="pt-2.5 border-t border-neutral-800/80 space-y-2 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                      <Cloud className="w-4 h-4 shrink-0" />
+                      <span>端末間クラウド同期 有効（スマホ・PC共通）</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSyncingCloud}
+                      onClick={async () => {
+                        const ok = await syncAccountNow();
+                        showToast(ok ? 'クラウドと最新データを同期しました' : '同期に失敗しました');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white border border-neutral-700 text-[11px] font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isSyncingCloud ? 'animate-spin text-emerald-400' : ''}`} />
+                      <span>{isSyncingCloud ? '同期中...' : '今すぐ同期'}</span>
+                    </button>
                   </div>
-                  <div className="flex items-center gap-2 text-neutral-300">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    <span>クラウド認証済み</span>
+                  <div className="grid grid-cols-2 gap-1.5 text-[11px] text-neutral-300">
+                    <span>お気に入り: {likedTracks.length}曲</span>
+                    <span>プレイリスト: {userPlaylists.length}件</span>
+                    <span>フォロー中: {followedArtists.length}組</span>
+                    <span>履歴: {recentTracks.length}曲</span>
                   </div>
+                  {lastCloudSyncAt && (
+                    <p className="text-[10px] text-neutral-500 font-mono">
+                      最終同期: {new Date(lastCloudSyncAt).toLocaleString('ja-JP')}
+                    </p>
+                  )}
                 </div>
 
                 {/* Admin Quick Action Card */}

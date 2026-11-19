@@ -1,6 +1,28 @@
 import { Track, Album, Artist, Playlist, LyricsData, ExploreData, InnerTubeLog, OriconTrack } from '../types/music';
 import { toBase64Image } from '../utils/imageBase64';
 import { saveOfflineMeta } from './offlineStorage';
+import { getApiCacheEntry, setApiCacheEntry } from './apiCacheDb';
+
+export interface SyncedAccountLibrary {
+  playlists?: any[];
+  likedTracks?: Track[];
+  likedAlbums?: Album[];
+  likedPlaylists?: Playlist[];
+  followedArtists?: Artist[];
+  recentTracks?: Track[];
+  recentSearches?: string[];
+  userFolders?: any[];
+  hiddenTracks?: Track[];
+  blockedArtists?: string[];
+  pinnedBestTracks?: Track[];
+  listeningHistory?: any[];
+  settings?: {
+    audioQuality?: 'auto' | 'low' | 'normal' | 'high';
+    floatingLyricsOverlay?: boolean;
+    canvasEnabled?: boolean;
+    backgroundPlaybackEnabled?: boolean;
+  };
+}
 
 interface ApiMemoEntry<T = any> {
   promise: Promise<T>;
@@ -10,88 +32,7 @@ interface ApiMemoEntry<T = any> {
 const apiMemoCache = new Map<string, ApiMemoEntry>();
 let bootPrefetchTriggered = false;
 
-const PERSIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours automatic cache
-const PERSIST_CACHE_PREFIX = 'zm_qc_v1:';
-const PERSIST_INDEX_KEY = 'zm_qc_idx_v1';
-const PERSIST_MAX_ITEMS = 90;
-
-function hashCacheKey(key: string): string {
-  let h1 = 0xdeadbeef ^ key.length;
-  let h2 = 0x41c6ce57 ^ key.length;
-  for (let i = 0; i < key.length; i++) {
-    const ch = key.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return `${(h2 >>> 0).toString(36)}${(h1 >>> 0).toString(36)}`;
-}
-
-function readPersistedCache<T>(key: string): T | null {
-  if (typeof window === 'undefined' || !window.localStorage) return null;
-  try {
-    const storageKey = PERSIST_CACHE_PREFIX + hashCacheKey(key);
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.exp !== 'number' || parsed.exp <= Date.now()) {
-      window.localStorage.removeItem(storageKey);
-      return null;
-    }
-    return parsed.data as T;
-  } catch {
-    return null;
-  }
-}
-
-function writePersistedCache<T>(key: string, data: T, ttlMs: number): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    const hashed = hashCacheKey(key);
-    const storageKey = PERSIST_CACHE_PREFIX + hashed;
-    const serialized = JSON.stringify({ exp: Date.now() + ttlMs, data });
-    if (serialized.length > 180000) return; // Skip oversized payloads to preserve quota
-
-    let index: string[] = [];
-    try {
-      const idxRaw = window.localStorage.getItem(PERSIST_INDEX_KEY);
-      if (idxRaw) index = JSON.parse(idxRaw);
-      if (!Array.isArray(index)) index = [];
-    } catch {
-      index = [];
-    }
-
-    index = index.filter((k) => k !== hashed);
-    index.push(hashed);
-
-    while (index.length > PERSIST_MAX_ITEMS) {
-      const oldest = index.shift();
-      if (oldest) {
-        try {
-          window.localStorage.removeItem(PERSIST_CACHE_PREFIX + oldest);
-        } catch {}
-      }
-    }
-
-    try {
-      window.localStorage.setItem(storageKey, serialized);
-    } catch {
-      // QuotaExceeded: evict half of oldest entries and retry once
-      const evictCount = Math.max(10, Math.floor(index.length / 2));
-      for (let i = 0; i < evictCount; i++) {
-        const victim = index.shift();
-        if (victim) {
-          try {
-            window.localStorage.removeItem(PERSIST_CACHE_PREFIX + victim);
-          } catch {}
-        }
-      }
-      window.localStorage.setItem(storageKey, serialized);
-    }
-    window.localStorage.setItem(PERSIST_INDEX_KEY, JSON.stringify(index));
-  } catch {}
-}
+const PERSIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours automatic cache in IndexedDB
 
 interface MemoOptions<T> {
   bypass?: boolean;
@@ -113,29 +54,28 @@ function withApiMemo<T>(
     if (existing && existing.expiresAt > now) {
       return existing.promise;
     }
-    if (opts.persist) {
-      const persisted = readPersistedCache<T>(key);
+  }
+
+  const promise = (async () => {
+    if (!opts.bypass && opts.persist) {
+      const persisted = await getApiCacheEntry<T>(key);
       if (persisted !== null) {
-        const p = Promise.resolve(persisted);
-        apiMemoCache.set(key, { promise: p, expiresAt: now + ttlMs });
-        return p;
+        return persisted;
       }
     }
-  }
-  const promise = fetcher()
-    .then((val) => {
-      if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) {
-        writePersistedCache(key, val, ttlMs);
-      }
-      return val;
-    })
-    .catch((err) => {
-      const cur = apiMemoCache.get(key);
-      if (cur && cur.promise === promise) {
-        apiMemoCache.delete(key);
-      }
-      throw err;
-    });
+    const val = await fetcher();
+    if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) {
+      setApiCacheEntry(key, val, ttlMs).catch(() => {});
+    }
+    return val;
+  })().catch((err) => {
+    const cur = apiMemoCache.get(key);
+    if (cur && cur.promise === promise) {
+      apiMemoCache.delete(key);
+    }
+    throw err;
+  });
+
   apiMemoCache.set(key, { promise, expiresAt: now + ttlMs });
   return promise;
 }
@@ -177,14 +117,17 @@ export const api = {
     );
   },
 
-  async getSuggestions(query: string): Promise<string[]> {
+  async getSuggestions(query: string, forceRefresh = false): Promise<string[]> {
     const clean = query.trim();
     if (!clean) return [];
-    const data = await this.getSuggestionsWithConversions(clean);
+    const data = await this.getSuggestionsWithConversions(clean, forceRefresh);
     return data.suggestions || [];
   },
 
-  getSuggestionsWithConversions(query: string): Promise<{
+  getSuggestionsWithConversions(
+    query: string,
+    forceRefresh = false
+  ): Promise<{
     suggestions: string[];
     conversions: { query: string; label: string; kind: 'alias' | 'kana' | 'romaji' }[];
   }> {
@@ -195,7 +138,8 @@ export const api = {
       PERSIST_CACHE_TTL_MS,
       async () => {
         try {
-          const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(clean)}`);
+          const refreshQs = forceRefresh ? '&refresh=1' : '';
+          const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(clean)}${refreshQs}`);
           if (!res.ok) return { suggestions: [], conversions: [] };
           const data = await res.json();
           return {
@@ -207,6 +151,7 @@ export const api = {
         }
       },
       {
+        bypass: forceRefresh,
         persist: true,
         shouldPersist: (d) =>
           (Array.isArray(d?.suggestions) && d.suggestions.length > 0) ||
@@ -218,20 +163,25 @@ export const api = {
   search(
     query: string,
     type: 'all' | 'song' | 'video' | 'album' | 'artist' | 'playlist' = 'all',
-    raw = false
+    raw = false,
+    forceRefresh = false
   ) {
     const rawQs = raw ? '&raw=1' : '';
+    const refreshQs = forceRefresh ? '&refresh=1' : '';
     const normQ = query.trim().toLowerCase();
     const key = `search:${type}:${raw ? '1' : '0'}:${normQ}`;
     return withApiMemo(
       key,
       PERSIST_CACHE_TTL_MS,
       async () => {
-        const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}`);
+        const res = await fetch(
+          `/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}${refreshQs}`
+        );
         if (!res.ok) throw new Error('Failed to execute search');
         return res.json();
       },
       {
+        bypass: forceRefresh,
         persist: true,
         shouldPersist: (d: any) =>
           Boolean(
@@ -282,30 +232,39 @@ export const api = {
 
   searchSpotify(
     query: string,
-    raw = false
+    raw = false,
+    forceRefresh = false
   ): Promise<{
     tracks: Track[];
     query: string;
     originalQuery?: string;
     effectiveQuery?: string;
     matchedAlias?: string;
+    fromCache?: boolean;
   }> {
     const normQ = query.trim().toLowerCase();
     if (!normQ) return Promise.resolve({ tracks: [], query });
     const rawQs = raw ? '&raw=1' : '';
+    const refreshQs = forceRefresh ? '&refresh=1' : '';
     return withApiMemo(
       `spotify-search:${raw ? '1' : '0'}:${normQ}`,
       PERSIST_CACHE_TTL_MS,
       async () => {
         try {
-          const res = await fetch(`/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}`);
+          const res = await fetch(
+            `/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}${refreshQs}`
+          );
           if (!res.ok) return { tracks: [], query };
           return res.json();
         } catch {
           return { tracks: [], query };
         }
       },
-      { persist: true, shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0 }
+      {
+        bypass: forceRefresh,
+        persist: true,
+        shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0,
+      }
     );
   },
 
@@ -665,38 +624,44 @@ export const api = {
       this.search(`${name} 新曲`, 'song').catch(() => {});
     });
 
-    // 4. Warm missing home artist avatar chips and store in localStorage
-    try {
-      const ARTIST_CACHE_KEY = 'yt_music_home_artists_v1';
-      let cachedMap: Record<string, any> = {};
-      const raw = localStorage.getItem(ARTIST_CACHE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
-          cachedMap = parsed.data;
-        }
-      }
-      const chipTargets = ['Mrs. GREEN APPLE', 'Vaundy', 'YOASOBI', 'King Gnu', 'RADWIMPS', 'back number'];
-      const missingChips = chipTargets.filter((name) => !cachedMap[name]?.thumbnail);
-      if (missingChips.length > 0) {
-        Promise.all(
-          missingChips.map(async (name) => {
-            try {
-              const [artistRes, songRes] = await Promise.all([
-                this.search(name, 'artist').catch(() => null),
-                this.search(name, 'song').catch(() => null),
-              ]);
-              const firstArtist = artistRes?.results?.[0] || artistRes?.artists?.[0];
-              const firstSong = songRes?.results?.[0] || songRes?.songs?.[0];
-              const thumb = firstArtist?.thumbnail || firstSong?.thumbnail;
-              const channelId = firstArtist?.id?.startsWith('UC') ? firstArtist.id : firstSong?.artistId;
-              if (!thumb && !firstSong) return null;
-              return [name, { id: channelId, thumbnail: thumb, track: firstSong }] as const;
-            } catch {
-              return null;
+    // 4. Warm missing home artist avatar chips and store in IndexedDB (freeing localStorage)
+    (async () => {
+      try {
+        const ARTIST_CACHE_KEY = 'yt_music_home_artists_v1';
+        let cachedMap: Record<string, any> = (await getApiCacheEntry<Record<string, any>>(ARTIST_CACHE_KEY)) || {};
+        // Clean legacy localStorage cache entry if present
+        try {
+          const legacyRaw = localStorage.getItem(ARTIST_CACHE_KEY);
+          if (legacyRaw) {
+            const parsed = JSON.parse(legacyRaw);
+            if (!Object.keys(cachedMap).length && parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
+              cachedMap = parsed.data;
+              await setApiCacheEntry(ARTIST_CACHE_KEY, cachedMap, 12 * 60 * 60 * 1000);
             }
-          })
-        ).then((entries) => {
+            localStorage.removeItem(ARTIST_CACHE_KEY);
+          }
+        } catch {}
+        const chipTargets = ['Mrs. GREEN APPLE', 'Vaundy', 'YOASOBI', 'King Gnu', 'RADWIMPS', 'back number'];
+        const missingChips = chipTargets.filter((name) => !cachedMap[name]?.thumbnail);
+        if (missingChips.length > 0) {
+          const entries = await Promise.all(
+            missingChips.map(async (name) => {
+              try {
+                const [artistRes, songRes] = await Promise.all([
+                  this.search(name, 'artist').catch(() => null),
+                  this.search(name, 'song').catch(() => null),
+                ]);
+                const firstArtist = artistRes?.results?.[0] || artistRes?.artists?.[0];
+                const firstSong = songRes?.results?.[0] || songRes?.songs?.[0];
+                const thumb = firstArtist?.thumbnail || firstSong?.thumbnail;
+                const channelId = firstArtist?.id?.startsWith('UC') ? firstArtist.id : firstSong?.artistId;
+                if (!thumb && !firstSong) return null;
+                return [name, { id: channelId, thumbnail: thumb, track: firstSong }] as const;
+              } catch {
+                return null;
+              }
+            })
+          );
           let changed = false;
           const nextMap = { ...cachedMap };
           entries.forEach((entry) => {
@@ -706,13 +671,11 @@ export const api = {
             }
           });
           if (changed) {
-            try {
-              localStorage.setItem(ARTIST_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: nextMap }));
-            } catch {}
+            await setApiCacheEntry(ARTIST_CACHE_KEY, nextMap, 12 * 60 * 60 * 1000);
           }
-        });
-      }
-    } catch {}
+        }
+      } catch {}
+    })();
 
     // 5. If a track was restored from previous session, warm its lyrics/timestamps/related/MV Canvas
     const track = options?.currentTrack;
@@ -828,6 +791,7 @@ export const api = {
     password: string;
     email?: string;
     playlists?: any[];
+    library?: SyncedAccountLibrary;
   }) {
     const res = await fetch('/api/account/register', {
       method: 'POST',
@@ -860,6 +824,18 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, playlists }),
     });
+    return res.json();
+  },
+
+  async syncAccountLibrary(username: string, library: SyncedAccountLibrary) {
+    const res = await fetch('/api/account/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, playlists: library.playlists, library }),
+    });
+    if (!res.ok) {
+      throw new Error('ライブラリ同期に失敗しました');
+    }
     return res.json();
   },
 

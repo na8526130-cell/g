@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
+import { getApiCacheEntry, setApiCacheEntry } from '../services/apiCacheDb';
 import { Track, Album, Artist, Playlist } from '../types/music';
 import { SafeImage } from '../components/SafeImage';
 import {
@@ -25,6 +26,7 @@ import {
   ArrowRightLeft,
   ListStart,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 import {
   getSearchConversions,
@@ -150,22 +152,44 @@ export const SearchView: React.FC = () => {
   const [isSuggestOpen, setIsSuggestOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [localConversions, setLocalConversions] = useState<SearchConversionCandidate[]>([]);
-  const [genreCovers, setGenreCovers] = useState<Record<string, string>>(() => {
-    try {
-      const raw = localStorage.getItem(GENRE_COVERS_CACHE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
-          return parsed.data;
-        }
-      }
-    } catch {}
-    return {};
-  });
+  const [genreCovers, setGenreCovers] = useState<Record<string, string>>({});
+  const [genreCoversLoaded, setGenreCoversLoaded] = useState(false);
+  const [refreshSeq, setRefreshSeq] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [resultFromCache, setResultFromCache] = useState(false);
+  const forceRefreshPendingRef = useRef(false);
 
   useEffect(() => {
     setInputVal(searchQuery);
   }, [searchQuery]);
+
+  // Load genre cover cache from IndexedDB (migrating and cleaning legacy localStorage key)
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      let initialCovers = (await getApiCacheEntry<Record<string, string>>(GENRE_COVERS_CACHE_KEY)) || {};
+      try {
+        const legacyRaw = localStorage.getItem(GENRE_COVERS_CACHE_KEY);
+        if (legacyRaw) {
+          const parsed = JSON.parse(legacyRaw);
+          if (!Object.keys(initialCovers).length && parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
+            initialCovers = parsed.data;
+            await setApiCacheEntry(GENRE_COVERS_CACHE_KEY, initialCovers, 12 * 60 * 60 * 1000);
+          }
+          localStorage.removeItem(GENRE_COVERS_CACHE_KEY);
+        }
+      } catch {}
+      if (active) {
+        if (Object.keys(initialCovers).length > 0) {
+          setGenreCovers(initialCovers);
+        }
+        setGenreCoversLoaded(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Instant local conversions + debounced InnerTube autocomplete suggestions
   useEffect(() => {
@@ -193,6 +217,7 @@ export const SearchView: React.FC = () => {
 
   // Fetch genuine thumbnails for genre cards that don't have local bespoke art
   useEffect(() => {
+    if (!genreCoversLoaded) return;
     const missing = BROWSE_CATEGORIES.filter((c) => !c.defaultCover && !genreCovers[c.id]);
     if (missing.length === 0) return;
 
@@ -219,28 +244,26 @@ export const SearchView: React.FC = () => {
       });
       if (changed) {
         setGenreCovers(next);
-        try {
-          localStorage.setItem(
-            GENRE_COVERS_CACHE_KEY,
-            JSON.stringify({ ts: Date.now(), data: next })
-          );
-        } catch {}
+        setApiCacheEntry(GENRE_COVERS_CACHE_KEY, next, 12 * 60 * 60 * 1000).catch(() => {});
       }
     });
 
     return () => {
       active = false;
     };
-  }, [genreCovers]);
+  }, [genreCoversLoaded, genreCovers]);
 
   // InnerTube search
   useEffect(() => {
     if (!searchQuery.trim() || provider !== 'innertube') return;
     let active = true;
+    const shouldForce = forceRefreshPendingRef.current;
+    forceRefreshPendingRef.current = false;
     setLoading(true);
+    if (shouldForce) setIsRefreshing(true);
 
     api
-      .search(searchQuery, filter, rawMode)
+      .search(searchQuery, filter, rawMode, shouldForce)
       .then((res) => {
         if (!active) return;
         if (filter === 'all') {
@@ -256,50 +279,90 @@ export const SearchView: React.FC = () => {
         }
         setMatchedAlias(res.matchedAlias || null);
         setEffectiveQuery(res.effectiveQuery || null);
+        setResultFromCache(Boolean(res.fromCache));
         setLoading(false);
+        setIsRefreshing(false);
+        if (shouldForce) {
+          showToast('最新の検索結果を再取得しました');
+        }
       })
       .catch((err) => {
         console.error('Search error:', err);
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [searchQuery, filter, provider, rawMode]);
+  }, [searchQuery, filter, provider, rawMode, refreshSeq, showToast]);
 
   // Spotify search
   useEffect(() => {
     if (!searchQuery.trim() || provider !== 'spotify') return;
     let active = true;
+    const shouldForce = forceRefreshPendingRef.current;
+    forceRefreshPendingRef.current = false;
     setLoading(true);
+    if (shouldForce) setIsRefreshing(true);
 
     api
-      .searchSpotify(searchQuery, rawMode)
+      .searchSpotify(searchQuery, rawMode, shouldForce)
       .then((res) => {
         if (!active) return;
         setSpotifyTracks(res.tracks || []);
         setMatchedAlias(res.matchedAlias || null);
         setEffectiveQuery(res.effectiveQuery || null);
+        setResultFromCache(Boolean(res.fromCache));
         setLoading(false);
+        setIsRefreshing(false);
+        if (shouldForce) {
+          showToast('最新の検索結果を再取得しました');
+        }
       })
       .catch((err) => {
         console.error('Spotify search error:', err);
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [searchQuery, provider, rawMode]);
+  }, [searchQuery, provider, rawMode, refreshSeq, showToast]);
+
+  const handleForceRefresh = () => {
+    const clean = (searchQuery || inputVal).trim();
+    if (!clean || isRefreshing) return;
+    forceRefreshPendingRef.current = true;
+    setRefreshSeq((n) => n + 1);
+    api.getSuggestionsWithConversions(clean, true).then((res) => {
+      setSuggestions(res.suggestions || []);
+      if (res.conversions && res.conversions.length > 0) {
+        setLocalConversions(res.conversions);
+      }
+    }).catch(() => {});
+  };
 
   const executeSearch = (q: string, useRaw = false) => {
     const clean = q.trim();
     if (!clean) return;
+    const isSameQuery =
+      clean.toLowerCase() === searchQuery.trim().toLowerCase() && useRaw === rawMode;
     setRawMode(useRaw);
     setIsSuggestOpen(false);
     setInputVal(clean);
-    setSearchQuery(clean);
+    if (isSameQuery) {
+      forceRefreshPendingRef.current = true;
+      setRefreshSeq((n) => n + 1);
+      api.getSuggestionsWithConversions(clean, true).catch(() => {});
+    } else {
+      setSearchQuery(clean);
+    }
     addRecentSearch(clean);
     api.recordSearchTelemetry(clean);
   };
@@ -324,28 +387,45 @@ export const SearchView: React.FC = () => {
     <div className="space-y-6 pb-24">
       {/* Spotify-style Search Header & White Input Bar (IMG_0222, IMG_0223) */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">検索</h1>
           {hasQuery && (
-            <div className="flex items-center gap-1 p-1 bg-neutral-900 rounded-full">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setProvider('innertube')}
-                className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                  provider === 'innertube' ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'
-                }`}
+                onClick={handleForceRefresh}
+                disabled={loading || isRefreshing}
+                title="キャッシュを使わず最新の検索結果を即時再取得"
+                className="px-3 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-700/80 hover:border-red-500/50 text-xs font-bold text-neutral-200 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
               >
-                YouTube Music
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-red-400' : ''}`} />
+                <span>再取得</span>
+                {resultFromCache && !isRefreshing && (
+                  <span className="text-[10px] font-normal text-neutral-400 hidden sm:inline">
+                    (キャッシュ)
+                  </span>
+                )}
               </button>
-              <button
-                type="button"
-                onClick={() => setProvider('spotify')}
-                className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                  provider === 'spotify' ? 'bg-emerald-600 text-white' : 'text-neutral-400 hover:text-white'
-                }`}
-              >
-                Spotify
-              </button>
+              <div className="flex items-center gap-1 p-1 bg-neutral-900 rounded-full">
+                <button
+                  type="button"
+                  onClick={() => setProvider('innertube')}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
+                    provider === 'innertube' ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  YouTube Music
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProvider('spotify')}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
+                    provider === 'spotify' ? 'bg-emerald-600 text-white' : 'text-neutral-400 hover:text-white'
+                  }`}
+                >
+                  Spotify
+                </button>
+              </div>
             </div>
           )}
         </div>

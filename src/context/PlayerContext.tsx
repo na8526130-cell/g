@@ -11,7 +11,7 @@ import {
   LyricsData,
   TrackTimestampsData,
 } from '../types/music';
-import { api } from '../services/api';
+import { api, SyncedAccountLibrary } from '../services/api';
 import { equalizer } from '../services/equalizer';
 import { socialSocket } from '../services/socialSocket';
 import { getPlayableOfflineTrack } from '../services/offlineStorage';
@@ -258,7 +258,7 @@ interface PlayerContextType {
   openTrackDetailModal: (track: Track) => void;
   closeTrackDetailModal: () => void;
 
-  // Account & Real Stats System (偽はいらん)
+  // Account & Real Stats System + Cross-device Cloud Sync
   currentUser: { username: string; email?: string } | null;
   accountEmail: string | null;
   accountModalOpen: boolean;
@@ -266,6 +266,11 @@ interface PlayerContextType {
   registerUserAccount: (username: string, password: string, email?: string) => Promise<any>;
   loginUserAccount: (identifier: string, password: string) => Promise<any>;
   logoutAccount: () => void;
+  pinnedBestTracks: Track[];
+  setPinnedBestTracks: (tracks: Track[]) => void;
+  lastCloudSyncAt: string | null;
+  isSyncingCloud: boolean;
+  syncAccountNow: () => Promise<boolean>;
   stats: { totalAccessCount: number; totalAccountsCount: number; onlineCount: number };
   onlineCount: number;
   refreshStats: () => Promise<void>;
@@ -389,6 +394,8 @@ const STORAGE_KEYS = {
   FOLDERS: 'yt_music_folders_v1',
   FLOATING_LYRICS: 'yt_music_floating_lyrics_v1',
   CANVAS_ENABLED: 'yt_music_canvas_enabled_v1',
+  PINNED_BEST4: 'yt_music_pinned_best4_v1',
+  LAST_CLOUD_SYNC_PREFIX: 'yt_music_last_cloud_sync_v1:',
 };
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -665,6 +672,30 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       localStorage.setItem(STORAGE_KEYS.FOLDERS, JSON.stringify(userFolders));
     } catch {}
   }, [userFolders]);
+
+  const [pinnedBestTracks, setPinnedBestTracksState] = useState<Track[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.PINNED_BEST4);
+      const list = saved ? JSON.parse(saved) : [];
+      return Array.isArray(list) ? list.map(normalizeTrack).slice(0, 4) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const setPinnedBestTracks = useCallback((tracks: Track[]) => {
+    const clean = Array.isArray(tracks) ? tracks.map(normalizeTrack).slice(0, 4) : [];
+    setPinnedBestTracksState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.PINNED_BEST4, JSON.stringify(clean));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.PINNED_BEST4, JSON.stringify(pinnedBestTracks));
+    } catch {}
+  }, [pinnedBestTracks]);
 
   const [playbackContextLabel, setPlaybackContextLabel] = useState<{
     source: string;
@@ -1256,14 +1287,294 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, []);
 
+  // Cross-device Library Cloud Sync helpers & state
+  const [lastCloudSyncAt, setLastCloudSyncAt] = useState<string | null>(() => {
+    try {
+      if (currentUser?.username) {
+        return localStorage.getItem(`${STORAGE_KEYS.LAST_CLOUD_SYNC_PREFIX}${currentUser.username.toLowerCase()}`);
+      }
+    } catch {}
+    return null;
+  });
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+  const lastCloudSyncAtRef = useRef<string | null>(lastCloudSyncAt);
+  const applyingRemoteSyncRef = useRef<boolean>(false);
+  const syncBootMountedRef = useRef<boolean>(false);
+  const hasPendingLocalPushRef = useRef<boolean>(false);
+  const pushDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const recordSyncTimestamp = useCallback((username: string, ts?: string | null) => {
+    const val = ts || new Date().toISOString();
+    lastCloudSyncAtRef.current = val;
+    setLastCloudSyncAt(val);
+    try {
+      localStorage.setItem(`${STORAGE_KEYS.LAST_CLOUD_SYNC_PREFIX}${username.toLowerCase()}`, val);
+    } catch {}
+  }, []);
+
+  const buildLibrarySnapshot = useCallback((): SyncedAccountLibrary => {
+    const listeningArr = Object.values(historyStats)
+      .sort((a, b) => (b.count || 0) - (a.count || 0))
+      .slice(0, 150);
+    return {
+      playlists: userPlaylists,
+      likedTracks,
+      likedAlbums,
+      likedPlaylists,
+      followedArtists,
+      recentTracks: recentTracks.slice(0, 50),
+      recentSearches: recentSearches.slice(0, 15),
+      userFolders,
+      hiddenTracks,
+      blockedArtists,
+      pinnedBestTracks: pinnedBestTracks.slice(0, 4),
+      listeningHistory: listeningArr,
+      settings: {
+        audioQuality,
+        floatingLyricsOverlay,
+        canvasEnabled,
+        backgroundPlaybackEnabled,
+      },
+    };
+  }, [
+    userPlaylists,
+    likedTracks,
+    likedAlbums,
+    likedPlaylists,
+    followedArtists,
+    recentTracks,
+    recentSearches,
+    userFolders,
+    hiddenTracks,
+    blockedArtists,
+    pinnedBestTracks,
+    historyStats,
+    audioQuality,
+    floatingLyricsOverlay,
+    canvasEnabled,
+    backgroundPlaybackEnabled,
+  ]);
+
+  const snapshotRef = useRef<SyncedAccountLibrary>(buildLibrarySnapshot());
+  snapshotRef.current = buildLibrarySnapshot();
+
+  const applyLibrarySnapshot = useCallback((lib: SyncedAccountLibrary) => {
+    if (!lib || typeof lib !== 'object') return;
+    applyingRemoteSyncRef.current = true;
+
+    if (Array.isArray(lib.playlists)) {
+      setUserPlaylists(
+        lib.playlists.map((p: any) => ({
+          ...p,
+          tracks: Array.isArray(p?.tracks) ? p.tracks.map(normalizeTrack) : [],
+        }))
+      );
+    }
+    if (Array.isArray(lib.likedTracks)) {
+      setLikedTracks(lib.likedTracks.map(normalizeTrack));
+    }
+    if (Array.isArray(lib.likedAlbums)) {
+      setLikedAlbums(
+        lib.likedAlbums.map((a: Album) => ({
+          ...a,
+          artist: normalizeArtistName(a.artist) || a.artist,
+        }))
+      );
+    }
+    if (Array.isArray(lib.likedPlaylists)) {
+      setLikedPlaylists(
+        lib.likedPlaylists.map((p: Playlist) => ({
+          ...p,
+          author: p.author ? normalizeArtistName(p.author) || p.author : p.author,
+        }))
+      );
+    }
+    if (Array.isArray(lib.followedArtists)) {
+      setFollowedArtists(
+        lib.followedArtists.map((a: Artist) => ({
+          ...a,
+          name: normalizeArtistName(a.name) || a.name,
+        }))
+      );
+    }
+    if (Array.isArray(lib.recentTracks)) {
+      setRecentTracks(lib.recentTracks.slice(0, 50).map(normalizeTrack));
+    }
+    if (Array.isArray(lib.recentSearches)) {
+      setRecentSearches(lib.recentSearches.filter((s) => typeof s === 'string' && s.trim()).slice(0, 15));
+    }
+    if (Array.isArray(lib.userFolders)) {
+      setUserFolders(lib.userFolders);
+    }
+    if (Array.isArray(lib.hiddenTracks)) {
+      setHiddenTracks(lib.hiddenTracks.map(normalizeTrack));
+    }
+    if (Array.isArray(lib.blockedArtists)) {
+      setBlockedArtists(lib.blockedArtists.filter((s) => typeof s === 'string' && s.trim()));
+    }
+    if (Array.isArray(lib.pinnedBestTracks)) {
+      setPinnedBestTracksState(lib.pinnedBestTracks.slice(0, 4).map(normalizeTrack));
+    }
+    if (Array.isArray(lib.listeningHistory)) {
+      const nextHist: Record<string, { track: Track; count: number; seconds: number }> = {};
+      lib.listeningHistory.forEach((entry: any) => {
+        if (entry?.track?.id) {
+          nextHist[entry.track.id] = {
+            track: normalizeTrack(entry.track),
+            count: Number(entry.count) || 1,
+            seconds: Number(entry.seconds) || 0,
+          };
+        }
+      });
+      setHistoryStats(nextHist);
+      try {
+        localStorage.setItem('yt_listening_history_v1', JSON.stringify(nextHist));
+      } catch {}
+    }
+    if (lib.settings && typeof lib.settings === 'object') {
+      if (lib.settings.audioQuality) {
+        setAudioQualityState(lib.settings.audioQuality);
+        try {
+          localStorage.setItem('yt_audio_quality', lib.settings.audioQuality);
+        } catch {}
+      }
+      if (typeof lib.settings.floatingLyricsOverlay === 'boolean') {
+        setFloatingLyricsOverlay(lib.settings.floatingLyricsOverlay);
+      }
+      if (typeof lib.settings.canvasEnabled === 'boolean') {
+        setCanvasEnabled(lib.settings.canvasEnabled);
+      }
+      if (typeof lib.settings.backgroundPlaybackEnabled === 'boolean') {
+        setBackgroundPlaybackEnabled(lib.settings.backgroundPlaybackEnabled);
+      }
+    }
+
+    setTimeout(() => {
+      applyingRemoteSyncRef.current = false;
+    }, 50);
+  }, []);
+
+  const mergeCloudAndLocalLibrary = useCallback(
+    (localLib: SyncedAccountLibrary, cloudLib: SyncedAccountLibrary): { merged: SyncedAccountLibrary; localHadExtra: boolean } => {
+      let localHadExtra = false;
+
+      const mergeById = <T extends { id?: string }>(cloudArr: T[] = [], localArr: T[] = [], maxLen?: number): T[] => {
+        const out: T[] = [];
+        const seen = new Set<string>();
+        cloudArr.forEach((item) => {
+          if (item?.id && !seen.has(item.id)) {
+            seen.add(item.id);
+            out.push(item);
+          }
+        });
+        localArr.forEach((item) => {
+          if (item?.id && !seen.has(item.id)) {
+            seen.add(item.id);
+            out.push(item);
+            localHadExtra = true;
+          }
+        });
+        return maxLen ? out.slice(0, maxLen) : out;
+      };
+
+      const mergeStrings = (cloudArr: string[] = [], localArr: string[] = [], maxLen?: number): string[] => {
+        const out: string[] = [];
+        const seen = new Set<string>();
+        cloudArr.forEach((s) => {
+          const clean = String(s || '').trim();
+          const k = clean.toLowerCase();
+          if (clean && !seen.has(k)) {
+            seen.add(k);
+            out.push(clean);
+          }
+        });
+        localArr.forEach((s) => {
+          const clean = String(s || '').trim();
+          const k = clean.toLowerCase();
+          if (clean && !seen.has(k)) {
+            seen.add(k);
+            out.push(clean);
+            localHadExtra = true;
+          }
+        });
+        return maxLen ? out.slice(0, maxLen) : out;
+      };
+
+      // Merge playlists carefully: skip default empty 'favorites' placeholder on guest device if cloud already has playlists
+      const cloudPls = Array.isArray(cloudLib.playlists) ? cloudLib.playlists : [];
+      const localPls = Array.isArray(localLib.playlists) ? localLib.playlists : [];
+      const mergedPlsMap = new Map<string, any>();
+      cloudPls.forEach((pl) => {
+        if (pl?.id) mergedPlsMap.set(pl.id, pl);
+      });
+      localPls.forEach((pl) => {
+        if (!pl?.id) return;
+        const isEmptyDefaultFav = pl.id === 'favorites' && (!pl.tracks || pl.tracks.length === 0);
+        if (isEmptyDefaultFav && cloudPls.length > 0) return;
+        const existing = mergedPlsMap.get(pl.id);
+        if (!existing) {
+          mergedPlsMap.set(pl.id, pl);
+          localHadExtra = true;
+        } else {
+          const mergedTracks = mergeById(existing.tracks || [], pl.tracks || []);
+          mergedPlsMap.set(pl.id, { ...existing, tracks: mergedTracks });
+        }
+      });
+
+      // Merge listeningHistory
+      const histMap = new Map<string, { track: Track; count: number; seconds: number }>();
+      (cloudLib.listeningHistory || []).forEach((h: any) => {
+        if (h?.track?.id) histMap.set(h.track.id, h);
+      });
+      (localLib.listeningHistory || []).forEach((h: any) => {
+        if (!h?.track?.id) return;
+        const cur = histMap.get(h.track.id);
+        if (!cur) {
+          histMap.set(h.track.id, h);
+          localHadExtra = true;
+        } else if ((h.count || 0) > (cur.count || 0) || (h.seconds || 0) > (cur.seconds || 0)) {
+          histMap.set(h.track.id, {
+            track: cur.track,
+            count: Math.max(cur.count || 0, h.count || 0),
+            seconds: Math.max(cur.seconds || 0, h.seconds || 0),
+          });
+          localHadExtra = true;
+        }
+      });
+
+      const merged: SyncedAccountLibrary = {
+        playlists: Array.from(mergedPlsMap.values()),
+        likedTracks: mergeById(cloudLib.likedTracks || [], localLib.likedTracks || []),
+        likedAlbums: mergeById(cloudLib.likedAlbums || [], localLib.likedAlbums || []),
+        likedPlaylists: mergeById(cloudLib.likedPlaylists || [], localLib.likedPlaylists || []),
+        followedArtists: mergeById(cloudLib.followedArtists || [], localLib.followedArtists || []),
+        recentTracks: mergeById(localLib.recentTracks || [], cloudLib.recentTracks || [], 50),
+        recentSearches: mergeStrings(localLib.recentSearches || [], cloudLib.recentSearches || [], 15),
+        userFolders: mergeById(cloudLib.userFolders || [], localLib.userFolders || []),
+        hiddenTracks: mergeById(cloudLib.hiddenTracks || [], localLib.hiddenTracks || []),
+        blockedArtists: mergeStrings(cloudLib.blockedArtists || [], localLib.blockedArtists || []),
+        pinnedBestTracks: mergeById(cloudLib.pinnedBestTracks || [], localLib.pinnedBestTracks || [], 4),
+        listeningHistory: Array.from(histMap.values())
+          .sort((a, b) => (b.count || 0) - (a.count || 0))
+          .slice(0, 150),
+        settings: cloudLib.settings || localLib.settings,
+      };
+
+      return { merged, localHadExtra };
+    },
+    []
+  );
+
   // Register account with username, password, arbitrary email (no example)
   const registerUserAccount = useCallback(
     async (username: string, password: string, email?: string) => {
+      const snapshot = snapshotRef.current;
       const res = await api.registerAccount({
         username: username.trim(),
         password: password.trim(),
         email: email?.trim() || undefined,
-        playlists: userPlaylists,
+        playlists: snapshot.playlists,
+        library: snapshot,
       });
 
       const user = {
@@ -1271,6 +1582,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         email: res.account.email || '',
       };
       setCurrentUser(user);
+      recordSyncTimestamp(user.username, res.account?.libraryUpdatedAt || new Date().toISOString());
 
       if (res.stats) {
         setStats(res.stats);
@@ -1285,46 +1597,63 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       return res;
     },
-    [userPlaylists]
+    [recordSyncTimestamp]
   );
 
-  // Login account
-  const loginUserAccount = useCallback(async (identifier: string, password: string) => {
-    const res = await api.loginAccount({
-      identifier: identifier.trim(),
-      password: password.trim(),
-    });
+  // Login account & merge/hydrate cross-device library
+  const loginUserAccount = useCallback(
+    async (identifier: string, password: string) => {
+      const res = await api.loginAccount({
+        identifier: identifier.trim(),
+        password: password.trim(),
+      });
 
-    const user = {
-      username: res.account.username,
-      email: res.account.email || '',
-    };
-    setCurrentUser(user);
+      const user = {
+        username: res.account.username,
+        email: res.account.email || '',
+      };
+      setCurrentUser(user);
 
-    if (res.account.playlists && Array.isArray(res.account.playlists) && res.account.playlists.length > 0) {
-      setUserPlaylists(res.account.playlists);
-    }
+      const cloudLib: SyncedAccountLibrary = res.account.library || {
+        playlists: Array.isArray(res.account.playlists) ? res.account.playlists : [],
+      };
+      const localLib = snapshotRef.current;
+      const { merged, localHadExtra } = mergeCloudAndLocalLibrary(localLib, cloudLib);
+      applyLibrarySnapshot(merged);
 
-    if (res.isAdmin || res.account?.role === 'admin') {
-      setIsAdmin(true);
-      try {
-        localStorage.setItem('yt_music_is_admin_v1', 'true');
-      } catch {}
-    }
-
-    if (res.stats) {
-      setStats(res.stats);
-    }
-
-    try {
-      localStorage.setItem('yt_music_user_session_v1', JSON.stringify(user));
-      if (user.email) {
-        localStorage.setItem('yt_music_user_email_v1', user.email);
+      if (localHadExtra || !res.account.library) {
+        try {
+          const syncRes = await api.syncAccountLibrary(user.username, merged);
+          recordSyncTimestamp(user.username, syncRes?.libraryUpdatedAt || res.account.libraryUpdatedAt);
+        } catch {
+          recordSyncTimestamp(user.username, res.account.libraryUpdatedAt);
+        }
+      } else {
+        recordSyncTimestamp(user.username, res.account.libraryUpdatedAt);
       }
-    } catch {}
 
-    return res;
-  }, []);
+      if (res.isAdmin || res.account?.role === 'admin') {
+        setIsAdmin(true);
+        try {
+          localStorage.setItem('yt_music_is_admin_v1', 'true');
+        } catch {}
+      }
+
+      if (res.stats) {
+        setStats(res.stats);
+      }
+
+      try {
+        localStorage.setItem('yt_music_user_session_v1', JSON.stringify(user));
+        if (user.email) {
+          localStorage.setItem('yt_music_user_email_v1', user.email);
+        }
+      } catch {}
+
+      return res;
+    },
+    [mergeCloudAndLocalLibrary, applyLibrarySnapshot, recordSyncTimestamp]
+  );
 
   // Admin Master Login with password @zeromusic
   const [isAdmin, setIsAdmin] = useState<boolean>(() => {
@@ -1350,6 +1679,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const logoutAccount = useCallback(() => {
+    if (pushDebounceTimerRef.current) {
+      clearTimeout(pushDebounceTimerRef.current);
+      pushDebounceTimerRef.current = null;
+    }
+    hasPendingLocalPushRef.current = false;
+    lastCloudSyncAtRef.current = null;
+    setLastCloudSyncAt(null);
     setCurrentUser(null);
     setIsAdmin(false);
     try {
@@ -1359,12 +1695,152 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch {}
   }, []);
 
-  // Auto-sync playlists to cloud when registered
-  useEffect(() => {
-    if (currentUser?.username && userPlaylists.length > 0) {
-      api.syncAccountPlaylists(currentUser.username, userPlaylists).catch(() => {});
+  // Pull newer cloud library updates from another device (or merge once if first time syncing this browser)
+  const pullCloudLibraryIfNewer = useCallback(async (): Promise<boolean> => {
+    const uname = currentUser?.username;
+    if (!uname || uname === 'admin') return false;
+    try {
+      const profile = await api.getAccountProfile(uname);
+      if (!profile?.exists || !profile.account) return false;
+      const serverUpdatedAt: string | undefined = profile.account.libraryUpdatedAt;
+      const cloudLib: SyncedAccountLibrary = profile.account.library || {
+        playlists: profile.account.playlists || [],
+      };
+
+      const savedLocalSyncTs = (() => {
+        try {
+          return localStorage.getItem(`${STORAGE_KEYS.LAST_CLOUD_SYNC_PREFIX}${uname.toLowerCase()}`);
+        } catch {
+          return lastCloudSyncAtRef.current;
+        }
+      })();
+
+      if (!savedLocalSyncTs) {
+        const { merged, localHadExtra } = mergeCloudAndLocalLibrary(snapshotRef.current, cloudLib);
+        applyLibrarySnapshot(merged);
+        if (localHadExtra || !profile.account.library) {
+          const pushRes = await api.syncAccountLibrary(uname, merged);
+          recordSyncTimestamp(uname, pushRes?.libraryUpdatedAt || serverUpdatedAt);
+        } else {
+          recordSyncTimestamp(uname, serverUpdatedAt);
+        }
+        return true;
+      }
+
+      if (hasPendingLocalPushRef.current) {
+        return false;
+      }
+
+      if (serverUpdatedAt && new Date(serverUpdatedAt).getTime() > new Date(savedLocalSyncTs).getTime() + 500) {
+        applyLibrarySnapshot(cloudLib);
+        recordSyncTimestamp(uname, serverUpdatedAt);
+        return true;
+      }
+
+      return false;
+    } catch {
+      return false;
     }
-  }, [currentUser?.username, userPlaylists]);
+  }, [currentUser?.username, mergeCloudAndLocalLibrary, applyLibrarySnapshot, recordSyncTimestamp]);
+
+  const syncAccountNow = useCallback(async (): Promise<boolean> => {
+    const uname = currentUser?.username;
+    if (!uname || uname === 'admin') return false;
+    setIsSyncingCloud(true);
+    try {
+      const pulled = await pullCloudLibraryIfNewer();
+      if (!pulled || hasPendingLocalPushRef.current) {
+        const res = await api.syncAccountLibrary(uname, snapshotRef.current);
+        hasPendingLocalPushRef.current = false;
+        recordSyncTimestamp(uname, res?.libraryUpdatedAt);
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  }, [currentUser?.username, pullCloudLibraryIfNewer, recordSyncTimestamp]);
+
+  // Debounced auto-push whenever local library/favorites/history/settings change while logged in
+  useEffect(() => {
+    if (!syncBootMountedRef.current) {
+      syncBootMountedRef.current = true;
+      return;
+    }
+    const uname = currentUser?.username;
+    if (!uname || uname === 'admin' || applyingRemoteSyncRef.current) return;
+
+    hasPendingLocalPushRef.current = true;
+    if (pushDebounceTimerRef.current) {
+      clearTimeout(pushDebounceTimerRef.current);
+    }
+    pushDebounceTimerRef.current = setTimeout(async () => {
+      pushDebounceTimerRef.current = null;
+      if (applyingRemoteSyncRef.current) return;
+      setIsSyncingCloud(true);
+      try {
+        const res = await api.syncAccountLibrary(uname, snapshotRef.current);
+        hasPendingLocalPushRef.current = false;
+        recordSyncTimestamp(uname, res?.libraryUpdatedAt);
+      } catch {
+      } finally {
+        setIsSyncingCloud(false);
+      }
+    }, 900);
+
+    return () => {
+      if (pushDebounceTimerRef.current) {
+        clearTimeout(pushDebounceTimerRef.current);
+      }
+    };
+  }, [
+    currentUser?.username,
+    userPlaylists,
+    likedTracks,
+    likedAlbums,
+    likedPlaylists,
+    followedArtists,
+    recentTracks,
+    recentSearches,
+    userFolders,
+    hiddenTracks,
+    blockedArtists,
+    pinnedBestTracks,
+    historyStats,
+    audioQuality,
+    floatingLyricsOverlay,
+    canvasEnabled,
+    backgroundPlaybackEnabled,
+    recordSyncTimestamp,
+  ]);
+
+  // Auto-pull on startup, tab return, window focus, and periodic 25s polling across devices
+  useEffect(() => {
+    const uname = currentUser?.username;
+    if (!uname || uname === 'admin') return;
+
+    pullCloudLibraryIfNewer();
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        pullCloudLibraryIfNewer();
+      }
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    const pollTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        pullCloudLibraryIfNewer();
+      }
+    }, 25000);
+
+    return () => {
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+      clearInterval(pollTimer);
+    };
+  }, [currentUser?.username, pullCloudLibraryIfNewer]);
 
   const accountEmail = currentUser?.email || null;
 
@@ -3450,6 +3926,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         registerUserAccount,
         loginUserAccount,
         logoutAccount,
+        pinnedBestTracks,
+        setPinnedBestTracks,
+        lastCloudSyncAt,
+        isSyncingCloud,
+        syncAccountNow,
         stats,
         onlineCount,
         refreshStats,
