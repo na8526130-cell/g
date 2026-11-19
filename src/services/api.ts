@@ -65,6 +65,25 @@ export const api = {
     return res.json();
   },
 
+  async getMvCanvas(
+    videoId: string,
+    title?: string,
+    artist?: string
+  ): Promise<{ hasMv: boolean; videoId: string | null; title?: string; fromServer?: boolean }> {
+    try {
+      const params = new URLSearchParams();
+      if (videoId) params.append('id', videoId);
+      if (title) params.append('title', title);
+      if (artist) params.append('artist', artist);
+      const res = await fetch(`/api/music/mv-canvas?${params.toString()}`);
+      if (!res.ok) throw new Error('mv-canvas unavailable');
+      const data = await res.json();
+      return { ...data, fromServer: true };
+    } catch {
+      return { hasMv: false, videoId: null, fromServer: false };
+    }
+  },
+
   async searchSpotify(
     query: string,
     raw = false
@@ -248,6 +267,31 @@ export const api = {
     const res = await fetch(`/api/music/playlist/${playlistId}`);
     if (!res.ok) throw new Error('Failed to fetch playlist');
     return res.json();
+  },
+
+  async getTrackDetails(videoId: string): Promise<{
+    track: Track;
+    details?: {
+      publishedDate?: string;
+      viewCount?: number;
+      viewCountText?: string;
+      likeCount?: number;
+      description?: string;
+      category?: string;
+      keywords?: string[];
+      channelId?: string;
+      albumTitle?: string;
+      albumId?: string;
+      relatedArtists?: { id?: string; name: string; thumbnail?: string }[];
+    };
+  } | null> {
+    try {
+      const res = await fetch(`/api/music/track/${encodeURIComponent(videoId)}?rich=1`);
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
   },
 
   async getInnerTubeLogs(): Promise<{ logs: InnerTubeLog[] }> {

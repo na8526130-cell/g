@@ -1,390 +1,755 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { X, Download, Share2, Copy, Sparkles, Music, Check } from 'lucide-react';
-import { Track, LyricsData, SyncedLine } from '../types/music';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
+import {
+  X,
+  Download,
+  Share2,
+  Link2,
+  Check,
+  Pencil,
+  MoreHorizontal,
+  QrCode,
+} from 'lucide-react';
+import { Track, LyricsData, SyncedLine, Artist } from '../types/music';
 import { toBase64Image } from '../utils/imageBase64';
+import { usePlayer, VisualShareTarget } from '../context/PlayerContext';
 
 interface StoryCardGeneratorModalProps {
   isOpen: boolean;
   onClose: () => void;
   track: Track | null;
   lyrics: LyricsData | null;
+  target?: VisualShareTarget | null;
 }
+
+type CardTab = 'song' | 'lyrics';
+
+interface BgSwatch {
+  id: string;
+  label: string;
+  type: 'blur' | 'solid' | 'gradient';
+  primary: string;
+  secondary?: string;
+  textColor: string;
+}
+
+const SONG_SWATCHES: BgSwatch[] = [
+  { id: 'blur', label: 'アート背景', type: 'blur', primary: '#18181b', textColor: '#ffffff' },
+  { id: 'crimson', label: 'レッド', type: 'solid', primary: '#dc2626', textColor: '#0a0a0a' },
+  {
+    id: 'crimson_grad',
+    label: 'ダークレッド',
+    type: 'gradient',
+    primary: '#7f1d1d',
+    secondary: '#09090b',
+    textColor: '#ffffff',
+  },
+  { id: 'obsidian', label: 'ブラック', type: 'solid', primary: '#18181b', textColor: '#ffffff' },
+];
+
+const LYRICS_SWATCHES: BgSwatch[] = [
+  { id: 'vivid_red', label: 'スカーレット', type: 'solid', primary: '#e11d48', textColor: '#09090b' },
+  { id: 'red_classic', label: 'クリムゾン', type: 'solid', primary: '#dc2626', textColor: '#ffffff' },
+  { id: 'amber', label: 'ゴールド', type: 'solid', primary: '#d97706', textColor: '#09090b' },
+  {
+    id: 'night_grad',
+    label: 'ナイト',
+    type: 'gradient',
+    primary: '#450a0a',
+    secondary: '#09090b',
+    textColor: '#ffffff',
+  },
+];
+
+const ARTIST_SWATCHES: BgSwatch[] = [
+  { id: 'amber', label: 'アンバー', type: 'solid', primary: '#c88a04', textColor: '#ffffff' },
+  {
+    id: 'crimson_grad',
+    label: 'クリムゾン',
+    type: 'gradient',
+    primary: '#991b1b',
+    secondary: '#12080a',
+    textColor: '#ffffff',
+  },
+  { id: 'black', label: 'ブラック', type: 'solid', primary: '#111114', textColor: '#ffffff' },
+];
 
 export const StoryCardGeneratorModal: React.FC<StoryCardGeneratorModalProps> = ({
   isOpen,
   onClose,
   track,
   lyrics,
+  target,
 }) => {
+  const { openZeroCodeModal, showToast } = usePlayer();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const effectiveTarget: VisualShareTarget | null = useMemo(() => {
+    if (target) return target;
+    if (track) return { type: 'track', track };
+    return null;
+  }, [target, track]);
+
+  const isArtistMode = effectiveTarget?.type === 'artist' && Boolean(effectiveTarget.artist);
+  const activeTrack: Track | null =
+    effectiveTarget?.type === 'track'
+      ? effectiveTarget.track || track
+      : effectiveTarget?.type === 'playlist'
+      ? effectiveTarget.playlist?.tracks?.[0] || track
+      : track;
+  const activeArtist: Artist | undefined = effectiveTarget?.artist;
+
+  const [cardTab, setCardTab] = useState<CardTab>('song');
+  const [selectedSwatchIdx, setSelectedSwatchIdx] = useState<number>(0);
+  const [editorOpen, setEditorOpen] = useState<boolean>(false);
   const [selectedQuote, setSelectedQuote] = useState<string>('');
-  const [themeColor, setThemeColor] = useState<string>('#ef4444'); // red default
-  const [copied, setCopied] = useState<boolean>(false);
+  const [selectedLineIndices, setSelectedLineIndices] = useState<number[]>([]);
+  const [copiedLink, setCopiedLink] = useState<boolean>(false);
+  const [copiedOther, setCopiedOther] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
 
-  // Auto-fill first favorite lyric line if available
-  useEffect(() => {
-    if (lyrics && lyrics.syncedLyrics && lyrics.syncedLyrics.length > 0) {
-      const meaningfulLine = lyrics.syncedLyrics.find((l: SyncedLine) => l.text.trim().length > 3);
-      if (meaningfulLine) {
-        setSelectedQuote(meaningfulLine.text);
-      }
-    } else {
-      setSelectedQuote('君と聴くこのメロディが、ずっと続けばいいのに。');
-    }
-  }, [lyrics, track?.id]);
+  const swatches = isArtistMode
+    ? ARTIST_SWATCHES
+    : cardTab === 'lyrics'
+    ? LYRICS_SWATCHES
+    : SONG_SWATCHES;
+  const activeSwatch = swatches[selectedSwatchIdx % swatches.length] || swatches[0];
 
-  // Redraw canvas whenever track, quote, or theme changes
   useEffect(() => {
-    if (!isOpen || !track || !canvasRef.current) return;
+    setSelectedSwatchIdx(0);
+  }, [cardTab, isArtistMode]);
+
+  // Populate initial 3-4 lines from synced lyrics or fallback quote
+  useEffect(() => {
+    if (!isOpen) return;
+    if (lyrics?.syncedLyrics && lyrics.syncedLyrics.length > 0) {
+      const validIndices: number[] = [];
+      for (let i = 0; i < lyrics.syncedLyrics.length && validIndices.length < 3; i++) {
+        if (lyrics.syncedLyrics[i].text.trim().length > 2) {
+          validIndices.push(i);
+        }
+      }
+      if (validIndices.length > 0) {
+        setSelectedLineIndices(validIndices);
+        setSelectedQuote(
+          validIndices.map((idx) => lyrics.syncedLyrics![idx].text.trim()).join('\n')
+        );
+        return;
+      }
+    }
+    if (lyrics?.lyrics) {
+      const lines = lyrics.lyrics
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 2)
+        .slice(0, 3);
+      if (lines.length > 0) {
+        setSelectedQuote(lines.join('\n'));
+        setSelectedLineIndices([]);
+        return;
+      }
+    }
+    setSelectedLineIndices([]);
+    setSelectedQuote(
+      activeTrack
+        ? `${activeTrack.title}\n心に響くサウンドを聴いています`
+        : 'お気に入りのサウンドをシェア'
+    );
+  }, [isOpen, lyrics, activeTrack?.id]);
+
+  const toggleLyricLine = (idx: number) => {
+    if (!lyrics?.syncedLyrics) return;
+    setSelectedLineIndices((prev) => {
+      let next: number[];
+      if (prev.includes(idx)) {
+        next = prev.filter((i) => i !== idx);
+      } else {
+        next = [...prev, idx].slice(-4).sort((a, b) => a - b);
+      }
+      const joined = next.map((i) => lyrics.syncedLyrics![i].text.trim()).join('\n');
+      if (joined) setSelectedQuote(joined);
+      return next;
+    });
+  };
+
+  const shareTitle = isArtistMode
+    ? activeArtist?.name || 'アーティスト'
+    : effectiveTarget?.type === 'playlist'
+    ? effectiveTarget.playlist?.name || 'プレイリスト'
+    : activeTrack?.title || '';
+
+  const shareSubtitle = isArtistMode
+    ? 'zero-musicのアーティスト'
+    : effectiveTarget?.type === 'playlist'
+    ? `プレイリスト · ${effectiveTarget.playlist?.tracks.length || 0}曲`
+    : activeTrack?.artist || '';
+
+  const shareImage = isArtistMode
+    ? activeArtist?.thumbnail || ''
+    : activeTrack?.thumbnail || '';
+
+  const shareUrl = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    const origin = window.location.origin;
+    if (isArtistMode && activeArtist?.id) {
+      return `${origin}/?artist=${encodeURIComponent(activeArtist.id)}`;
+    }
+    if (activeTrack?.id) {
+      return `${origin}/?track=${encodeURIComponent(activeTrack.id)}`;
+    }
+    return origin;
+  }, [isArtistMode, activeArtist?.id, activeTrack?.id]);
+
+  // Render high-resolution canvas (900 x 1440)
+  useEffect(() => {
+    if (!isOpen || !effectiveTarget || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // 1080 x 1920 Instagram Story Resolution
-    canvas.width = 1080;
-    canvas.height = 1920;
-
-    // Background gradient
-    const bgGrad = ctx.createLinearGradient(0, 0, 1080, 1920);
-    bgGrad.addColorStop(0, '#0a0a0f');
-    bgGrad.addColorStop(0.35, '#12121e');
-    bgGrad.addColorStop(0.7, '#1b0d18');
-    bgGrad.addColorStop(1, '#050508');
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, 1080, 1920);
-
-    // Glowing nebula circles
-    const radGrad1 = ctx.createRadialGradient(250, 450, 10, 250, 450, 600);
-    radGrad1.addColorStop(0, `${themeColor}66`);
-    radGrad1.addColorStop(1, 'transparent');
-    ctx.fillStyle = radGrad1;
-    ctx.fillRect(0, 0, 1080, 1920);
-
-    const radGrad2 = ctx.createRadialGradient(850, 1400, 20, 850, 1400, 700);
-    radGrad2.addColorStop(0, '#8b5cf655');
-    radGrad2.addColorStop(1, 'transparent');
-    ctx.fillStyle = radGrad2;
-    ctx.fillRect(0, 0, 1080, 1920);
+    const W = 900;
+    const H = 1440;
+    canvas.width = W;
+    canvas.height = H;
 
     let cancelled = false;
-    // Load track image as Base64 data URL so canvas stays untainted for PNG export
     const img = new Image();
-    toBase64Image(track.thumbnail).then((base64Src) => {
-      if (cancelled) return;
-      img.crossOrigin = 'anonymous';
-      img.src = base64Src || track.thumbnail;
-    });
+    if (shareImage) {
+      toBase64Image(shareImage)
+        .then((b64) => {
+          if (cancelled) return;
+          img.crossOrigin = 'anonymous';
+          img.src = b64 || shareImage;
+        })
+        .catch(() => {
+          if (!cancelled) renderCard();
+        });
+    }
+
+    const drawZeroLogo = (x: number, y: number, r: number, darkInk: boolean) => {
+      ctx.save();
+      ctx.fillStyle = darkInk ? '#09090b' : '#ffffff';
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = darkInk ? activeSwatch.primary : '#dc2626';
+      ctx.lineWidth = Math.max(3, r * 0.22);
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.56, -Math.PI * 0.75, Math.PI * 0.25);
+      ctx.stroke();
+
+      ctx.fillStyle = darkInk ? activeSwatch.primary : '#dc2626';
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    };
 
     const renderCard = () => {
       if (cancelled) return;
-      // Top Zero Music Branding
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 36px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('ZERO MUSIC • NOW PLAYING', 540, 180);
+      ctx.clearRect(0, 0, W, H);
 
-      ctx.fillStyle = '#9ca3af';
-      ctx.font = '24px -apple-system, BlinkMacSystemFont, sans-serif';
-      ctx.fillText('https://zeromusic.app', 540, 225);
+      // Base background
+      if (activeSwatch.type === 'blur' && img.complete && img.naturalWidth > 0) {
+        ctx.save();
+        ctx.filter = 'blur(42px) brightness(0.45) saturate(1.25)';
+        const scale = Math.max(W / img.naturalWidth, H / img.naturalHeight) * 1.15;
+        const dw = img.naturalWidth * scale;
+        const dh = img.naturalHeight * scale;
+        ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        ctx.restore();
 
-      // Artwork card shadow
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-      ctx.shadowBlur = 45;
-      ctx.shadowOffsetY = 25;
+        const overlay = ctx.createLinearGradient(0, 0, 0, H);
+        overlay.addColorStop(0, 'rgba(0,0,0,0.35)');
+        overlay.addColorStop(1, 'rgba(10,0,2,0.72)');
+        ctx.fillStyle = overlay;
+        ctx.fillRect(0, 0, W, H);
+      } else if (activeSwatch.type === 'gradient') {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, activeSwatch.primary);
+        g.addColorStop(1, activeSwatch.secondary || '#09090b');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      } else {
+        ctx.fillStyle = activeSwatch.primary;
+        ctx.fillRect(0, 0, W, H);
+      }
 
-      // Cover Art (680 x 680 with rounded corners)
-      const artX = (1080 - 680) / 2;
-      const artY = 320;
-      const artSize = 680;
-      const radius = 48;
+      if (isArtistMode) {
+        // Artist Share Card (IMG_0291 style)
+        ctx.fillStyle = 'rgba(10, 10, 12, 0.78)';
+        ctx.beginPath();
+        ctx.roundRect(78, 175, 744, 960, 28);
+        ctx.fill();
 
-      ctx.save();
+        // Circular artist image
+        const cx = W / 2;
+        const cy = 500;
+        const cr = 235;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        if (img.complete && img.naturalWidth > 0) {
+          const scale = Math.max((cr * 2) / img.naturalWidth, (cr * 2) / img.naturalHeight);
+          const dw = img.naturalWidth * scale;
+          const dh = img.naturalHeight * scale;
+          ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+        } else {
+          ctx.fillStyle = '#262626';
+          ctx.fillRect(cx - cr, cy - cr, cr * 2, cr * 2);
+        }
+        ctx.restore();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 54px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+        ctx.textAlign = 'left';
+        const aName = shareTitle.length > 18 ? `${shareTitle.slice(0, 17)}…` : shareTitle;
+        ctx.fillText(aName, 130, 845);
+
+        ctx.fillStyle = '#d4d4d8';
+        ctx.font = '500 32px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+        ctx.fillText('zero-musicのアーティスト', 130, 902);
+
+        drawZeroLogo(152, 1020, 24, false);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 34px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('zero-music', 194, 1031);
+        return;
+      }
+
+      if (cardTab === 'lyrics') {
+        // Lyrics Share Card (IMG_0293 style)
+        const darkInk = activeSwatch.textColor === '#09090b';
+        const ink = activeSwatch.textColor;
+        const subInk = darkInk ? 'rgba(9,9,11,0.72)' : 'rgba(255,255,255,0.78)';
+
+        // Top mini track cover + meta
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(72, 84, 104, 104, 14);
+        ctx.clip();
+        if (img.complete && img.naturalWidth > 0) {
+          ctx.drawImage(img, 72, 84, 104, 104);
+        } else {
+          ctx.fillStyle = '#262626';
+          ctx.fillRect(72, 84, 104, 104);
+        }
+        ctx.restore();
+
+        ctx.fillStyle = ink;
+        ctx.font = 'bold 34px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+        ctx.textAlign = 'left';
+        const tTitle = shareTitle.length > 19 ? `${shareTitle.slice(0, 18)}…` : shareTitle;
+        ctx.fillText(tTitle, 200, 128);
+
+        ctx.fillStyle = subInk;
+        ctx.font = '600 28px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+        const subTxt = `楽曲 · ${shareSubtitle}`.slice(0, 26);
+        ctx.fillText(subTxt, 200, 174);
+
+        // Large bold lyrics lines
+        ctx.fillStyle = ink;
+        ctx.font = '900 66px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+        const rawLines = (selectedQuote || shareTitle).split('\n').filter((l) => l.trim());
+        const wrappedLines: string[] = [];
+        for (const raw of rawLines) {
+          let curr = '';
+          for (const ch of raw) {
+            const test = curr + ch;
+            if (ctx.measureText(test).width > 740 && curr) {
+              wrappedLines.push(curr);
+              curr = ch;
+            } else {
+              curr = test;
+            }
+          }
+          if (curr) wrappedLines.push(curr);
+        }
+        const displayLines = wrappedLines.slice(0, 8);
+        const lineHeight = 96;
+        const blockH = displayLines.length * lineHeight;
+        let startY = Math.max(330, Math.round((H - 220 - blockH) / 2) + 80);
+
+        displayLines.forEach((line) => {
+          ctx.fillText(line, 72, startY);
+          startY += lineHeight;
+        });
+
+        // Footer branding
+        drawZeroLogo(98, H - 96, 26, darkInk);
+        ctx.fillStyle = ink;
+        ctx.font = 'bold 36px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('zero-music', 142, H - 83);
+        return;
+      }
+
+      // Song Share Card (IMG_0292 / IMG_0285 style)
+      // Inner rounded card over backdrop
+      ctx.fillStyle =
+        activeSwatch.type === 'blur' ? 'rgba(18, 18, 22, 0.72)' : 'rgba(12, 12, 16, 0.85)';
       ctx.beginPath();
-      ctx.moveTo(artX + radius, artY);
-      ctx.arcTo(artX + artSize, artY, artX + artSize, artY + artSize, radius);
-      ctx.arcTo(artX + artSize, artY + artSize, artX, artY + artSize, radius);
-      ctx.arcTo(artX, artY + artSize, artX, artY, radius);
-      ctx.arcTo(artX, artY, artX + artSize, artY, radius);
-      ctx.closePath();
-      ctx.clip();
+      ctx.roundRect(74, 150, 752, 1080, 32);
+      ctx.fill();
 
-      try {
+      // Square Artwork
+      const artSize = 640;
+      const artX = (W - artSize) / 2;
+      const artY = 205;
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 35;
+      ctx.shadowOffsetY = 16;
+      ctx.beginPath();
+      ctx.roundRect(artX, artY, artSize, artSize, 20);
+      ctx.clip();
+      if (img.complete && img.naturalWidth > 0) {
         ctx.drawImage(img, artX, artY, artSize, artSize);
-      } catch {
-        ctx.fillStyle = '#262626';
+      } else {
+        ctx.fillStyle = '#27272a';
         ctx.fillRect(artX, artY, artSize, artSize);
       }
       ctx.restore();
 
-      // Reset shadows
-      ctx.shadowColor = 'transparent';
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetY = 0;
-
-      // Track Title
+      // Title + Artist
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 54px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-      ctx.textAlign = 'center';
-      const truncatedTitle = track.title.length > 24 ? track.title.slice(0, 23) + '…' : track.title;
-      ctx.fillText(truncatedTitle, 540, 1100);
+      ctx.font = 'bold 50px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+      ctx.textAlign = 'left';
+      const sTitle = shareTitle.length > 18 ? `${shareTitle.slice(0, 17)}…` : shareTitle;
+      ctx.fillText(sTitle, 130, 945);
 
-      // Artist Name
-      ctx.fillStyle = themeColor;
-      ctx.font = '600 36px -apple-system, BlinkMacSystemFont, sans-serif';
-      const truncatedArtist = track.artist.length > 32 ? track.artist.slice(0, 31) + '…' : track.artist;
-      ctx.fillText(truncatedArtist, 540, 1165);
+      ctx.fillStyle = '#d4d4d8';
+      ctx.font = '500 36px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
+      const sSub = shareSubtitle.length > 26 ? `${shareSubtitle.slice(0, 25)}…` : shareSubtitle;
+      ctx.fillText(sSub, 130, 1005);
 
-      // Audio Spectrum Waveform graphic
-      const waveY = 1260;
-      const barCount = 38;
-      const barWidth = 14;
-      const barGap = 8;
-      const totalWaveWidth = barCount * (barWidth + barGap);
-      const startX = (1080 - totalWaveWidth) / 2;
-
-      for (let i = 0; i < barCount; i++) {
-        const heightFactor = Math.sin((i / barCount) * Math.PI) * 0.8 + 0.2;
-        const pseudoRand = ((i * 17) % 10) / 10;
-        const barH = 30 + heightFactor * 75 * (0.6 + pseudoRand * 0.4);
-        const bx = startX + i * (barWidth + barGap);
-
-        ctx.fillStyle = i % 2 === 0 ? themeColor : '#ffffffcc';
-        ctx.beginPath();
-        ctx.roundRect(bx, waveY - barH / 2, barWidth, barH, 7);
-        ctx.fill();
-      }
-
-      // Quote / Lyrics Box
-      if (selectedQuote.trim()) {
-        const quoteBoxY = 1420;
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.beginPath();
-        ctx.roundRect(140, quoteBoxY, 800, 240, 32);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        // Quotation mark icon
-        ctx.fillStyle = themeColor;
-        ctx.font = 'bold 70px Georgia, serif';
-        ctx.textAlign = 'left';
-        ctx.fillText('“', 180, quoteBoxY + 75);
-
-        // Quote text (word wrapped)
-        ctx.fillStyle = '#f3f4f6';
-        ctx.font = '500 34px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif';
-        ctx.textAlign = 'left';
-
-        const maxLineWidth = 680;
-        const words = selectedQuote;
-        let line = '';
-        let currentY = quoteBoxY + 95;
-
-        for (let n = 0; n < words.length; n++) {
-          const testLine = line + words[n];
-          const metrics = ctx.measureText(testLine);
-          if (metrics.width > maxLineWidth && n > 0) {
-            ctx.fillText(line, 220, currentY);
-            line = words[n];
-            currentY += 48;
-            if (currentY > quoteBoxY + 190) break;
-          } else {
-            line = testLine;
-          }
-        }
-        ctx.fillText(line, 220, currentY);
-      }
-
-      // Footer
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '24px -apple-system, BlinkMacSystemFont, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('Swipe up to listen on Zero Music 🎧', 540, 1800);
+      // zero-music badge
+      drawZeroLogo(156, 1118, 26, false);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 36px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillText('zero-music', 200, 1131);
     };
 
-    img.onload = renderCard;
-    img.onerror = renderCard;
+    if (!shareImage) {
+      renderCard();
+    } else {
+      img.onload = renderCard;
+      img.onerror = renderCard;
+    }
+
     return () => {
       cancelled = true;
     };
-  }, [isOpen, track, selectedQuote, themeColor]);
+  }, [
+    isOpen,
+    effectiveTarget,
+    cardTab,
+    activeSwatch,
+    selectedQuote,
+    shareImage,
+    shareTitle,
+    shareSubtitle,
+    isArtistMode,
+  ]);
 
-  if (!isOpen || !track) return null;
+  if (!isOpen || !effectiveTarget) return null;
 
-  const handleDownload = () => {
+  const handleCopyLink = () => {
+    if (!shareUrl) return;
+    navigator.clipboard?.writeText(shareUrl).catch(() => {});
+    setCopiedLink(true);
+    showToast('共有リンクをコピーしました', 'success', 2000);
+    setTimeout(() => setCopiedLink(false), 2200);
+  };
+
+  const handleDownloadPng = () => {
     if (!canvasRef.current) return;
     setIsExporting(true);
     try {
       const dataUrl = canvasRef.current.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `${track.title.replace(/[\/\\?%*:|"<>]/g, '_')}_story.png`;
-      link.href = dataUrl;
-      link.click();
+      const a = document.createElement('a');
+      a.download = `${shareTitle.replace(/[\/\\?%*:|"<>]/g, '_')}_zeromusic_card.png`;
+      a.href = dataUrl;
+      a.click();
+      showToast('カードをPNG画像として保存しました', 'success', 2200);
     } finally {
       setIsExporting(false);
     }
   };
 
-  const handleShare = async () => {
+  const handleNativeOrImageShare = async () => {
     if (!canvasRef.current) return;
     try {
       canvasRef.current.toBlob(async (blob) => {
         if (!blob) return;
-        const file = new File([blob], 'story.png', { type: 'image/png' });
+        const file = new File([blob], 'zeromusic-card.png', { type: 'image/png' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({
-            title: `${track.title} - ${track.artist}`,
-            text: `Zero Musicで「${track.title}」を再生中！`,
+            title: `${shareTitle} | zero-music`,
+            text: `${shareTitle} - ${shareSubtitle}`,
+            url: shareUrl,
             files: [file],
           });
+        } else if (navigator.share) {
+          await navigator.share({
+            title: `${shareTitle} | zero-music`,
+            url: shareUrl,
+          });
         } else {
-          // Fallback to clipboard
-          await navigator.clipboard.write([
-            new ClipboardItem({ 'image/png': blob }),
-          ]);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2500);
+          handleDownloadPng();
+          setCopiedOther(true);
+          setTimeout(() => setCopiedOther(false), 2000);
         }
       });
     } catch {
-      handleDownload();
+      handleDownloadPng();
+    }
+  };
+
+  const handleOpenZeroCode = () => {
+    onClose();
+    if (isArtistMode && activeArtist) {
+      openZeroCodeModal({
+        type: 'artist',
+        title: activeArtist.name,
+        subtitle: 'アーティスト',
+        imageUrl: activeArtist.thumbnail,
+        url: shareUrl,
+        codeValue: `zeromusic:artist:${activeArtist.id}`,
+        artistId: activeArtist.id,
+      });
+    } else if (activeTrack) {
+      openZeroCodeModal({
+        type: 'track',
+        title: activeTrack.title,
+        subtitle: activeTrack.artist,
+        imageUrl: activeTrack.thumbnail,
+        url: shareUrl,
+        codeValue: `zeromusic:track:${activeTrack.id}`,
+        trackId: activeTrack.id,
+      });
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-3xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col md:flex-row shadow-2xl">
-        {/* Left: Preview Canvas */}
-        <div className="p-6 bg-neutral-950 flex flex-col items-center justify-center border-b md:border-b-0 md:border-r border-neutral-800/80">
-          <div className="relative w-48 sm:w-56 aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border border-neutral-700/80 ring-4 ring-neutral-800/50">
-            <canvas
-              ref={canvasRef}
-              className="w-full h-full object-cover"
-            />
-          </div>
-          <span className="text-[11px] text-neutral-500 font-mono mt-3">
-            9:16 Instagram Stories (1080×1920)
-          </span>
+    <div
+      className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#18181c] border-t sm:border border-white/10 rounded-t-3xl sm:rounded-3xl w-full max-w-md max-h-[92vh] overflow-y-auto shadow-2xl flex flex-col animate-in slide-in-from-bottom duration-200"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Drag handle & close */}
+        <div className="pt-3 pb-1 px-5 flex items-center justify-between">
+          <div className="w-8" />
+          <div className="w-10 h-1 rounded-full bg-neutral-600" />
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 cursor-pointer"
+            aria-label="閉じる"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Right: Controls & Quote editor */}
-        <div className="flex-1 p-6 flex flex-col justify-between overflow-y-auto max-h-[500px] md:max-h-none space-y-6">
-          <div>
-            <div className="flex items-center justify-between pb-4 border-b border-neutral-800">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center text-white">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">ストーリーズ画像生成</h3>
-                  <p className="text-xs text-neutral-400">InstagramやX、LINEで映える楽曲カード</p>
-                </div>
-              </div>
+        {/* Visual Card Preview */}
+        <div className="px-6 pt-2 pb-4 flex flex-col items-center">
+          <div className="w-56 sm:w-64 aspect-[5/8] rounded-2xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] border border-white/10 bg-neutral-950">
+            <canvas ref={canvasRef} className="w-full h-full object-cover" />
+          </div>
+
+          {/* Segmented Toggle: 楽曲 / 歌詞 (only in Track mode) */}
+          {!isArtistMode && (
+            <div className="mt-5 w-full max-w-xs p-1 rounded-full bg-[#2a2a32] flex items-center">
               <button
                 type="button"
-                onClick={onClose}
-                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors"
+                onClick={() => setCardTab('song')}
+                className={`flex-1 py-2 rounded-full text-xs font-black transition-all cursor-pointer ${
+                  cardTab === 'song'
+                    ? 'bg-white text-black shadow'
+                    : 'text-neutral-300 hover:text-white'
+                }`}
               >
-                <X className="w-5 h-5" />
+                楽曲
+              </button>
+              <button
+                type="button"
+                onClick={() => setCardTab('lyrics')}
+                className={`flex-1 py-2 rounded-full text-xs font-black transition-all cursor-pointer ${
+                  cardTab === 'lyrics'
+                    ? 'bg-white text-black shadow'
+                    : 'text-neutral-300 hover:text-white'
+                }`}
+              >
+                歌詞
               </button>
             </div>
+          )}
 
-            {/* Quote Selector / Input */}
-            <div className="mt-5 space-y-3">
-              <label className="text-xs font-semibold text-neutral-300 flex items-center justify-between">
-                <span>お気に入りのフレーズ / 歌詞フレーズ</span>
-                <span className="text-[10px] text-neutral-500">{selectedQuote.length}/60文字</span>
-              </label>
-              <textarea
-                value={selectedQuote}
-                maxLength={60}
-                onChange={(e) => setSelectedQuote(e.target.value)}
-                placeholder="心に刺さる歌詞やコメントを入力..."
-                className="w-full bg-neutral-950 border border-neutral-800 rounded-xl p-3 text-xs text-white placeholder-neutral-600 focus:outline-none focus:border-red-500 resize-none h-20"
-              />
+          {/* Color Swatches + Edit Pencil */}
+          <div className="mt-4 flex items-center justify-center gap-3.5">
+            {swatches.map((sw, idx) => (
+              <button
+                key={sw.id}
+                type="button"
+                onClick={() => setSelectedSwatchIdx(idx)}
+                title={sw.label}
+                aria-label={sw.label}
+                className={`w-9 h-9 rounded-full transition-transform cursor-pointer overflow-hidden border-2 ${
+                  selectedSwatchIdx === idx
+                    ? 'border-white scale-110 shadow-lg'
+                    : 'border-white/25 opacity-80 hover:opacity-100'
+                }`}
+                style={
+                  sw.type === 'blur'
+                    ? undefined
+                    : sw.type === 'gradient'
+                    ? { background: `linear-gradient(180deg, ${sw.primary}, ${sw.secondary})` }
+                    : { backgroundColor: sw.primary }
+                }
+              >
+                {sw.type === 'blur' && shareImage && (
+                  <img
+                    src={shareImage}
+                    alt=""
+                    className="w-full h-full object-cover blur-[2px] scale-125"
+                  />
+                )}
+              </button>
+            ))}
 
-              {/* Quick lyric presets from actual synced lyrics if available */}
-              {lyrics && lyrics.syncedLyrics && lyrics.syncedLyrics.length > 0 && (
-                <div className="space-y-1.5 pt-1">
-                  <span className="text-[10px] text-neutral-400 font-medium">歌詞からワンタップ引用:</span>
-                  <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
-                    {lyrics.syncedLyrics
-                      .filter((l: SyncedLine) => l.text.trim().length > 4)
-                      .slice(0, 6)
-                      .map((line: SyncedLine, idx: number) => (
+            {!isArtistMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditorOpen((prev) => !prev);
+                  if (cardTab !== 'lyrics') setCardTab('lyrics');
+                }}
+                title="歌詞テキストをカスタマイズ"
+                aria-label="歌詞テキストをカスタマイズ"
+                className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors cursor-pointer ${
+                  editorOpen
+                    ? 'border-red-500 bg-red-600/25 text-white'
+                    : 'border-white/30 bg-neutral-800 text-neutral-200 hover:border-white'
+                }`}
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Expandable Lyric Line Selector / Customizer */}
+          {!isArtistMode && (editorOpen || cardTab === 'lyrics') && (
+            <div className="mt-4 w-full bg-neutral-900/90 border border-white/10 rounded-2xl p-3 space-y-2.5">
+              <div className="flex items-center justify-between text-[11px] font-bold text-neutral-300">
+                <span>歌詞カードに表示するフレーズ（最大4行）</span>
+                <button
+                  type="button"
+                  onClick={() => setEditorOpen((v) => !v)}
+                  className="text-red-400 hover:underline cursor-pointer"
+                >
+                  {editorOpen ? '編集欄を閉じる' : '直接編集'}
+                </button>
+              </div>
+
+              {editorOpen && (
+                <textarea
+                  rows={3}
+                  value={selectedQuote}
+                  onChange={(e) => setSelectedQuote(e.target.value)}
+                  placeholder="歌詞フレーズを入力（改行可）..."
+                  className="w-full bg-neutral-950 border border-white/15 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-red-500 resize-none"
+                />
+              )}
+
+              {lyrics?.syncedLyrics && lyrics.syncedLyrics.length > 0 && (
+                <div className="max-h-32 overflow-y-auto space-y-1 pr-1">
+                  {lyrics.syncedLyrics
+                    .map((l: SyncedLine, i: number) => ({ l, i }))
+                    .filter(({ l }) => l.text.trim().length > 1)
+                    .slice(0, 24)
+                    .map(({ l, i }) => {
+                      const active = selectedLineIndices.includes(i);
+                      return (
                         <button
-                          key={idx}
+                          key={i}
                           type="button"
-                          onClick={() => setSelectedQuote(line.text)}
-                          className="px-2.5 py-1 rounded-lg bg-neutral-800/80 hover:bg-neutral-700 text-[11px] text-neutral-300 hover:text-white text-left truncate max-w-[200px] border border-neutral-700/50 transition-colors"
+                          onClick={() => toggleLyricLine(i)}
+                          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium truncate transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-red-600 text-white font-bold'
+                              : 'bg-neutral-800/70 text-neutral-300 hover:bg-neutral-700'
+                          }`}
                         >
-                          "{line.text}"
+                          {l.text}
                         </button>
-                      ))}
-                  </div>
+                      );
+                    })}
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            {/* Theme accent picker */}
-            <div className="mt-5 space-y-2">
-              <label className="text-xs font-semibold text-neutral-300">ネオンアクセントカラー</label>
-              <div className="flex items-center gap-2.5">
-                {[
-                  { label: 'Red', color: '#ef4444' },
-                  { label: 'Purple', color: '#a855f7' },
-                  { label: 'Cyan', color: '#06b6d4' },
-                  { label: 'Emerald', color: '#10b981' },
-                  { label: 'Amber', color: '#f59e0b' },
-                  { label: 'Pink', color: '#ec4899' },
-                ].map((th) => (
-                  <button
-                    key={th.color}
-                    type="button"
-                    onClick={() => setThemeColor(th.color)}
-                    style={{ backgroundColor: th.color }}
-                    className={`w-7 h-7 rounded-full transition-transform ${
-                      themeColor === th.color ? 'ring-2 ring-white scale-110 shadow-lg' : 'opacity-80 hover:opacity-100'
-                    }`}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Action buttons */}
-          <div className="pt-4 border-t border-neutral-800 flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleDownload}
-              disabled={isExporting}
-              className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-500 text-white font-bold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 active:scale-95 transition-all cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-              <span>{isExporting ? '生成中...' : '画像を保存 (PNG)'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleShare}
-              className="py-3 px-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-semibold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-4 h-4 text-emerald-400" />
-                  <span className="text-emerald-400">コピー完了</span>
-                </>
+        {/* Bottom Share Bar (IMG_0291〜0293 style) */}
+        <div className="px-6 py-4 border-t border-white/10 bg-[#121216] flex items-center justify-around gap-2">
+          <button
+            type="button"
+            onClick={handleCopyLink}
+            className="flex flex-col items-center gap-1.5 text-neutral-200 hover:text-white cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-full bg-[#24242b] hover:bg-[#32323c] flex items-center justify-center transition-colors">
+              {copiedLink ? (
+                <Check className="w-5 h-5 text-red-500" />
               ) : (
-                <>
-                  <Share2 className="w-4 h-4" />
-                  <span>共有 / コピー</span>
-                </>
+                <Link2 className="w-5 h-5" />
               )}
-            </button>
-          </div>
+            </div>
+            <span className="text-[11px] font-semibold">
+              {copiedLink ? 'コピー済' : 'リンクをコピー'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleDownloadPng}
+            disabled={isExporting}
+            className="flex flex-col items-center gap-1.5 text-neutral-200 hover:text-white cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-600/30 transition-colors">
+              <Download className="w-5 h-5" />
+            </div>
+            <span className="text-[11px] font-bold">画像を保存</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenZeroCode}
+            className="flex flex-col items-center gap-1.5 text-neutral-200 hover:text-white cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-full bg-[#24242b] hover:bg-[#32323c] flex items-center justify-center transition-colors">
+              <QrCode className="w-5 h-5" />
+            </div>
+            <span className="text-[11px] font-semibold">ZeroCode</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleNativeOrImageShare}
+            className="flex flex-col items-center gap-1.5 text-neutral-200 hover:text-white cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-full bg-[#24242b] hover:bg-[#32323c] flex items-center justify-center transition-colors">
+              {copiedOther ? (
+                <Check className="w-5 h-5 text-red-500" />
+              ) : (
+                <MoreHorizontal className="w-5 h-5" />
+              )}
+            </div>
+            <span className="text-[11px] font-semibold">その他</span>
+          </button>
         </div>
       </div>
     </div>

@@ -20,15 +20,47 @@ import { normalizeArtistName } from '../utils/artistNames';
 const normalizeTrack = (t: Track): Track =>
   t?.artist ? { ...t, artist: normalizeArtistName(t.artist) || t.artist } : t;
 
-interface UserPlaylist {
+export interface UserPlaylist {
   id: string;
   name: string;
+  description?: string;
+  coverImage?: string;
   createdAt: string;
   tracks: Track[];
   isLiked?: boolean;
+  isPinned?: boolean;
+  isCollab?: boolean;
+  collabCode?: string;
+  collabMembers?: string[];
+}
+
+export interface PlaylistFolder {
+  id: string;
+  name: string;
+  playlistIds: string[];
+  createdAt: string;
+}
+
+export interface VisualShareTarget {
+  type: 'track' | 'artist' | 'playlist';
+  track?: Track;
+  artist?: Artist;
+  playlist?: { name: string; tracks: Track[] };
+}
+
+export interface ZeroCodeTarget {
+  type: 'track' | 'artist' | 'playlist';
+  title: string;
+  subtitle?: string;
+  imageUrl?: string;
+  url: string;
+  codeValue: string;
+  artistId?: string;
+  trackId?: string;
 }
 
 export type LibraryTabType = 'liked' | 'history' | 'playlists' | 'local';
+export type DeviceMode = 'mobile' | 'pc';
 
 export interface ToastAction {
   label: string;
@@ -114,6 +146,8 @@ interface PlayerContextType {
   toggleEndlessRadio: () => void;
   emotionRadioMood: { id: string; name: string } | null;
   startRadioForTrack: (seedTrack: Track) => Promise<void>;
+  isAutoSelectingQueue: boolean;
+  replenishQueueNow: () => Promise<number>;
   digestMode: boolean;
   toggleDigestMode: () => void;
   digestRemainingSec: number;
@@ -122,7 +156,13 @@ interface PlayerContextType {
   setImportModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
 
   // Action Handlers
-  playTrack: (track: Track, customQueue?: Track[]) => void;
+  playTrack: (
+    track: Track,
+    customQueue?: Track[],
+    contextOverride?: { source: string; subtitle: string }
+  ) => void;
+  playbackContextLabel: { source: string; subtitle: string };
+  setPlaybackContextLabel: React.Dispatch<React.SetStateAction<{ source: string; subtitle: string }>>;
   togglePlay: () => void;
   pause: () => void;
   resume: () => void;
@@ -153,13 +193,70 @@ interface PlayerContextType {
   removeRecentSearch: (query: string) => void;
   clearRecentSearches: () => void;
   addToQueue: (track: Track) => void;
+  playNext: (track: Track) => void;
+  moveQueueItem: (fromIndex: number, toIndex: number) => void;
+  moveToPlayNext: (index: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
-  createUserPlaylist: (name: string) => void;
+  createUserPlaylist: (
+    name: string,
+    options?: {
+      description?: string;
+      coverImage?: string;
+      tracks?: Track[];
+      isCollab?: boolean;
+      collabCode?: string;
+      collabMembers?: string[];
+      isPinned?: boolean;
+    }
+  ) => UserPlaylist | null;
   saveTracksAsPlaylist: (name: string, tracks: Track[]) => void;
   addToUserPlaylist: (playlistId: string, trackTrack: Track) => void;
   removeFromUserPlaylist: (playlistId: string, trackId: string) => void;
   deleteUserPlaylist: (playlistId: string) => void;
+  togglePinUserPlaylist: (playlistId: string) => void;
+  reorderUserPlaylists: (fromIndex: number, toIndex: number) => void;
+  sortUserPlaylists: (criteria: 'liked' | 'newest' | 'oldest' | 'name' | 'tracksDesc') => void;
+  reorderUserPlaylistTracks: (playlistId: string, fromIndex: number, toIndex: number) => void;
+  sortUserPlaylistTracks: (
+    playlistId: string,
+    criteria: 'title' | 'artist' | 'durationDesc' | 'reverse'
+  ) => void;
+  updateUserPlaylist: (
+    playlistId: string,
+    updates: {
+      name?: string;
+      description?: string;
+      coverImage?: string;
+      isPinned?: boolean;
+      isCollab?: boolean;
+      collabCode?: string;
+      collabMembers?: string[];
+    }
+  ) => void;
+
+  // Playlist Folders ("マイライブラリ > + > フォルダ")
+  userFolders: PlaylistFolder[];
+  createFolder: (name: string) => PlaylistFolder | null;
+  renameFolder: (folderId: string, name: string) => void;
+  deleteFolder: (folderId: string) => void;
+  assignPlaylistToFolder: (playlistId: string, folderId: string | null) => void;
+
+  // Hide Track / Block Artist ("この曲を非表示 / このアーティストを再生しない")
+  hiddenTracks: Track[];
+  hiddenTrackIds: Set<string>;
+  blockedArtists: string[];
+  isTrackBlocked: (track?: Track | null) => boolean;
+  isArtistBlocked: (artistName?: string) => boolean;
+  hideTrack: (track: Track) => void;
+  unhideTrack: (trackId: string) => void;
+  blockArtist: (artistName: string) => void;
+  unblockArtist: (artistName: string) => void;
+
+  // Track Detail / Credits Modal
+  trackDetailModalTrack: Track | null;
+  openTrackDetailModal: (track: Track) => void;
+  closeTrackDetailModal: () => void;
 
   // Account & Real Stats System (偽はいらん)
   currentUser: { username: string; email?: string } | null;
@@ -234,6 +331,17 @@ interface PlayerContextType {
   // Creative & Community Modals
   storyModalOpen: boolean;
   setStoryModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  visualShareTarget: VisualShareTarget | null;
+  openVisualShareCard: (target: VisualShareTarget) => void;
+  zeroCodeModalTarget: ZeroCodeTarget | null;
+  openZeroCodeModal: (target: ZeroCodeTarget) => void;
+  closeZeroCodeModal: () => void;
+  connectModalOpen: boolean;
+  setConnectModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  floatingLyricsOverlay: boolean;
+  setFloatingLyricsOverlay: React.Dispatch<React.SetStateAction<boolean>>;
+  canvasEnabled: boolean;
+  setCanvasEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   quizModalOpen: boolean;
   setQuizModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   matchModalOpen: boolean;
@@ -251,6 +359,11 @@ interface PlayerContextType {
     action?: ToastAction
   ) => void;
   onPlayerError: (errorCode: number, errorMsg?: string) => Promise<void>;
+
+  // Device Edition Mode Selection (スマホ版 / パソコン版)
+  deviceMode: DeviceMode | null;
+  setDeviceMode: (mode: DeviceMode | null) => void;
+  toggleDeviceMode: () => void;
 
   // Internal bridge with YouTube player
   userIntendedPlayingRef: React.MutableRefObject<boolean>;
@@ -270,6 +383,12 @@ const STORAGE_KEYS = {
   HISTORY: 'yt_music_recent_tracks_v1',
   PLAYLISTS: 'yt_music_user_playlists_v1',
   BG_PLAY: 'yt_music_background_playback_v1',
+  DEVICE_MODE: 'zero_music_device_mode_v1',
+  HIDDEN_TRACKS: 'yt_music_hidden_tracks_v1',
+  BLOCKED_ARTISTS: 'yt_music_blocked_artists_v1',
+  FOLDERS: 'yt_music_folders_v1',
+  FLOATING_LYRICS: 'yt_music_floating_lyrics_v1',
+  CANVAS_ENABLED: 'yt_music_canvas_enabled_v1',
 };
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -283,6 +402,50 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [playerMode, setPlayerMode] = useState<PlayerMode>('cover');
   const [videoLayout, setVideoLayout] = useState<VideoLayout>('theater');
+
+  const [deviceMode, setDeviceModeState] = useState<DeviceMode | null>(() => {
+    try {
+      const saved = sessionStorage.getItem(STORAGE_KEYS.DEVICE_MODE);
+      return saved === 'mobile' || saved === 'pc' ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const setDeviceMode = useCallback((mode: DeviceMode | null) => {
+    setDeviceModeState(mode);
+    try {
+      if (mode) {
+        sessionStorage.setItem(STORAGE_KEYS.DEVICE_MODE, mode);
+      } else {
+        sessionStorage.removeItem(STORAGE_KEYS.DEVICE_MODE);
+      }
+    } catch {}
+  }, []);
+
+  const toggleDeviceMode = useCallback(() => {
+    setDeviceModeState((prev) => {
+      const next: DeviceMode = prev === 'pc' ? 'mobile' : 'pc';
+      try {
+        sessionStorage.setItem(STORAGE_KEYS.DEVICE_MODE, next);
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.dataset.deviceMode = deviceMode || '';
+    const viewportMeta = document.querySelector('meta[name="viewport"]');
+    if (viewportMeta) {
+      const isNarrowScreen = typeof window !== 'undefined' && window.screen.width < 1024;
+      if (deviceMode === 'pc' && isNarrowScreen) {
+        viewportMeta.setAttribute('content', 'width=1180');
+      } else {
+        viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0');
+      }
+    }
+  }, [deviceMode]);
 
   const togglePlayerMode = useCallback(() => {
     setPlayerMode((prev) => {
@@ -298,6 +461,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isShuffle, setIsShuffle] = useState<boolean>(false);
   const [lyricsOpen, setLyricsOpen] = useState<boolean>(false);
   const [queueOpen, setQueueOpen] = useState<boolean>(false);
+  const forcedNextIdsRef = useRef<Set<string>>(new Set());
   const [fullScreenPlayerOpen, setFullScreenPlayerOpen] = useState<boolean>(false);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(false);
   const [bgGuideOpen, setBgGuideOpen] = useState<boolean>(false);
@@ -345,6 +509,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const targetVolumeRef = useRef<number>(80);
   const isTransitioningEarlyRef = useRef<boolean>(false);
   const isFetchingRadioRef = useRef<boolean>(false);
+  const lastAutoEmptyAtRef = useRef<number>(0);
+  const [isAutoSelectingQueue, setIsAutoSelectingQueue] = useState<boolean>(false);
 
   // Intent tracker: true when user actively intends playback, false ONLY when user pressed pause
   const userIntendedPlayingRef = useRef<boolean>(false);
@@ -455,6 +621,138 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return [];
     }
   });
+
+  const [hiddenTracks, setHiddenTracks] = useState<Track[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.HIDDEN_TRACKS);
+      const list = saved ? JSON.parse(saved) : [];
+      return Array.isArray(list) ? list.map(normalizeTrack) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [blockedArtists, setBlockedArtists] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.BLOCKED_ARTISTS);
+      const list = saved ? JSON.parse(saved) : [];
+      return Array.isArray(list) ? list.filter((s) => typeof s === 'string' && s.trim()) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [trackDetailModalTrack, setTrackDetailModalTrack] = useState<Track | null>(null);
+  const openTrackDetailModal = useCallback((track: Track) => {
+    setTrackDetailModalTrack(normalizeTrack(track));
+  }, []);
+  const closeTrackDetailModal = useCallback(() => {
+    setTrackDetailModalTrack(null);
+  }, []);
+
+  const [userFolders, setUserFolders] = useState<PlaylistFolder[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.FOLDERS);
+      const list = saved ? JSON.parse(saved) : [];
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.FOLDERS, JSON.stringify(userFolders));
+    } catch {}
+  }, [userFolders]);
+
+  const [playbackContextLabel, setPlaybackContextLabel] = useState<{
+    source: string;
+    subtitle: string;
+  }>({
+    source: '再生中の曲',
+    subtitle: 'zero-music',
+  });
+
+  const [floatingLyricsOverlay, setFloatingLyricsOverlay] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.FLOATING_LYRICS);
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.FLOATING_LYRICS, JSON.stringify(floatingLyricsOverlay));
+    } catch {}
+  }, [floatingLyricsOverlay]);
+
+  const [canvasEnabled, setCanvasEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.CANVAS_ENABLED);
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.CANVAS_ENABLED, JSON.stringify(canvasEnabled));
+    } catch {}
+  }, [canvasEnabled]);
+
+  const hiddenTrackIds = useMemo(
+    () => new Set(hiddenTracks.map((t) => t.id)),
+    [hiddenTracks]
+  );
+
+  const normalizeArtistKey = useCallback((name?: string) => {
+    if (!name) return '';
+    return normalizeArtistName(name).trim().toLowerCase();
+  }, []);
+
+  const blockedArtistKeySet = useMemo(
+    () => new Set(blockedArtists.map((a) => normalizeArtistKey(a)).filter(Boolean)),
+    [blockedArtists, normalizeArtistKey]
+  );
+
+  const hiddenTrackIdsRef = useRef<Set<string>>(hiddenTrackIds);
+  const blockedArtistKeySetRef = useRef<Set<string>>(blockedArtistKeySet);
+
+  useEffect(() => {
+    hiddenTrackIdsRef.current = hiddenTrackIds;
+    try {
+      localStorage.setItem(STORAGE_KEYS.HIDDEN_TRACKS, JSON.stringify(hiddenTracks));
+    } catch {}
+  }, [hiddenTracks, hiddenTrackIds]);
+
+  useEffect(() => {
+    blockedArtistKeySetRef.current = blockedArtistKeySet;
+    try {
+      localStorage.setItem(STORAGE_KEYS.BLOCKED_ARTISTS, JSON.stringify(blockedArtists));
+    } catch {}
+  }, [blockedArtists, blockedArtistKeySet]);
+
+  const isArtistBlocked = useCallback(
+    (artistName?: string) => {
+      const key = normalizeArtistKey(artistName);
+      if (!key) return false;
+      return blockedArtistKeySetRef.current.has(key);
+    },
+    [normalizeArtistKey]
+  );
+
+  const isTrackBlocked = useCallback(
+    (track?: Track | null) => {
+      if (!track) return false;
+      if (track.id && hiddenTrackIdsRef.current.has(track.id)) return true;
+      return isArtistBlocked(track.artist);
+    },
+    [isArtistBlocked]
+  );
 
   useEffect(() => {
     try {
@@ -819,6 +1117,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [unreadNotificationCount, setUnreadNotificationCount] = useState<number>(0);
   const [termsModalOpen, setTermsModalOpen] = useState<boolean>(false);
   const [storyModalOpen, setStoryModalOpen] = useState<boolean>(false);
+  const [visualShareTarget, setVisualShareTarget] = useState<VisualShareTarget | null>(null);
+  const openVisualShareCard = useCallback((target: VisualShareTarget) => {
+    setVisualShareTarget(target);
+    setStoryModalOpen(true);
+  }, []);
+  const [zeroCodeModalTarget, setZeroCodeModalTarget] = useState<ZeroCodeTarget | null>(null);
+  const openZeroCodeModal = useCallback((target: ZeroCodeTarget) => {
+    setZeroCodeModalTarget(target);
+  }, []);
+  const closeZeroCodeModal = useCallback(() => {
+    setZeroCodeModalTarget(null);
+  }, []);
+  const [connectModalOpen, setConnectModalOpen] = useState<boolean>(false);
   const [quizModalOpen, setQuizModalOpen] = useState<boolean>(false);
   const [matchModalOpen, setMatchModalOpen] = useState<boolean>(false);
   const [collabModalOpen, setCollabModalOpen] = useState<boolean>(false);
@@ -884,25 +1195,40 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return '';
   }, [currentLyrics, progress, currentTrack?.id, trackOffsets]);
 
-  // URL parameters handler on mount (?track=xxx or ?share_pl=xxx)
+  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     const trackId = params.get('track');
     const sharePlId = params.get('share_pl');
+    const artistParam = params.get('artist');
+    const collabParam = params.get('collab');
 
     if (trackId) {
       api
         .getTrack(trackId)
         .then((res) => {
           if (res.track) {
-            playTrack(res.track);
+            playTrack(res.track, undefined, {
+              source: '共有リンクから再生中',
+              subtitle: res.track.album || res.track.artist,
+            });
             window.history.replaceState({}, '', window.location.pathname);
           }
         })
         .catch((e) => {
           console.warn('[Share] Failed to load shared track from URL:', e);
         });
+    } else if (artistParam) {
+      setActiveView('artist');
+      setSelectedEntityId(artistParam);
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (collabParam) {
+      try {
+        sessionStorage.setItem('zero_music_pending_collab_code', collabParam);
+      } catch {}
+      setCollabModalOpen(true);
+      window.history.replaceState({}, '', window.location.pathname);
     } else if (sharePlId) {
       api
         .getSharedPlaylist(sharePlId)
@@ -916,7 +1242,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             };
             setUserPlaylists((prev) => [imported, ...prev]);
             if (res.playlist.tracks.length > 0) {
-              playTrack(res.playlist.tracks[0], res.playlist.tracks);
+              playTrack(res.playlist.tracks[0], res.playlist.tracks, {
+                source: '共有プレイリストから再生中',
+                subtitle: res.playlist.name,
+              });
             }
             window.history.replaceState({}, '', window.location.pathname);
           }
@@ -1128,14 +1457,146 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, []);
 
+  const fetchAutoSelectedTracks = useCallback(
+    async (
+      seedTrack: Track,
+      excludeIds: Set<string>,
+      desiredCount = 18,
+      forceRefresh = false
+    ): Promise<Track[]> => {
+      const seen = new Set<string>(excludeIds);
+      const picked: Track[] = [];
+      const addCandidate = (raw?: Track | null) => {
+        if (!raw || !raw.id || seen.has(raw.id)) return;
+        const normalized = normalizeTrack(raw);
+        if (isTrackBlocked(normalized)) return;
+        seen.add(normalized.id);
+        picked.push(normalized);
+      };
+
+      try {
+        const [emotionRes, primaryRelated] = await Promise.all([
+          api
+            .getTrackCommentEmotions(seedTrack.id, seedTrack.title, seedTrack.artist)
+            .catch(() => null),
+          api.getRelated(seedTrack.id).catch(() => []),
+        ]);
+
+        const domMood = emotionRes?.dominantMood || 'emotional';
+        if (emotionRes?.dominantMood) {
+          setEmotionRadioMood({
+            id: domMood,
+            name: emotionRes?.dominantMoodName || '感情マッチ',
+          });
+        }
+
+        const [moodByArtist, moodGlobal] = await Promise.all([
+          seedTrack.artist
+            ? api.getMoodRecommendation(domMood, seedTrack.artist, forceRefresh).catch(() => null)
+            : Promise.resolve(null),
+          api.getMoodRecommendation(domMood, undefined, forceRefresh).catch(() => null),
+        ]);
+
+        const relList = Array.isArray(primaryRelated) ? primaryRelated : [];
+        const moodTracks = [
+          ...(moodByArtist?.tracks || []),
+          ...(moodGlobal?.tracks || []),
+        ];
+        const maxLen = Math.max(relList.length, moodTracks.length);
+        for (let i = 0; i < maxLen && picked.length < desiredCount; i++) {
+          if (i < relList.length) addCandidate(relList[i]);
+          if (picked.length < desiredCount && i < moodTracks.length) addCandidate(moodTracks[i]);
+        }
+
+        if (picked.length < desiredCount) {
+          const hopSeed = relList[Math.min(2, relList.length - 1)] || picked[picked.length - 1];
+          const [hopRelated, artistSearch] = await Promise.all([
+            hopSeed?.id && hopSeed.id !== seedTrack.id
+              ? api.getRelated(hopSeed.id).catch(() => [])
+              : Promise.resolve([]),
+            seedTrack.artist
+              ? api.search(`${seedTrack.artist} おすすめ`, 'song').catch(() => null)
+              : Promise.resolve(null),
+          ]);
+
+          for (const tr of hopRelated || []) {
+            if (picked.length >= desiredCount) break;
+            addCandidate(tr);
+          }
+          const searchSongs: Track[] = artistSearch?.songs || artistSearch?.results || [];
+          for (const tr of searchSongs) {
+            if (picked.length >= desiredCount) break;
+            addCandidate(tr);
+          }
+        }
+      } catch (err) {
+        console.warn('fetchAutoSelectedTracks error:', err);
+      }
+
+      return picked.slice(0, desiredCount);
+    },
+    []
+  );
+
+  const activeViewRef = useRef<ViewType>(activeView);
+  const searchQueryRef = useRef<string>(searchQuery);
+  useEffect(() => {
+    activeViewRef.current = activeView;
+  }, [activeView]);
+  useEffect(() => {
+    searchQueryRef.current = searchQuery;
+  }, [searchQuery]);
+
   const playTrack = useCallback(
-    async (track: Track, customQueue?: Track[]) => {
+    async (
+      track: Track,
+      customQueue?: Track[],
+      contextOverride?: { source: string; subtitle: string }
+    ) => {
       userIntendedPlayingRef.current = true;
       isTransitioningEarlyRef.current = false;
 
       let resolvedTrack = normalizeTrack(track);
       if (track.isLocal) {
         resolvedTrack = normalizeTrack(await getPlayableOfflineTrack(track));
+      }
+
+      if (contextOverride) {
+        setPlaybackContextLabel(contextOverride);
+      } else {
+        const view = activeViewRef.current;
+        const sq = searchQueryRef.current.trim();
+        if (view === 'search') {
+          setPlaybackContextLabel({
+            source: '検索から再生中',
+            subtitle: sq ? `「${sq}」の検索結果` : resolvedTrack.album || resolvedTrack.artist,
+          });
+        } else if (view === 'artist') {
+          setPlaybackContextLabel({
+            source: 'アーティストから再生中',
+            subtitle: resolvedTrack.artist || resolvedTrack.title,
+          });
+        } else if (view === 'album') {
+          setPlaybackContextLabel({
+            source: 'アルバムから再生中',
+            subtitle: resolvedTrack.album || resolvedTrack.title,
+          });
+        } else if (view === 'library') {
+          setPlaybackContextLabel({
+            source: 'マイライブラリから再生中',
+            subtitle: resolvedTrack.album || resolvedTrack.artist || 'マイコレクション',
+          });
+        } else if (view === 'party') {
+          setPlaybackContextLabel({
+            source: 'Jam / パーティから再生中',
+            subtitle: 'リスニングパーティ',
+          });
+        } else {
+          setPlaybackContextLabel({
+            source: 'ホームから再生中',
+            subtitle: resolvedTrack.album || resolvedTrack.artist || 'あなたへのおすすめ',
+          });
+        }
       }
 
       setCurrentTrack(resolvedTrack);
@@ -1205,41 +1666,30 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       digestJumpedTrackRef.current = null;
       digestStartPlaySecRef.current = null;
 
-      // Auto-fetch emotion-matched & related songs in background if queue is short, online, and not local track
-      if (!resolvedTrack.isLocal && navigator.onLine) {
-        (async () => {
-          try {
-            const emotionRes = await api.getTrackCommentEmotions(
-              resolvedTrack.id,
-              resolvedTrack.title,
-              resolvedTrack.artist
-            );
-            if (emotionRes?.dominantMood) {
-              setEmotionRadioMood({
-                id: emotionRes.dominantMood,
-                name: emotionRes.dominantMoodName || emotionRes.dominantMood,
-              });
-            }
-            const [moodRec, related] = await Promise.all([
-              emotionRes?.dominantMood ? api.getMoodRecommendation(emotionRes.dominantMood).catch(() => null) : Promise.resolve(null),
-              api.getRelated(resolvedTrack.id).catch(() => []),
-            ]);
-            const pool = [...(moodRec?.tracks || []), ...(related || [])];
-            if (pool.length > 0) {
+      // Auto-fetch emotion-matched & related songs in background so queue stays richly populated (20+ tracks)
+      if (
+        endlessRadioActive &&
+        !resolvedTrack.isLocal &&
+        navigator.onLine &&
+        (!customQueue || customQueue.length <= 12)
+      ) {
+        fetchAutoSelectedTracks(resolvedTrack, new Set([resolvedTrack.id]), 22, false)
+          .then((picked) => {
+            if (picked.length > 0) {
               setQueue((curr) => {
-                if (curr.length <= 3) {
+                if (curr.length <= 18) {
                   const existingIds = new Set(curr.map((t) => t.id));
-                  const fresh = pool.filter((r) => r.id && !existingIds.has(r.id)).slice(0, 8);
-                  return [...curr, ...fresh];
+                  const fresh = picked.filter((r) => r.id && !existingIds.has(r.id)).slice(0, 22);
+                  return fresh.length > 0 ? [...curr, ...fresh] : curr;
                 }
                 return curr;
               });
             }
-          } catch {}
-        })();
+          })
+          .catch(() => {});
       }
     },
-    []
+    [endlessRadioActive, fetchAutoSelectedTracks]
   );
 
   const togglePlay = useCallback(() => {
@@ -1318,8 +1768,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       let nextIdx = queueIndex + 1;
-      if (isShuffle) {
+      const immediateNext = queue[nextIdx];
+      if (immediateNext && forcedNextIdsRef.current.has(immediateNext.id)) {
+        forcedNextIdsRef.current.delete(immediateNext.id);
+      } else if (isShuffle) {
         nextIdx = Math.floor(Math.random() * queue.length);
+      }
+
+      // Skip past any hidden tracks or blocked artists automatically
+      if (!isShuffle) {
+        while (nextIdx < queue.length && isTrackBlocked(queue[nextIdx])) {
+          nextIdx++;
+        }
+      } else if (queue[nextIdx] && isTrackBlocked(queue[nextIdx])) {
+        const unblockedIndices = queue
+          .map((t, i) => (!isTrackBlocked(t) ? i : -1))
+          .filter((i) => i >= 0);
+        if (unblockedIndices.length > 0) {
+          nextIdx = unblockedIndices[Math.floor(Math.random() * unblockedIndices.length)];
+        } else {
+          nextIdx = queue.length;
+        }
       }
 
       if (nextIdx < queue.length) {
@@ -1376,30 +1845,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           dispatchPlayCommand();
         }
       } else if (endlessRadioActive && currentTrack && !currentTrack.isLocal && navigator.onLine) {
-        // Endless Emotion Radio: immediately fetch matching track when hitting queue end
+        // Endless Emotion Radio: immediately fetch 18+ matching tracks when hitting queue end
         (async () => {
           try {
-            const emotionRes = await api.getTrackCommentEmotions(
-              currentTrack.id,
-              currentTrack.title,
-              currentTrack.artist
-            );
-            const domMood = emotionRes?.dominantMood || 'emotional';
-            setEmotionRadioMood({
-              id: domMood,
-              name: emotionRes?.dominantMoodName || '感情マッチ',
-            });
-            const [moodRec, related] = await Promise.all([
-              api.getMoodRecommendation(domMood).catch(() => null),
-              api.getRelated(currentTrack.id).catch(() => []),
-            ]);
             const existingIds = new Set(queue.map((t) => t.id));
-            const fresh = [...(moodRec?.tracks || []), ...(related || [])].filter(
-              (r) => r.id && !existingIds.has(r.id)
-            );
+            const fresh = await fetchAutoSelectedTracks(currentTrack, existingIds, 18, true);
             if (fresh.length > 0) {
               const nextItem = fresh[0];
-              const newQueue = [...queue, ...fresh.slice(0, 6)];
+              const newQueue = [...queue, ...fresh];
               setQueue(newQueue);
               setQueueIndex(queue.length);
               setProgress(0);
@@ -1424,7 +1877,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsPlaying(false);
       }
     },
-    [queue, queueIndex, repeatMode, isShuffle, currentTrack, endlessRadioActive, repeatCurrentTrack, dispatchPlayCommand]
+    [
+      queue,
+      queueIndex,
+      repeatMode,
+      isShuffle,
+      currentTrack,
+      endlessRadioActive,
+      repeatCurrentTrack,
+      dispatchPlayCommand,
+      fetchAutoSelectedTracks,
+    ]
   );
 
   const prevTrack = useCallback(() => {
@@ -1889,20 +2352,94 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, [currentTrack, duration, trackTimestamps, seekTo, showToast]);
 
+  const replenishQueueInternal = useCallback(
+    async (manual = false): Promise<number> => {
+      if (!currentTrack || currentTrack.isLocal || !navigator.onLine) return 0;
+      if (isFetchingRadioRef.current) return 0;
+      if (!manual && Date.now() - lastAutoEmptyAtRef.current < 20000) return 0;
+
+      isFetchingRadioRef.current = true;
+      setIsAutoSelectingQueue(true);
+      let addedCount = 0;
+
+      try {
+        const existingIds = new Set<string>();
+        queue.forEach((t) => existingIds.add(t.id));
+        recentTracks.slice(0, 10).forEach((t) => existingIds.add(t.id));
+
+        // Seed from the tail of upcoming queue so continuous auto-selection keeps evolving
+        const tailTrack = queue[queue.length - 1];
+        const seed =
+          tailTrack && !tailTrack.isLocal && tailTrack.id !== currentTrack.id
+            ? tailTrack
+            : currentTrack;
+
+        const batchSize = manual ? 15 : 18;
+        const fresh = await fetchAutoSelectedTracks(seed, existingIds, batchSize, manual);
+        if (fresh.length > 0) {
+          addedCount = fresh.length;
+          lastAutoEmptyAtRef.current = 0;
+          setQueue((curr) => {
+            const currIds = new Set(curr.map((t) => t.id));
+            const uniqueFresh = fresh.filter((t) => t.id && !currIds.has(t.id));
+            if (uniqueFresh.length === 0) return curr;
+            return [...curr, ...uniqueFresh];
+          });
+        } else if (!manual) {
+          lastAutoEmptyAtRef.current = Date.now();
+        }
+
+        if (manual) {
+          if (addedCount > 0) {
+            showToast(`✨ 自動選曲で${addedCount}曲をキューに追加しました`, 'success', 2400);
+          } else {
+            showToast('新しい候補曲が見つかりませんでした', 'info', 2000);
+          }
+        }
+      } finally {
+        setIsAutoSelectingQueue(false);
+        setTimeout(() => {
+          isFetchingRadioRef.current = false;
+        }, manual ? 800 : 2500);
+      }
+      return addedCount;
+    },
+    [currentTrack, queue, recentTracks, fetchAutoSelectedTracks, showToast]
+  );
+
+  const replenishQueueNow = useCallback(
+    () => replenishQueueInternal(true),
+    [replenishQueueInternal]
+  );
+
+  // Reactive auto-replenishment: keep at least 12-30 upcoming tracks whenever endless radio is ON
+  useEffect(() => {
+    lastAutoEmptyAtRef.current = 0;
+  }, [currentTrack?.id]);
+
+  useEffect(() => {
+    if (!endlessRadioActive || !currentTrack || currentTrack.isLocal || !navigator.onLine) return;
+    const remainingTracksInQueue = queue.length - 1 - queueIndex;
+    if (remainingTracksInQueue < 12 && !isFetchingRadioRef.current) {
+      replenishQueueInternal(false);
+    }
+  }, [endlessRadioActive, currentTrack?.id, queue.length, queueIndex, replenishQueueInternal]);
+
   const startRadioForTrack = useCallback(
     async (seedTrack: Track) => {
       setEndlessRadioActive(true);
       playTrack(seedTrack, [seedTrack]);
       try {
-        const related = await api.getRelated(seedTrack.id);
-        if (related && related.length > 0) {
-          setQueue([seedTrack, ...related]);
+        const picked = await fetchAutoSelectedTracks(seedTrack, new Set([seedTrack.id]), 22, true);
+        if (picked.length > 0) {
+          setQueue([seedTrack, ...picked]);
+          setQueueIndex(0);
         }
       } catch (e) {
         console.warn('Failed to start radio:', e);
       }
     },
-    [playTrack]
+    [playTrack, fetchAutoSelectedTracks]
   );
 
   const likedTracksRef = useRef<Track[]>(likedTracks);
@@ -2126,8 +2663,80 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const addToQueue = useCallback((track: Track) => {
-    setQueue((prev) => [...prev, normalizeTrack(track)]);
+    const clean = normalizeTrack(track);
+    setQueue((prev) => [...prev, clean]);
   }, []);
+
+  const playNext = useCallback(
+    (track: Track) => {
+      const clean = normalizeTrack(track);
+      if (!currentTrack || queue.length === 0) {
+        playTrack(clean);
+        showToast(`「${clean.title}」を再生します`, 'success', 2500, {
+          label: 'キューを見る',
+          onClick: () => setQueueOpen(true),
+        });
+        return;
+      }
+
+      forcedNextIdsRef.current.add(clean.id);
+      setQueue((prev) => {
+        const insertPos = Math.min(prev.length, Math.max(0, queueIndex + 1));
+        const before = prev.slice(0, insertPos);
+        const after = prev.slice(insertPos).filter((t) => t.id !== clean.id);
+        return [...before, clean, ...after];
+      });
+      showToast(`「${clean.title}」を次に再生します`, 'success', 2800, {
+        label: 'キューを見る',
+        onClick: () => setQueueOpen(true),
+      });
+    },
+    [currentTrack, queue.length, queueIndex, playTrack, showToast]
+  );
+
+  const moveQueueItem = useCallback((fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    setQueue((prev) => {
+      if (fromIndex < 0 || fromIndex >= prev.length || toIndex < 0 || toIndex >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setQueueIndex((curr) => {
+      if (fromIndex === curr) return toIndex;
+      if (fromIndex < curr && toIndex >= curr) return curr - 1;
+      if (fromIndex > curr && toIndex <= curr) return curr + 1;
+      return curr;
+    });
+  }, []);
+
+  const moveToPlayNext = useCallback(
+    (index: number) => {
+      if (index < 0 || index >= queue.length || index === queueIndex) return;
+      const target = queue[index];
+      if (!target) return;
+      forcedNextIdsRef.current.add(target.id);
+
+      if (index > queueIndex) {
+        const targetIdx = queueIndex + 1;
+        if (index !== targetIdx) {
+          moveQueueItem(index, targetIdx);
+        }
+      } else {
+        setQueue((prev) => {
+          const insertPos = Math.min(prev.length, Math.max(0, queueIndex + 1));
+          const before = prev.slice(0, insertPos);
+          const after = prev.slice(insertPos).filter((t) => t.id !== target.id);
+          return [...before, target, ...after];
+        });
+      }
+      showToast(`「${target.title}」を次の曲に設定しました`, 'success', 2200);
+    },
+    [queue, queueIndex, moveQueueItem, showToast]
+  );
 
   const removeFromQueue = useCallback((index: number) => {
     setQueue((prev) => prev.filter((_, idx) => idx !== index));
@@ -2138,6 +2747,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const clearQueue = useCallback(() => {
+    forcedNextIdsRef.current.clear();
     if (currentTrack) {
       setQueue([currentTrack]);
       setQueueIndex(0);
@@ -2147,16 +2757,37 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [currentTrack]);
 
-  const createUserPlaylist = useCallback((name: string) => {
-    if (!name.trim()) return;
-    const newPl: UserPlaylist = {
-      id: `pl_${Date.now()}`,
-      name: name.trim(),
-      createdAt: new Date().toISOString(),
-      tracks: [],
-    };
-    setUserPlaylists((prev) => [newPl, ...prev]);
-  }, []);
+  const createUserPlaylist = useCallback(
+    (
+      name: string,
+      options?: {
+        description?: string;
+        coverImage?: string;
+        tracks?: Track[];
+        isCollab?: boolean;
+        collabCode?: string;
+        collabMembers?: string[];
+        isPinned?: boolean;
+      }
+    ): UserPlaylist | null => {
+      if (!name.trim()) return null;
+      const newPl: UserPlaylist = {
+        id: `pl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: name.trim(),
+        description: options?.description?.trim() || undefined,
+        coverImage: options?.coverImage?.trim() || undefined,
+        createdAt: new Date().toISOString(),
+        tracks: (options?.tracks || []).map(normalizeTrack),
+        isCollab: options?.isCollab,
+        collabCode: options?.collabCode,
+        collabMembers: options?.collabMembers,
+        isPinned: options?.isPinned,
+      };
+      setUserPlaylists((prev) => [newPl, ...prev]);
+      return newPl;
+    },
+    []
+  );
 
   const saveTracksAsPlaylist = useCallback((name: string, tracks: Track[]) => {
     if (!name.trim() || !tracks || tracks.length === 0) return;
@@ -2194,9 +2825,292 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
   }, []);
 
+  const updateUserPlaylist = useCallback(
+    (
+      playlistId: string,
+      updates: {
+        name?: string;
+        description?: string;
+        coverImage?: string;
+        isPinned?: boolean;
+        isCollab?: boolean;
+        collabCode?: string;
+        collabMembers?: string[];
+      }
+    ) => {
+      setUserPlaylists((prev) =>
+        prev.map((pl) => {
+          if (pl.id !== playlistId) return pl;
+          return {
+            ...pl,
+            name: updates.name !== undefined ? updates.name.trim() || pl.name : pl.name,
+            description:
+              updates.description !== undefined ? updates.description.trim() : pl.description,
+            coverImage:
+              updates.coverImage !== undefined
+                ? updates.coverImage.trim() || undefined
+                : pl.coverImage,
+            isPinned: updates.isPinned !== undefined ? updates.isPinned : pl.isPinned,
+            isCollab: updates.isCollab !== undefined ? updates.isCollab : pl.isCollab,
+            collabCode: updates.collabCode !== undefined ? updates.collabCode : pl.collabCode,
+            collabMembers:
+              updates.collabMembers !== undefined ? updates.collabMembers : pl.collabMembers,
+          };
+        })
+      );
+      showToast('プレイリスト情報を更新しました', 'success', 2000);
+    },
+    [showToast]
+  );
+
+  const togglePinUserPlaylist = useCallback(
+    (playlistId: string) => {
+      const target = userPlaylistsRef.current.find((p) => p.id === playlistId);
+      if (!target) return;
+      const nextPin = !target.isPinned;
+      setUserPlaylists((prev) =>
+        prev.map((pl) => (pl.id === playlistId ? { ...pl, isPinned: nextPin } : pl))
+      );
+      showToast(
+        nextPin ? `「${target.name}」をピン留めしました` : `「${target.name}」のピン留めを解除しました`,
+        'info',
+        2000
+      );
+    },
+    [showToast]
+  );
+
+  const createFolder = useCallback(
+    (name: string): PlaylistFolder | null => {
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const folder: PlaylistFolder = {
+        id: `folder_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: trimmed,
+        playlistIds: [],
+        createdAt: new Date().toISOString(),
+      };
+      setUserFolders((prev) => [folder, ...prev]);
+      showToast(`フォルダ「${trimmed}」を作成しました`, 'success', 2200);
+      return folder;
+    },
+    [showToast]
+  );
+
+  const renameFolder = useCallback((folderId: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setUserFolders((prev) =>
+      prev.map((f) => (f.id === folderId ? { ...f, name: trimmed } : f))
+    );
+  }, []);
+
+  const deleteFolder = useCallback(
+    (folderId: string) => {
+      setUserFolders((prev) => prev.filter((f) => f.id !== folderId));
+      showToast('フォルダを削除しました（プレイリストは残ります）', 'info', 2200);
+    },
+    [showToast]
+  );
+
+  const assignPlaylistToFolder = useCallback(
+    (playlistId: string, folderId: string | null) => {
+      setUserFolders((prev) =>
+        prev.map((f) => {
+          const filtered = f.playlistIds.filter((id) => id !== playlistId);
+          if (folderId && f.id === folderId) {
+            return { ...f, playlistIds: [...filtered, playlistId] };
+          }
+          return { ...f, playlistIds: filtered };
+        })
+      );
+      showToast(
+        folderId ? 'フォルダにプレイリストを追加しました' : 'フォルダから外しました',
+        'success',
+        1800
+      );
+    },
+    [showToast]
+  );
+
+  const unhideTrack = useCallback((trackId: string) => {
+    setHiddenTracks((prev) => prev.filter((t) => t.id !== trackId));
+  }, []);
+
+  const hideTrack = useCallback(
+    (track: Track) => {
+      const clean = normalizeTrack(track);
+      hiddenTrackIdsRef.current = new Set([...hiddenTrackIdsRef.current, clean.id]);
+      setHiddenTracks((prev) => {
+        if (prev.some((t) => t.id === clean.id)) return prev;
+        return [clean, ...prev];
+      });
+
+      // Remove from upcoming queue (after queueIndex)
+      setQueue((prev) =>
+        prev.filter((t, idx) => idx <= queueIndex || t.id !== clean.id)
+      );
+
+      if (currentTrack?.id === clean.id) {
+        nextTrack(true);
+      }
+
+      showToast(`「${clean.title}」を非表示にしました`, 'info', 4500, {
+        label: '元に戻す',
+        onClick: () => {
+          unhideTrack(clean.id);
+          showToast('非表示を解除しました', 'success', 1800);
+        },
+      });
+    },
+    [currentTrack?.id, queueIndex, nextTrack, unhideTrack, showToast]
+  );
+
+  const unblockArtist = useCallback(
+    (artistName: string) => {
+      const targetKey = normalizeArtistKey(artistName);
+      setBlockedArtists((prev) => prev.filter((a) => normalizeArtistKey(a) !== targetKey));
+    },
+    [normalizeArtistKey]
+  );
+
+  const blockArtist = useCallback(
+    (artistName: string) => {
+      const display = normalizeArtistName(artistName).trim() || artistName.trim();
+      const targetKey = normalizeArtistKey(display);
+      if (!targetKey) return;
+
+      blockedArtistKeySetRef.current = new Set([...blockedArtistKeySetRef.current, targetKey]);
+      setBlockedArtists((prev) => {
+        if (prev.some((a) => normalizeArtistKey(a) === targetKey)) return prev;
+        return [display, ...prev];
+      });
+
+      // Remove matching upcoming tracks from queue
+      setQueue((prev) =>
+        prev.filter((t, idx) => idx <= queueIndex || normalizeArtistKey(t.artist) !== targetKey)
+      );
+
+      if (currentTrack && normalizeArtistKey(currentTrack.artist) === targetKey) {
+        nextTrack(true);
+      }
+
+      showToast(`「${display}」を再生しない設定にしました`, 'info', 4500, {
+        label: '元に戻す',
+        onClick: () => {
+          unblockArtist(display);
+          showToast('ブロックを解除しました', 'success', 1800);
+        },
+      });
+    },
+    [currentTrack, queueIndex, normalizeArtistKey, nextTrack, unblockArtist, showToast]
+  );
+
   const deleteUserPlaylist = useCallback((playlistId: string) => {
     setUserPlaylists((prev) => prev.filter((pl) => pl.id !== playlistId));
   }, []);
+
+  const reorderUserPlaylists = useCallback((fromIndex: number, toIndex: number) => {
+    setUserPlaylists((prev) => {
+      if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= prev.length ||
+        toIndex >= prev.length
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const sortUserPlaylists = useCallback(
+    (criteria: 'liked' | 'newest' | 'oldest' | 'name' | 'tracksDesc') => {
+      setUserPlaylists((prev) => {
+        const next = [...prev];
+        switch (criteria) {
+          case 'liked':
+            next.sort((a, b) => Number(Boolean(b.isLiked)) - Number(Boolean(a.isLiked)));
+            break;
+          case 'newest':
+            next.sort(
+              (a, b) =>
+                new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+            );
+            break;
+          case 'oldest':
+            next.sort(
+              (a, b) =>
+                new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+            );
+            break;
+          case 'name':
+            next.sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+            break;
+          case 'tracksDesc':
+            next.sort((a, b) => b.tracks.length - a.tracks.length);
+            break;
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const reorderUserPlaylistTracks = useCallback(
+    (playlistId: string, fromIndex: number, toIndex: number) => {
+      setUserPlaylists((prev) =>
+        prev.map((pl) => {
+          if (pl.id !== playlistId) return pl;
+          if (
+            fromIndex === toIndex ||
+            fromIndex < 0 ||
+            toIndex < 0 ||
+            fromIndex >= pl.tracks.length ||
+            toIndex >= pl.tracks.length
+          ) {
+            return pl;
+          }
+          const nextTracks = [...pl.tracks];
+          const [moved] = nextTracks.splice(fromIndex, 1);
+          nextTracks.splice(toIndex, 0, moved);
+          return { ...pl, tracks: nextTracks };
+        })
+      );
+    },
+    []
+  );
+
+  const sortUserPlaylistTracks = useCallback(
+    (playlistId: string, criteria: 'title' | 'artist' | 'durationDesc' | 'reverse') => {
+      setUserPlaylists((prev) =>
+        prev.map((pl) => {
+          if (pl.id !== playlistId) return pl;
+          const nextTracks = [...pl.tracks];
+          switch (criteria) {
+            case 'title':
+              nextTracks.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ja'));
+              break;
+            case 'artist':
+              nextTracks.sort((a, b) => (a.artist || '').localeCompare(b.artist || '', 'ja'));
+              break;
+            case 'durationDesc':
+              nextTracks.sort((a, b) => (b.durationSeconds || 0) - (a.durationSeconds || 0));
+              break;
+            case 'reverse':
+              nextTracks.reverse();
+              break;
+          }
+          return { ...pl, tracks: nextTracks };
+        })
+      );
+    },
+    []
+  );
 
   // Internal listeners from YouTube player with Crossfade & Endless Radio
   const onPlayerTimeUpdate = useCallback(
@@ -2270,52 +3184,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         nextTrack();
       }
 
-      // 4. Endless Emotion Radio auto-replenish queue (YouTube comment emotion matching)
+      // 4. Endless Emotion Radio auto-replenish queue (keep 12-30+ upcoming tracks ready)
       if (endlessRadioActive && currentTrack && !currentTrack.isLocal && !isFetchingRadioRef.current) {
         const remainingTracksInQueue = queue.length - 1 - queueIndex;
-        if (remainingTracksInQueue <= 2) {
-          isFetchingRadioRef.current = true;
-          (async () => {
-            try {
-              const emotionRes = await api.getTrackCommentEmotions(
-                currentTrack.id,
-                currentTrack.title,
-                currentTrack.artist
-              );
-              const domMood = emotionRes?.dominantMood || 'emotional';
-              const domName = emotionRes?.dominantMoodName || '感情マッチ';
-              setEmotionRadioMood({ id: domMood, name: domName });
-
-              const moodRec = await api.getMoodRecommendation(domMood);
-              const emotionMatches = moodRec?.tracks || [];
-              const related = emotionMatches.length >= 3 ? [] : await api.getRelated(currentTrack.id);
-              const combined = [...emotionMatches, ...related];
-
-              if (combined.length > 0) {
-                setQueue((curr) => {
-                  const existingIds = new Set(curr.map((t) => t.id));
-                  const fresh = combined.filter((r) => r.id && !existingIds.has(r.id)).slice(0, 6);
-                  return fresh.length > 0 ? [...curr, ...fresh] : curr;
-                });
-              }
-            } catch (err) {
-              console.warn('Emotion radio replenishment error:', err);
-              try {
-                const related = await api.getRelated(currentTrack.id);
-                if (related && related.length > 0) {
-                  setQueue((curr) => {
-                    const existingIds = new Set(curr.map((t) => t.id));
-                    const fresh = related.filter((r) => !existingIds.has(r.id));
-                    return fresh.length > 0 ? [...curr, ...fresh] : curr;
-                  });
-                }
-              } catch {}
-            } finally {
-              setTimeout(() => {
-                isFetchingRadioRef.current = false;
-              }, 5000);
-            }
-          })();
+        if (remainingTracksInQueue < 12) {
+          replenishQueueInternal(false);
         }
       }
     },
@@ -2330,6 +3203,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       digestMode,
       trackTimestamps,
       seekTo,
+      replenishQueueInternal,
     ]
   );
 
@@ -2488,6 +3362,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         toggleEndlessRadio,
         emotionRadioMood,
         startRadioForTrack,
+        isAutoSelectingQueue,
+        replenishQueueNow,
         digestMode,
         toggleDigestMode,
         digestRemainingSec,
@@ -2496,6 +3372,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setImportModalOpen,
 
         playTrack,
+        playbackContextLabel,
+        setPlaybackContextLabel,
         togglePlay,
         pause,
         resume,
@@ -2529,6 +3407,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         removeRecentSearch,
         clearRecentSearches,
         addToQueue,
+        playNext,
+        moveQueueItem,
+        moveToPlayNext,
         removeFromQueue,
         clearQueue,
         createUserPlaylist,
@@ -2536,6 +3417,31 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addToUserPlaylist,
         removeFromUserPlaylist,
         deleteUserPlaylist,
+        togglePinUserPlaylist,
+        reorderUserPlaylists,
+        sortUserPlaylists,
+        reorderUserPlaylistTracks,
+        sortUserPlaylistTracks,
+        updateUserPlaylist,
+        userFolders,
+        createFolder,
+        renameFolder,
+        deleteFolder,
+        assignPlaylistToFolder,
+
+        hiddenTracks,
+        hiddenTrackIds,
+        blockedArtists,
+        isTrackBlocked,
+        isArtistBlocked,
+        hideTrack,
+        unhideTrack,
+        blockArtist,
+        unblockArtist,
+
+        trackDetailModalTrack,
+        openTrackDetailModal,
+        closeTrackDetailModal,
 
         currentUser,
         accountEmail,
@@ -2598,12 +3504,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setTermsModalOpen,
         storyModalOpen,
         setStoryModalOpen,
+        visualShareTarget,
+        openVisualShareCard,
+        zeroCodeModalTarget,
+        openZeroCodeModal,
+        closeZeroCodeModal,
+        connectModalOpen,
+        setConnectModalOpen,
+        floatingLyricsOverlay,
+        setFloatingLyricsOverlay,
+        canvasEnabled,
+        setCanvasEnabled,
         quizModalOpen,
         setQuizModalOpen,
         matchModalOpen,
         setMatchModalOpen,
         collabModalOpen,
         setCollabModalOpen,
+
+        deviceMode,
+        setDeviceMode,
+        toggleDeviceMode,
 
         userIntendedPlayingRef,
         onPlayerTimeUpdate,

@@ -29,6 +29,8 @@ import {
   Maximize2,
   Gauge,
   Zap,
+  Info,
+  MonitorSpeaker,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -72,6 +74,7 @@ export const PlayerBar: React.FC = () => {
     toggleLikeTrack,
     navigateTo,
     queue,
+    queueIndex,
     backgroundPlaybackEnabled,
     toggleBackgroundPlayback,
     wakeLockActive,
@@ -99,8 +102,12 @@ export const PlayerBar: React.FC = () => {
     danmakuEnabled,
     setDanmakuEnabled,
     setStoryModalOpen,
+    openVisualShareCard,
+    setConnectModalOpen,
     fullScreenPlayerOpen,
     setFullScreenPlayerOpen,
+    deviceMode,
+    openTrackDetailModal,
   } = usePlayer();
 
   const [crossfadeMenuOpen, setCrossfadeMenuOpen] = useState(false);
@@ -115,6 +122,8 @@ export const PlayerBar: React.FC = () => {
 
   const isLiked = likedTrackIds.has(currentTrack.id);
   const percent = duration > 0 ? Math.min(100, Math.max(0, (progress / duration) * 100)) : 0;
+  const upcomingCount = Math.max(0, queue.length - 1 - queueIndex);
+  const upNextTrack = queue[queueIndex + 1];
 
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -128,12 +137,15 @@ export const PlayerBar: React.FC = () => {
     setHoverPositionSec(pos * duration);
   };
 
+  const isMobileMode = deviceMode === 'mobile';
+
   return (
     <>
       {/* MOBILE MINI-PLAYER (Spotify-style floating card docked above BottomTabBar) */}
+      {isMobileMode && (
       <div
         onClick={() => setFullScreenPlayerOpen(true)}
-        className="sm:hidden fixed bottom-[64px] left-2 right-2 z-40 bg-[#231215]/95 backdrop-blur-xl border border-white/10 rounded-lg px-2.5 py-2 shadow-2xl flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] transition-transform overflow-hidden"
+        className="fixed bottom-[64px] left-1/2 -translate-x-1/2 w-[calc(100%-16px)] max-w-lg z-40 bg-[#231215]/95 backdrop-blur-xl border border-white/10 rounded-lg px-2.5 py-2 shadow-2xl flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] transition-transform overflow-hidden"
       >
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <SafeImage
@@ -152,15 +164,46 @@ export const PlayerBar: React.FC = () => {
           </div>
         </div>
 
-        {/* Mobile right quick actions (Heart + Play/Pause) */}
+        {/* Mobile right quick actions (Connect + Queue + Heart + Play/Pause) */}
         <div className="flex items-center shrink-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setConnectModalOpen(true);
+            }}
+            className="min-w-[36px] min-h-[40px] flex items-center justify-center text-neutral-300 hover:text-white transition-colors cursor-pointer"
+            title="デバイスに接続 (Connect)"
+            aria-label="デバイスに接続"
+          >
+            <MonitorSpeaker className="w-4.5 h-4.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setQueueOpen((prev) => !prev);
+            }}
+            className={`relative min-w-[36px] min-h-[40px] flex items-center justify-center transition-colors cursor-pointer ${
+              queueOpen ? 'text-red-400' : 'text-neutral-300 hover:text-white'
+            }`}
+            title={upNextTrack ? `次の曲: ${upNextTrack.title}` : '再生キュー / 次に再生'}
+            aria-label="再生キュー / 次に再生"
+          >
+            <ListMusic className="w-5 h-5" />
+            {upcomingCount > 0 && (
+              <span className="absolute top-1.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-600 text-[9px] font-black text-white flex items-center justify-center leading-none">
+                {upcomingCount > 99 ? '99+' : upcomingCount}
+              </span>
+            )}
+          </button>
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
               toggleLikeTrack(currentTrack);
             }}
-            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-300 hover:text-red-500 transition-colors cursor-pointer"
+            className="min-w-[38px] min-h-[40px] flex items-center justify-center text-neutral-300 hover:text-red-500 transition-colors cursor-pointer"
             title={isLiked ? 'お気に入りから削除' : 'お気に入りに追加'}
             aria-label={isLiked ? 'お気に入りから削除' : 'お気に入りに追加'}
           >
@@ -174,7 +217,7 @@ export const PlayerBar: React.FC = () => {
               e.stopPropagation();
               togglePlay();
             }}
-            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-white hover:text-red-400 transition-colors cursor-pointer"
+            className="min-w-[38px] min-h-[40px] flex items-center justify-center text-white hover:text-red-400 transition-colors cursor-pointer"
             title={isPlaying ? '一時停止' : '再生'}
             aria-label={isPlaying ? '一時停止' : '再生'}
           >
@@ -194,9 +237,11 @@ export const PlayerBar: React.FC = () => {
           />
         </div>
       </div>
+      )}
 
-      {/* DESKTOP PLAYER BAR (Full controls bar across bottom on tablet / desktop) */}
-      <footer className="hidden sm:block fixed bottom-0 left-0 right-0 z-40 bg-[#0a0a0c]/98 backdrop-blur-xl border-t border-red-950/40 px-4 md:px-6 py-2.5 shadow-2xl">
+      {/* DESKTOP PLAYER BAR (Full controls bar across bottom in PC mode) */}
+      {!isMobileMode && (
+      <footer className="fixed bottom-0 left-0 right-0 z-40 bg-[#0a0a0c]/98 backdrop-blur-xl border-t border-red-950/40 px-4 md:px-6 py-2.5 shadow-2xl">
         {/* Mini top progress indicator bar for high-precision scrub */}
         <div
           className="absolute top-0 left-0 right-0 h-1 bg-neutral-800 cursor-pointer group"
@@ -313,9 +358,19 @@ export const PlayerBar: React.FC = () => {
             type="button"
             onClick={() => openAddToPlaylistModal(currentTrack)}
             title="プレイリストに追加"
-            className="p-1.5 text-neutral-400 hover:text-white transition-colors shrink-0"
+            className="p-1.5 text-neutral-400 hover:text-white transition-colors shrink-0 cursor-pointer"
           >
             <ListPlus className="w-4 h-4 md:w-5 md:h-5" />
+          </button>
+
+          {/* Track Detail / Credits button */}
+          <button
+            type="button"
+            onClick={() => openTrackDetailModal(currentTrack)}
+            title="楽曲の詳細・クレジット（投稿日・再生回数・非表示設定）"
+            className="p-1.5 text-neutral-400 hover:text-white transition-colors shrink-0 cursor-pointer"
+          >
+            <Info className="w-4 h-4 md:w-5 md:h-5" />
           </button>
 
           {/* Quick Radio station trigger button */}
@@ -686,14 +741,16 @@ export const PlayerBar: React.FC = () => {
           <button
             type="button"
             onClick={() => setQueueOpen((prev) => !prev)}
-            title="キュー / 次の曲"
-            className={`relative p-2 rounded-lg transition-colors ${
+            title={upNextTrack ? `次の曲: ${upNextTrack.title}（クリックでキュー編集）` : 'キュー / 次の曲'}
+            className={`relative p-2 rounded-lg transition-colors cursor-pointer ${
               queueOpen ? 'bg-red-600/20 text-red-500' : 'text-neutral-400 hover:text-white'
             }`}
           >
             <ListMusic className="w-4 h-4 md:w-5 md:h-5" />
-            {queue.length > 0 && (
-              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-red-500" />
+            {upcomingCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-0.5 rounded-full bg-red-600 text-[9px] font-black text-white flex items-center justify-center leading-none">
+                {upcomingCount > 99 ? '99+' : upcomingCount}
+              </span>
             )}
           </button>
 
@@ -721,12 +778,28 @@ export const PlayerBar: React.FC = () => {
             <Share2 className="w-4 h-4 md:w-5 md:h-5" />
           </button>
 
-          {/* Instagram Story Card Generator Button */}
+          {/* Connect Device Picker */}
           <button
             type="button"
-            onClick={() => setStoryModalOpen(true)}
-            title="Instagramストーリーズ風 楽曲シェア画像を生成"
-            className="p-2 rounded-lg text-neutral-400 hover:text-pink-400 transition-colors"
+            onClick={() => setConnectModalOpen(true)}
+            title="デバイス接続・音質設定 (Connect)"
+            className="p-2 rounded-lg text-neutral-400 hover:text-white transition-colors cursor-pointer"
+          >
+            <MonitorSpeaker className="w-4 h-4 md:w-5 md:h-5" />
+          </button>
+
+          {/* Visual Share Card Studio Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (currentTrack) {
+                openVisualShareCard({ type: 'track', track: currentTrack });
+              } else {
+                setStoryModalOpen(true);
+              }
+            }}
+            title="シェアカード（楽曲 / 歌詞画像）を生成"
+            className="p-2 rounded-lg text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
           >
             <Sparkles className="w-4 h-4 md:w-5 md:h-5" />
           </button>
@@ -788,6 +861,7 @@ export const PlayerBar: React.FC = () => {
         </div>
       </div>
     </footer>
+      )}
     </>
   );
 };

@@ -20,6 +20,7 @@ import {
   Tv,
   Crown,
   Smartphone,
+  Monitor,
   BarChart2,
   ArrowRightLeft,
 } from 'lucide-react';
@@ -60,7 +61,12 @@ export const TopNavbar: React.FC = () => {
     queue,
     playTrack,
     setWrappedModalOpen,
+    deviceMode,
+    setDeviceMode,
   } = usePlayer();
+
+  const isPC = deviceMode === 'pc';
+  const isMobile = !isPC;
 
   const [localInput, setLocalInput] = useState(searchQuery);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -154,7 +160,14 @@ export const TopNavbar: React.FC = () => {
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-[#070708]/95 backdrop-blur-md border-b border-neutral-800/80 px-3 sm:px-4 md:px-8 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 sm:gap-4 md:gap-6 max-w-full overflow-x-clip">
+    <header
+      className={`sticky top-0 z-40 bg-[#070708]/95 backdrop-blur-md border-b border-neutral-800/80 ${
+        isMobile
+          ? 'px-3 py-2.5'
+          : 'px-4 md:px-8 py-3.5'
+      } flex items-center justify-between gap-2 sm:gap-4 md:gap-6 max-w-full overflow-x-clip`}
+    >
+      <div className={`w-full mx-auto flex items-center justify-between gap-2 sm:gap-4 md:gap-6 ${isMobile ? 'max-w-lg' : ''}`}>
       {/* Zone 1: Wordmark & Mode Switch */}
       <div className="flex items-center gap-1.5 sm:gap-3 shrink-0 min-w-0">
         <button
@@ -179,7 +192,8 @@ export const TopNavbar: React.FC = () => {
           </div>
         </button>
 
-        {/* Live Online Users Badge (compact on mobile) */}
+        {/* Live Online Users Badge (PC mode) */}
+        {isPC && (
         <button
           type="button"
           onClick={() => setAccountModalOpen(true)}
@@ -196,6 +210,7 @@ export const TopNavbar: React.FC = () => {
           <span className="font-extrabold text-white text-xs font-mono">{onlineCount}</span>
           <span className="text-[10px] text-emerald-400 font-bold">人</span>
         </button>
+        )}
 
         {/* Audio (音声) / MV (動画) Mode Switcher */}
         <div className="flex items-center bg-neutral-900/90 border border-neutral-700/80 rounded-full p-0.5 shadow-inner gap-0.5 shrink-0">
@@ -210,7 +225,7 @@ export const TopNavbar: React.FC = () => {
             title="音声・カバーアートモード（通信量節約・BGM再生）"
           >
             <Music className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">音声</span>
+            <span className={isPC ? 'inline' : 'hidden'}>音声</span>
           </button>
           <button
             type="button"
@@ -237,8 +252,9 @@ export const TopNavbar: React.FC = () => {
         </div>
       </div>
 
-      {/* Zone 2: Navigation Links */}
-      <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
+      {/* Zone 2: Navigation Links (PC Mode) */}
+      {isPC && (
+      <nav className="flex items-center gap-5 lg:gap-7 text-sm font-medium">
         <button
           type="button"
           onClick={() => navigateTo('home')}
@@ -296,19 +312,23 @@ export const TopNavbar: React.FC = () => {
           DMチャット
         </button>
       </nav>
+      )}
 
-      {/* Zone 3: Search Bar (sm+) or Search trigger (<sm), Quick Actions */}
+      {/* Zone 3: Search Bar (PC) or Search trigger (Mobile), Quick Actions */}
       <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        {isMobile && (
         <button
           type="button"
           onClick={() => navigateTo('search')}
           aria-label="検索"
-          className="sm:hidden p-2 rounded-full bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border border-neutral-800 transition-colors cursor-pointer"
+          className="p-2 rounded-full bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border border-neutral-800 transition-colors cursor-pointer"
         >
           <Search className="w-4 h-4" />
         </button>
+        )}
 
-        <div ref={searchBoxRef} className="hidden sm:block relative sm:w-56 md:w-72">
+        {isPC && (
+        <div ref={searchBoxRef} className="relative w-52 md:w-72">
           <form onSubmit={handleSearchSubmit} className="relative">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400 pointer-events-none" />
             <input
@@ -383,7 +403,10 @@ export const TopNavbar: React.FC = () => {
             </div>
           )}
         </div>
+        )}
 
+        {isPC && (
+        <>
         {/* Real Stats Pill (オンライン人数 & 総アクセス回数 & アカウント数 - 偽はいらん) */}
         <button
           type="button"
@@ -440,16 +463,18 @@ export const TopNavbar: React.FC = () => {
           <Users className="w-3.5 h-3.5 text-emerald-400" />
           <span>共同作成</span>
         </button>
+        </>
+        )}
 
         {/* Direct Messages Quick Button */}
         <button
           type="button"
           onClick={() => setDmModalOpen(true)}
           title="ユーザー間DMチャット（曲やプレイリストのプライベート交換）"
-          className="px-2.5 sm:px-3 py-2 bg-neutral-900/90 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+          className="px-2 sm:px-3 py-2 bg-neutral-900/90 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
         >
           <MessageSquare className="w-3.5 h-3.5 text-cyan-400" />
-          <span className="hidden sm:inline">DM</span>
+          {isPC && <span>DM</span>}
         </button>
 
         {/* Social Notification Bell with live unread badge */}
@@ -468,12 +493,12 @@ export const TopNavbar: React.FC = () => {
         </button>
 
         {/* PWA App Install Quick Action */}
-        {!isInstalled && (
+        {!isInstalled && isPC && (
           <button
             type="button"
             onClick={handlePwaClick}
             title="ホーム画面に追加してアプリ化（バックグラウンド再生安定化）"
-            className="hidden sm:flex px-2.5 sm:px-3 py-2 bg-gradient-to-r from-red-600/20 to-rose-600/20 hover:from-red-600/30 hover:to-rose-600/30 text-rose-300 hover:text-white border border-rose-500/40 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shrink-0 cursor-pointer shadow-sm shadow-rose-950/40"
+            className="flex px-2.5 sm:px-3 py-2 bg-gradient-to-r from-red-600/20 to-rose-600/20 hover:from-red-600/30 hover:to-rose-600/30 text-rose-300 hover:text-white border border-rose-500/40 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shrink-0 cursor-pointer shadow-sm shadow-rose-950/40"
           >
             <Smartphone className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
             <span>アプリ化</span>
@@ -481,22 +506,24 @@ export const TopNavbar: React.FC = () => {
         )}
 
         {/* Spotify Wrapped & Listening Analytics Quick Action */}
+        {isPC && (
         <button
           type="button"
           onClick={() => setWrappedModalOpen(true)}
           title="Spotify Wrapped & リスニング分析（あなたの再生履歴と年間統計）"
-          className="hidden sm:flex px-2.5 sm:px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-200 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shrink-0 cursor-pointer shadow-sm shadow-red-950/40"
+          className="flex px-2.5 sm:px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-200 hover:text-white border border-red-500/30 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shrink-0 cursor-pointer shadow-sm shadow-red-950/40"
         >
           <BarChart2 className="w-3.5 h-3.5 text-red-400" />
           <span className="hidden md:inline">Wrapped</span>
         </button>
+        )}
 
         {/* Account Status Button */}
         <button
           type="button"
           onClick={() => setAccountModalOpen(true)}
           title={currentUser ? `ログイン中: ${currentUser.username}${currentUser.email ? ` (${currentUser.email})` : ''}` : 'ゲスト利用中 (アカウント登録・ログイン)'}
-          className={`p-2 sm:px-3 sm:py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer border ${
+          className={`p-2 ${isPC ? 'px-3 py-2' : ''} rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer border ${
             currentUser
               ? 'bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700/80'
               : 'bg-neutral-900/90 hover:bg-neutral-800 text-neutral-300 border-neutral-800'
@@ -506,25 +533,27 @@ export const TopNavbar: React.FC = () => {
             <>
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <User className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden sm:inline font-mono truncate max-w-[110px]">
-                {currentUser.username}
-              </span>
+              {isPC && (
+                <span className="font-mono truncate max-w-[110px]">
+                  {currentUser.username}
+                </span>
+              )}
             </>
           ) : (
             <>
               <User className="w-3.5 h-3.5 text-neutral-400" />
-              <span className="hidden sm:inline">アカウント</span>
+              {isPC && <span>アカウント</span>}
             </>
           )}
         </button>
 
         {/* Master Admin Console Button */}
-        {isAdmin && (
+        {isAdmin && isPC && (
           <button
             type="button"
             onClick={() => setAdminModalOpen(true)}
             title="管理者コンソールを開く (マスター認証済み)"
-            className="hidden sm:flex px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40"
+            className="flex px-2.5 sm:px-3 py-2 rounded-lg text-xs font-bold items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40"
           >
             <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
             <span className="hidden md:inline">管理者</span>
@@ -532,28 +561,33 @@ export const TopNavbar: React.FC = () => {
         )}
 
         {/* Global One-Click URL Import Button */}
+        {isPC && (
         <button
           type="button"
           onClick={() => setImportModalOpen(true)}
           title="YouTube / Spotify プレイリストURLを一括インポート"
-          className="hidden md:flex px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-200 hover:text-white border border-red-500/30 rounded-lg text-xs font-semibold items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer"
+          className="flex px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-200 hover:text-white border border-red-500/30 rounded-lg text-xs font-semibold items-center gap-1.5 transition-all shadow-sm shrink-0 cursor-pointer"
         >
           <Link2 className="w-3.5 h-3.5 text-red-400" />
           <span className="hidden lg:inline">URLインポート</span>
         </button>
+        )}
 
         {/* 10-Band Equalizer Quick Toggle */}
+        {isPC && (
         <button
           type="button"
           onClick={() => setEqModalOpen(true)}
           title="イコライザー & 重低音ブースト"
-          className="hidden md:flex px-2.5 sm:px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-amber-400 border border-neutral-800 rounded-lg text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="flex px-2.5 sm:px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-amber-400 border border-neutral-800 rounded-lg text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Sliders className="w-3.5 h-3.5 text-amber-500" />
           <span className="hidden lg:inline">EQ</span>
         </button>
+        )}
 
         {/* Terms of Service Button */}
+        {isPC && (
         <button
           type="button"
           onClick={() => setTermsModalOpen(true)}
@@ -563,6 +597,28 @@ export const TopNavbar: React.FC = () => {
           <FileText className="w-3.5 h-3.5 text-neutral-400" />
           <span className="hidden xl:inline">利用規約</span>
         </button>
+        )}
+
+        {/* Mobile / PC Edition Quick Switcher */}
+        <button
+          type="button"
+          onClick={() => setDeviceMode(isPC ? 'mobile' : 'pc')}
+          title={isPC ? 'スマホ版表示に切り替え' : 'パソコン版表示に切り替え'}
+          className="px-2 sm:px-2.5 py-2 bg-neutral-900/90 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer"
+        >
+          {isPC ? (
+            <>
+              <Smartphone className="w-3.5 h-3.5 text-red-400" />
+              <span className="hidden lg:inline">スマホ版</span>
+            </>
+          ) : (
+            <>
+              <Monitor className="w-3.5 h-3.5 text-red-400" />
+              <span>PC版</span>
+            </>
+          )}
+        </button>
+      </div>
       </div>
 
       {showPwaModal && (

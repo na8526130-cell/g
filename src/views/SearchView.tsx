@@ -23,6 +23,8 @@ import {
   Flame,
   Moon,
   ArrowRightLeft,
+  ListStart,
+  Info,
 } from 'lucide-react';
 import {
   getSearchConversions,
@@ -114,6 +116,7 @@ export const SearchView: React.FC = () => {
     clearRecentSearches,
     playTrack,
     addToQueue,
+    playNext,
     toggleLikeTrack,
     likedTrackIds,
     likedAlbumIds,
@@ -123,6 +126,8 @@ export const SearchView: React.FC = () => {
     navigateTo,
     currentTrack,
     openAddToPlaylistModal,
+    openTrackDetailModal,
+    isTrackBlocked,
     showToast,
   } = usePlayer();
 
@@ -583,7 +588,9 @@ export const SearchView: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {spotifyTracks.map((track, idx) => {
+                  {spotifyTracks
+                    .filter((track) => !isTrackBlocked(track))
+                    .map((track, idx) => {
                     const isCurrent = currentTrack?.id === track.id;
                     const isLiked = likedTrackIds.has(track.id);
                     return (
@@ -607,16 +614,28 @@ export const SearchView: React.FC = () => {
                             楽曲 · {track.artist}
                           </p>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleLikeTrack(track);
                             }}
-                            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
                           >
                             <Heart className={`w-4.5 h-4.5 ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              playNext(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-400 cursor-pointer"
+                            title="次に再生"
+                            aria-label="次に再生"
+                          >
+                            <ListStart className="w-4 h-4" />
                           </button>
                           <button
                             type="button"
@@ -626,8 +645,22 @@ export const SearchView: React.FC = () => {
                               showToast(`「${track.title}」をキューに追加しました`, 'info', 2000);
                             }}
                             className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+                            title="キューの最後に追加"
+                            aria-label="キューの最後に追加"
                           >
                             <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openTrackDetailModal(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+                            title="楽曲の詳細"
+                            aria-label="楽曲の詳細"
+                          >
+                            <Info className="w-4 h-4" />
                           </button>
                         </div>
                       </div>
@@ -705,7 +738,10 @@ export const SearchView: React.FC = () => {
                       </button>
                     </div>
                     <div className="space-y-0.5">
-                      {resultsAll.songs.slice(0, 6).map((track) => {
+                      {resultsAll.songs
+                        .filter((track) => !isTrackBlocked(track))
+                        .slice(0, 6)
+                        .map((track) => {
                         const isCurrent = currentTrack?.id === track.id;
                         const isLiked = likedTrackIds.has(track.id);
                         return (
@@ -737,7 +773,7 @@ export const SearchView: React.FC = () => {
                                   e.stopPropagation();
                                   toggleLikeTrack(track);
                                 }}
-                                className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
                                 title="お気に入り"
                               >
                                 <Heart className={`w-4.5 h-4.5 ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
@@ -757,13 +793,38 @@ export const SearchView: React.FC = () => {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  playNext(track);
+                                }}
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-400 cursor-pointer"
+                                title="次に再生"
+                                aria-label="次に再生"
+                              >
+                                <ListStart className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   addToQueue(track);
                                   showToast(`「${track.title}」をキューに追加しました`, 'info', 2000);
                                 }}
                                 className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
-                                title="キューに追加"
+                                title="キューの最後に追加"
+                                aria-label="キューの最後に追加"
                               >
                                 <Plus className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openTrackDetailModal(track);
+                                }}
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+                                title="楽曲の詳細"
+                                aria-label="楽曲の詳細"
+                              >
+                                <Info className="w-4 h-4" />
                               </button>
                             </div>
                           </div>
@@ -947,7 +1008,9 @@ export const SearchView: React.FC = () => {
                 </div>
               ) : filter === 'song' ? (
                 <div className="space-y-0.5">
-                  {resultsFiltered.map((track) => {
+                  {resultsFiltered
+                    .filter((track) => !isTrackBlocked(track))
+                    .map((track) => {
                     const isCurrent = currentTrack?.id === track.id;
                     const isLiked = likedTrackIds.has(track.id);
                     return (
@@ -970,16 +1033,28 @@ export const SearchView: React.FC = () => {
                           </p>
                           <p className="text-xs text-neutral-400 truncate mt-0.5">{track.artist}</p>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               toggleLikeTrack(track);
                             }}
-                            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-500 cursor-pointer"
                           >
                             <Heart className={`w-4.5 h-4.5 ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              playNext(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-400 cursor-pointer"
+                            title="次に再生"
+                            aria-label="次に再生"
+                          >
+                            <ListStart className="w-4 h-4" />
                           </button>
                           <button
                             type="button"
@@ -989,8 +1064,22 @@ export const SearchView: React.FC = () => {
                               showToast(`「${track.title}」をキューに追加しました`, 'info', 2000);
                             }}
                             className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+                            title="キューの最後に追加"
+                            aria-label="キューの最後に追加"
                           >
                             <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openTrackDetailModal(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
+                            title="楽曲の詳細"
+                            aria-label="楽曲の詳細"
+                          >
+                            <Info className="w-4 h-4" />
                           </button>
                         </div>
                       </div>

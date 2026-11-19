@@ -18,7 +18,7 @@ import {
   extractTrackTimestampsAndHeatmap,
   fetchRealArtistLiveSetlists,
 } from './src/server/liveFeatures.js';
-import { normalizeArtistName } from './src/utils/artistNames.js';
+import { normalizeArtistName, isSameArtist } from './src/utils/artistNames.js';
 import { expandSearchQuery, getSearchConversions } from './src/utils/searchConverter.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -124,7 +124,11 @@ function getSearchShelfContents(
 }
 
 function extractItemArtist(item: any, fallback = ''): string {
-  const direct = (item?.artists && item.artists[0]?.name) || item?.author?.name || '';
+  const direct =
+    (item?.artists && item.artists[0]?.name) ||
+    (item?.authors && item.authors[0]?.name) ||
+    item?.author?.name ||
+    '';
   if (direct) return normalizeArtistName(direct);
   const rawTitle = item?.title?.toString?.() || '';
   const jpBracketMatch = rawTitle.match(/^([^「『【\[]+?)\s*[「『]/);
@@ -846,6 +850,188 @@ export async function createApp(options?: {
         error: err.message,
       });
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Resolve official MV videoId for Fullscreen Canvas background (returns videoId: null when no MV exists)
+  app.get('/api/music/mv-canvas', async (req, res) => {
+    const id = String(req.query.id || '').trim();
+    const title = String(req.query.title || '').trim();
+    const artist = String(req.query.artist || '').trim();
+
+    if (!title && !id) {
+      return res.json({ hasMv: false, videoId: null });
+    }
+
+    const cacheKey = `mv_canvas_v2:${id}:${title.toLowerCase()}:${artist.toLowerCase()}`;
+    const cached = kvCache.get<{ hasMv: boolean; videoId: string | null; title?: string }>(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, fromCache: true });
+    }
+
+    const normalizeTitleCore = (raw: string) =>
+      (raw || '')
+        .toLowerCase()
+        .replace(/[\(\[【（［].*?[\)\]】）］]/g, ' ')
+        .replace(/\b(official|music|video|mv|m\/v|pv|audio|lyric|lyrics|full|ver\.?)\b/gi, ' ')
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim();
+
+    const origLower = title.toLowerCase();
+    const origCore = normalizeTitleCore(title);
+    const origArtistNorm = normalizeArtistName(artist).toLowerCase();
+    const allowCover = /cover|歌ってみた|弾いてみた|remix|リミックス/i.test(origLower);
+    const allowLive = /\blive\b|ライブ|tour|stadium|arena/i.test(origLower);
+
+    const isRejected = (candTitle: string, candAuthor: string) => {
+      const t = (candTitle || '').toLowerCase();
+      const a = (candAuthor || '').toLowerCase();
+      if (a.includes('- topic') || a.includes('provided to youtube')) return true;
+      if (
+        /karaoke|カラオケ|off\s*vocal|instrumental|inst\.|reaction|リアクション|解説|考察|弾き語り|full\s*album|bgm|作業用|audio\s*only|official\s*audio|lyric\s*video|lyrics|歌詞動画|歌詞付き|和訳|日本語字幕|発音|자막|静止画|ノンクレジット|creditless|piano\s*ver|piano\s*cover/i.test(
+          t
+        )
+      ) {
+        return true;
+      }
+      if (!allowCover && /歌ってみた|弾いてみた|叩いてみた|踊ってみた|covered\s*by|\bcover\b/i.test(t)) {
+        return true;
+      }
+      if (!allowLive && /\blive\b|ライブ映像|official\s*live|live\s*video|arena\s*tour|stadium/i.test(t)) {
+        return true;
+      }
+      return false;
+    };
+
+    const hasMvTag = (t: string) =>
+      /(\bmv\b|m\/v|music\s*video|official\s*(music\s*)?video|公式\s*mv|公式ビデオ|\bpv\b|［official\s*video］|\[official\s*video\])/i.test(
+        t
+      );
+
+    try {
+      const yt = await getInnertube();
+      const queryBase = `${title} ${artist}`.trim();
+
+      const [ytSearchRes, ytMusicVideoRes] = await Promise.allSettled([
+        yt.search(`${queryBase} Official Video`, { type: 'video' }),
+        yt.music.search(queryBase, { type: 'video' }),
+      ]);
+
+      type MvCand = { id: string; title: string; author: string; score: number; explicitMv: boolean };
+      const candidates: MvCand[] = [];
+
+      // 1. Standard YouTube video search results (full titles + channel names)
+      if (ytSearchRes.status === 'fulfilled') {
+        const ytVideos = (ytSearchRes.value as any)?.videos || [];
+        for (const v of ytVideos.slice(0, 12)) {
+          const vid = v?.id;
+          const vTitle = v?.title?.toString?.() || '';
+          const vAuthor = v?.author?.name?.toString?.() || '';
+          if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) continue;
+          if (isRejected(vTitle, vAuthor)) continue;
+
+          const candCore = normalizeTitleCore(vTitle);
+          const vTitleLower = vTitle.toLowerCase();
+          const titleOk =
+            !origCore ||
+            candCore.includes(origCore) ||
+            origCore.includes(candCore) ||
+            origCore
+              .split(/\s+/)
+              .filter((w) => w.length >= 2)
+              .every((w) => vTitleLower.includes(w));
+          if (!titleOk) continue;
+
+          const artistOk =
+            !origArtistNorm ||
+            isSameArtist(vAuthor, artist) ||
+            vTitleLower.includes(origArtistNorm) ||
+            vAuthor.toLowerCase().includes(origArtistNorm);
+          if (!artistOk) continue;
+
+          const explicitMv = hasMvTag(vTitle);
+          if (!explicitMv && !isSameArtist(vAuthor, artist)) continue;
+
+          let score = 0;
+          if (explicitMv) score += 100;
+          if (isSameArtist(vAuthor, artist)) score += 60;
+          if (candCore === origCore) score += 30;
+          if (vid !== id) score += 10;
+          candidates.push({ id: vid, title: vTitle, author: vAuthor, score, explicitMv });
+        }
+      }
+
+      // 2. YouTube Music video shelf results (strips brackets -> exact clean title match)
+      if (ytMusicVideoRes.status === 'fulfilled') {
+        const ytmVideos = getSearchShelfContents(ytMusicVideoRes.value, 'videos').slice(0, 6);
+        for (let idx = 0; idx < ytmVideos.length; idx++) {
+          const item = ytmVideos[idx];
+          const vid = item?.id;
+          const mTitle = item?.title?.toString?.() || '';
+          const mAuthor = extractItemArtist(item);
+          if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) continue;
+          if (isRejected(mTitle, mAuthor)) continue;
+
+          const candCore = normalizeTitleCore(mTitle);
+          if (!origCore || candCore !== origCore) continue;
+          if (mAuthor && origArtistNorm && !isSameArtist(mAuthor, artist)) continue;
+
+          const explicitMv = hasMvTag(mTitle);
+          let score = 75 - idx * 8;
+          if (explicitMv) score += 50;
+          if (vid !== id) score += 15;
+          candidates.push({ id: vid, title: mTitle, author: mAuthor, score, explicitMv });
+        }
+      }
+
+      // Deduplicate by id keeping highest score
+      const deduped = new Map<string, MvCand>();
+      for (const c of candidates) {
+        const prev = deduped.get(c.id);
+        if (!prev || c.score > prev.score) deduped.set(c.id, c);
+      }
+      const ranked = Array.from(deduped.values()).sort((a, b) => b.score - a.score);
+
+      // Verify top candidate via YouTube oEmbed so '- Topic' 4:3 static Art Tracks are never mistaken for MVs
+      let verified: { id: string; title: string } | null = null;
+      for (const cand of ranked.slice(0, 4)) {
+        try {
+          const oeRes = await fetch(
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(
+              `https://www.youtube.com/watch?v=${cand.id}`
+            )}&format=json`,
+            { signal: AbortSignal.timeout(2500) }
+          );
+          if (!oeRes.ok) continue;
+          const oe: any = await oeRes.json();
+          const oeAuthor = String(oe?.author_name || '');
+          const oeTitle = String(oe?.title || cand.title || '');
+          if (isRejected(oeTitle, oeAuthor)) continue;
+          const w = Number(oe?.width || 0);
+          const h = Number(oe?.height || 0);
+          // Topic Art Tracks are 4:3 (height/width >= 0.72); real MVs are widescreen (16:9 ~ 0.5625)
+          if (w > 0 && h > 0 && h / w >= 0.72 && !hasMvTag(oeTitle)) continue;
+          if (!cand.explicitMv && !hasMvTag(oeTitle) && origArtistNorm && !isSameArtist(oeAuthor, artist)) {
+            continue;
+          }
+          verified = { id: cand.id, title: oeTitle };
+          break;
+        } catch {
+          if (cand.explicitMv) {
+            verified = { id: cand.id, title: cand.title };
+            break;
+          }
+        }
+      }
+
+      const result = verified
+        ? { hasMv: true, videoId: verified.id, title: verified.title }
+        : { hasMv: false, videoId: null };
+
+      kvCache.set(cacheKey, result, 24 * 3600);
+      return res.json(result);
+    } catch {
+      return res.json({ hasMv: false, videoId: null });
     }
   });
 
@@ -2460,44 +2646,130 @@ export async function createApp(options?: {
     }
   });
 
-  // Single Track Info (for share URLs /?track=xxxx and direct loading)
+  // Single Track Info (for share URLs /?track=xxxx, direct loading, and rich Track Detail Modal)
   app.get('/api/music/track/:id', async (req, res) => {
     const videoId = String(req.params.id || '').trim();
+    const isRich = String(req.query.rich || '') === '1';
     if (!videoId) return res.status(400).json({ error: 'Video ID is required' });
     const startTime = Date.now();
 
     try {
       const yt = await getInnertube();
-      const info = await yt.getBasicInfo(videoId);
-      const basic = info.basic_info;
+      const info: any = isRich
+        ? await yt.getInfo(videoId).catch(() => yt.getBasicInfo(videoId))
+        : await yt.getBasicInfo(videoId);
+      const basic = info?.basic_info || {};
 
       const durSec = basic?.duration || 0;
       const durText = durSec > 0
         ? `${Math.floor(durSec / 60)}:${String(durSec % 60).padStart(2, '0')}`
         : '0:00';
 
+      const rawViews = Number(basic?.view_count || 0);
+      const formatJapaneseViews = (n: number): string => {
+        if (!n || Number.isNaN(n)) return '';
+        if (n >= 100000000) return `${(n / 100000000).toFixed(1)}億回再生`;
+        if (n >= 10000) return `${Math.round(n / 10000).toLocaleString()}万回再生`;
+        return `${n.toLocaleString()}回再生`;
+      };
+
+      const artistId =
+        basic?.channel_id ||
+        info?.secondary_info?.owner?.author?.id ||
+        undefined;
+
       const track = {
         id: basic?.id || videoId,
         title: basic?.title || 'Unknown Title',
-        artist: normalizeArtistName(basic?.author || 'Unknown Artist'),
+        artist: normalizeArtistName(basic?.author || info?.secondary_info?.owner?.author?.name || 'Unknown Artist'),
+        artistId,
         duration: durText,
         durationSeconds: durSec,
         thumbnail: getBestThumbnail(basic?.thumbnail || []),
+        views: rawViews > 0 ? formatJapaneseViews(rawViews) : undefined,
       };
+
+      let details: any = undefined;
+      if (isRich) {
+        const primary = info?.primary_info || {};
+        const secondary = info?.secondary_info || {};
+        const publishedDate =
+          primary?.published?.text ||
+          primary?.relative_date?.text ||
+          '';
+        const viewCountText =
+          primary?.view_count?.view_count?.text ||
+          primary?.view_count?.short_view_count?.text ||
+          (rawViews > 0 ? `${rawViews.toLocaleString()} 回視聴` : '');
+        const likeCount = Number(basic?.like_count || 0);
+        const description = String(
+          secondary?.description?.text || basic?.short_description || ''
+        ).slice(0, 1200);
+        const keywords = Array.isArray(basic?.keywords) ? basic.keywords.slice(0, 10) : [];
+        const category = basic?.category || '';
+
+        let albumTitle = '';
+        let albumId = '';
+        let relatedArtists: { id?: string; name: string; thumbnail?: string }[] = [];
+        try {
+          const musicInfo: any = await yt.music.getInfo(videoId).catch(() => null);
+          const upNext = musicInfo?.related_tab?.content || [];
+          const songBasic = musicInfo?.basic_info || {};
+          if (!albumTitle && songBasic?.album?.name) {
+            albumTitle = String(songBasic.album.name);
+            albumId = String(songBasic.album.id || '');
+          }
+          // Try extracting album from description lines like "Provided to YouTube by ..." -> 3rd line is album
+          if (!albumTitle && description.includes('Provided to YouTube')) {
+            const descLines = description.split('\n').map((l) => l.trim()).filter(Boolean);
+            const providedIdx = descLines.findIndex((l) => l.includes('Provided to YouTube'));
+            if (providedIdx >= 0 && descLines[providedIdx + 2]) {
+              albumTitle = descLines[providedIdx + 2];
+            }
+          }
+          const seenArtists = new Set<string>([track.artist.toLowerCase()]);
+          for (const item of Array.isArray(upNext) ? upNext : []) {
+            const aName = normalizeArtistName(item?.author?.name || item?.artists?.[0]?.name || '');
+            if (aName && !seenArtists.has(aName.toLowerCase())) {
+              seenArtists.add(aName.toLowerCase());
+              relatedArtists.push({
+                id: item?.author?.channel_id || item?.artists?.[0]?.channel_id,
+                name: aName,
+                thumbnail: getBestThumbnail(item?.thumbnail || item?.thumbnails || []),
+              });
+            }
+            if (relatedArtists.length >= 6) break;
+          }
+        } catch {}
+
+        details = {
+          publishedDate,
+          viewCount: rawViews,
+          viewCountText,
+          likeCount,
+          description,
+          category,
+          keywords,
+          channelId: artistId,
+          albumTitle,
+          albumId,
+          relatedArtists,
+        };
+      }
 
       recordLog({
         endpoint: 'music.getTrack',
-        params: { videoId },
+        params: { videoId, isRich },
         durationMs: Date.now() - startTime,
         status: 'success',
         itemCount: 1,
       });
 
-      res.json({ track });
+      res.json(isRich ? { track, details } : { track });
     } catch (err: any) {
       recordLog({
         endpoint: 'music.getTrack',
-        params: { videoId },
+        params: { videoId, isRich },
         durationMs: Date.now() - startTime,
         status: 'error',
         error: err.message,

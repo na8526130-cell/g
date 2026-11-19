@@ -14,6 +14,8 @@ import {
   Share2,
   Tv,
   ListPlus,
+  ListStart,
+  Info,
 } from 'lucide-react';
 
 export const AlbumDetailView: React.FC = () => {
@@ -23,6 +25,7 @@ export const AlbumDetailView: React.FC = () => {
     playTrack,
     togglePlay,
     addToQueue,
+    playNext,
     toggleLikeTrack,
     likedTrackIds,
     likedAlbumIds,
@@ -34,6 +37,8 @@ export const AlbumDetailView: React.FC = () => {
     setPlayerMode,
     setVideoLayout,
     openShareModal,
+    openTrackDetailModal,
+    isTrackBlocked,
     showToast,
   } = usePlayer();
 
@@ -259,6 +264,7 @@ export const AlbumDetailView: React.FC = () => {
         {tracks.map((track) => {
           const isCurrent = currentTrack?.id === track.id;
           const isLiked = likedTrackIds.has(track.id);
+          const isBlocked = isTrackBlocked(track);
 
           return (
             <div
@@ -266,7 +272,7 @@ export const AlbumDetailView: React.FC = () => {
               onClick={() => playTrack(track, tracks)}
               className={`flex items-center gap-3 px-2 sm:px-3 py-2.5 rounded-lg group transition-colors cursor-pointer ${
                 isCurrent ? 'bg-white/5' : 'hover:bg-white/5'
-              }`}
+              } ${isBlocked ? 'opacity-45' : ''}`}
             >
               {/* Playlist shows thumbnail; Album shows clean index on sm+ */}
               {isPlaylistEntity ? (
@@ -354,14 +360,40 @@ export const AlbumDetailView: React.FC = () => {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
+                    playNext(track);
+                  }}
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                  title="次に再生"
+                  aria-label="次に再生"
+                >
+                  <ListStart className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
                     addToQueue(track);
                     showToast(`「${track.title}」をキューに追加しました`, 'info', 2000);
                   }}
                   className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
-                  title="キューに追加"
-                  aria-label="キューに追加"
+                  title="キューの最後に追加"
+                  aria-label="キューの最後に追加"
                 >
                   <Plus className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openTrackDetailModal(track);
+                  }}
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                  title="楽曲の詳細"
+                  aria-label="楽曲の詳細"
+                >
+                  <Info className="w-4 h-4" />
                 </button>
 
                 {track.duration && (

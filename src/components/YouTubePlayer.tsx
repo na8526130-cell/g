@@ -157,11 +157,16 @@ export const YouTubePlayer: React.FC = () => {
     }
   }, [currentTrack, isPlaying, volume, isMuted, onPlayerStateChange]);
 
-  // Keep currentTrack ref synced to prevent stale closures
+  // Keep currentTrack & playerMode refs synced to prevent stale closures
   const currentTrackRef = useRef(currentTrack);
   useEffect(() => {
     currentTrackRef.current = currentTrack;
   }, [currentTrack]);
+
+  const playerModeRef = useRef(playerMode);
+  useEffect(() => {
+    playerModeRef.current = playerMode;
+  }, [playerMode]);
 
   // Initialize YouTube IFrame API
   useEffect(() => {
@@ -284,19 +289,25 @@ export const YouTubePlayer: React.FC = () => {
               onPlayerStateChange(true);
               startAudioHardwareKeepAlive();
             } else if (event.data === window.YT.PlayerState.PAUSED) {
-              // Critical: check if the pause was forced by browser hiding the tab/locking the screen
+              // Critical: counter unexpected pauses (background tab/screen lock OR Canvas embed focus blip in cover mode)
+              const isUnexpectedCoverPause =
+                playerModeRef.current === 'cover' && userIntendedPlayingRef.current;
               if (
-                backgroundPlaybackEnabled &&
-                userIntendedPlayingRef.current &&
-                (document.hidden || !document.hasFocus())
+                isUnexpectedCoverPause ||
+                (backgroundPlaybackEnabled &&
+                  userIntendedPlayingRef.current &&
+                  (document.hidden || !document.hasFocus()))
               ) {
-                // Background pause detected -> Counter it by auto-resuming playback!
                 sendIframePlayCommand();
                 setTimeout(() => {
-                  if (playerRef.current && typeof playerRef.current.playVideo === 'function') {
+                  if (
+                    userIntendedPlayingRef.current &&
+                    playerRef.current &&
+                    typeof playerRef.current.playVideo === 'function'
+                  ) {
                     playerRef.current.playVideo();
                   }
-                }, 100);
+                }, 120);
                 return;
               }
 

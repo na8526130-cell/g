@@ -3,7 +3,11 @@ import { usePlayer } from '../context/PlayerContext';
 import { Home, Search, Library, Radio, Sparkles } from 'lucide-react';
 
 export const BottomTabBar: React.FC = () => {
-  const { activeView, navigateTo } = usePlayer();
+  const { activeView, navigateTo, deviceMode } = usePlayer();
+
+  if (deviceMode !== 'mobile') {
+    return null;
+  }
 
   const tabs = [
     { id: 'home', label: 'ホーム', icon: Home },
@@ -15,7 +19,7 @@ export const BottomTabBar: React.FC = () => {
   return (
     <nav
       aria-label="モバイルナビゲーション"
-      className="sm:hidden fixed bottom-0 left-0 right-0 h-[60px] bg-gradient-to-t from-black via-black/95 to-black/85 backdrop-blur-xl border-t border-white/5 z-40 grid grid-cols-4 items-center px-2"
+      className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg h-[60px] bg-gradient-to-t from-black via-black/95 to-black/85 backdrop-blur-xl border-t border-white/5 z-40 grid grid-cols-4 items-center px-2"
     >
       {tabs.map((tab) => {
         const Icon = tab.icon;

@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { usePlayer } from '../context/PlayerContext';
+import { api } from '../services/api';
 import { SafeImage } from './SafeImage';
-import { SyncedLine } from '../types/music';
+import { SyncedLine, Track } from '../types/music';
 import { isSameArtist } from '../utils/artistNames';
 import {
   ChevronDown,
+  ChevronUp,
   MoreHorizontal,
   Play,
   Pause,
@@ -33,7 +35,26 @@ import {
   ArrowLeftRight,
   AlertTriangle,
   UserCheck,
+  Info,
+  EyeOff,
+  Ban,
+  MonitorSpeaker,
+  Users,
+  QrCode,
+  Link2,
+  Film,
 } from 'lucide-react';
+
+const mvCanvasCache = new Map<string, string | null>();
+
+function normalizeTitleCore(raw: string): string {
+  return (raw || '')
+    .toLowerCase()
+    .replace(/[\(\[【（].*?[\)\]】）]/g, ' ')
+    .replace(/\b(official|music|video|mv|m\/v|pv|audio|lyric|lyrics|full|ver\.?)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
 
 function formatSeconds(secs: number): string {
   if (isNaN(secs) || secs < 0) return '0:00';
@@ -55,8 +76,6 @@ export const FullScreenPlayerModal: React.FC = () => {
     prevTrack,
     repeatMode,
     cycleRepeat,
-    isShuffle,
-    toggleShuffle,
     likedTrackIds,
     toggleLikeTrack,
     fullScreenPlayerOpen,
@@ -64,11 +83,18 @@ export const FullScreenPlayerModal: React.FC = () => {
     navigateTo,
     openAddToPlaylistModal,
     openShareModal,
+    openVisualShareCard,
+    openZeroCodeModal,
+    setConnectModalOpen,
+    floatingLyricsOverlay,
+    setFloatingLyricsOverlay,
+    canvasEnabled,
+    setCanvasEnabled,
+    playbackContextLabel,
     setEqModalOpen,
     setQueueOpen,
-    lyricsOpen,
-    setLyricsOpen,
     currentLyrics,
+    activeSyncedLyricText,
     openLyricsSwitcher,
     startRadioForTrack,
     playbackRate,
@@ -85,12 +111,283 @@ export const FullScreenPlayerModal: React.FC = () => {
     endlessRadioActive,
     toggleEndlessRadio,
     emotionRadioMood,
+    queue,
+    queueIndex,
+    openTrackDetailModal,
+    hideTrack,
+    blockArtist,
+    isTrackBlocked,
+    showToast,
   } = usePlayer();
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [inlineLyricsExpanded, setInlineLyricsExpanded] = useState(false);
   const [timestampsExpanded, setTimestampsExpanded] = useState(false);
+  const lyricsSheetRef = useRef<HTMLDivElement>(null);
+
+  // Canvas MV background state (null = no MV found -> show jacket image)
+  const [canvasVideoId, setCanvasVideoId] = useState<string | null>(null);
+  const [canvasReady, setCanvasReady] = useState(false);
+  const [canvasHudClear, setCanvasHudClear] = useState(false);
+  const [canvasPlayerPaused, setCanvasPlayerPaused] = useState(false);
+  const [checkingMv, setCheckingMv] = useState(false);
+  const canvasIframeRef = useRef<HTMLIFrameElement>(null);
+  const hudRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const canvasHudClearRef = useRef(false);
+  canvasHudClearRef.current = canvasHudClear;
+
+  const clearHudRevealTimer = useCallback(() => {
+    if (hudRevealTimerRef.current) {
+      clearTimeout(hudRevealTimerRef.current);
+      hudRevealTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHudReveal = useCallback(
+    (delayMs: number) => {
+      clearHudRevealTimer();
+      hudRevealTimerRef.current = setTimeout(() => {
+        hudRevealTimerRef.current = null;
+        setCanvasHudClear(true);
+      }, delayMs);
+    },
+    [clearHudRevealTimer]
+  );
+
+  useEffect(() => () => clearHudRevealTimer(), [clearHudRevealTimer]);
+
+  const showMvCanvas = Boolean(
+    fullScreenPlayerOpen && canvasEnabled && currentTrack && !currentTrack.isLocal && canvasVideoId
+  );
+  const isCanvasVisualActive = Boolean(
+    showMvCanvas && canvasReady && canvasHudClear && !canvasPlayerPaused
+  );
+
+  const clipStartSec =
+    trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec > 8
+      ? Math.floor(trackTimestamps.highlightStartSec)
+      : duration > 60
+      ? 28
+      : 6;
+
+  // Keep the iframe mount start time fixed per video ID so async duration/highlight updates seek instead of remounting
+  const [canvasMountStart, setCanvasMountStart] = useState<number>(28);
+  const lastHighlightSeekTrackRef = useRef<string | null>(null);
+  useEffect(() => {
+    setCanvasMountStart(clipStartSec);
+    lastHighlightSeekTrackRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasVideoId]);
+
+  // Resolve official MV video ID for Canvas background; keep null when no MV exists
+  useEffect(() => {
+    clearHudRevealTimer();
+    if (!fullScreenPlayerOpen || !canvasEnabled || !currentTrack?.id || currentTrack.isLocal) {
+      setCanvasVideoId(null);
+      setCanvasReady(false);
+      setCanvasHudClear(false);
+      setCheckingMv(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCanvasReady(false);
+    setCanvasHudClear(false);
+    setCanvasPlayerPaused(false);
+
+    if (mvCanvasCache.has(currentTrack.id)) {
+      const cached = mvCanvasCache.get(currentTrack.id) ?? null;
+      setCanvasVideoId(cached);
+      setCheckingMv(false);
+      return;
+    }
+
+    setCanvasVideoId(null);
+    setCheckingMv(true);
+
+    const resolveMv = async () => {
+      try {
+        const mvRes = await api.getMvCanvas(
+          currentTrack.id,
+          currentTrack.title,
+          currentTrack.artist
+        );
+        let chosenId: string | null =
+          mvRes?.hasMv && mvRes.videoId ? mvRes.videoId : null;
+
+        // Fallback for static/GAS mode if mv-canvas endpoint isn't available
+        if (!chosenId && !mvRes?.fromServer) {
+          const origCore = normalizeTitleCore(currentTrack.title);
+          const origLower = currentTrack.title.toLowerCase();
+          const allowCover = /cover|歌ってみた|弾いてみた|remix|リミックス/i.test(origLower);
+          const allowLive = /\blive\b|ライブ|tour|stadium|arena/i.test(origLower);
+
+          const isExcludedTitle = (t: string) => {
+            if (
+              /karaoke|カラオケ|off\s*vocal|instrumental|inst\.|reaction|リアクション|解説|弾き語り|full\s*album|bgm|作業用|audio\s*only|official\s*audio|lyric\s*video|lyrics|歌詞動画|歌詞付き|和訳|日本語字幕|発音|자막|静止画|ノンクレジット|creditless/i.test(
+                t
+              )
+            ) {
+              return true;
+            }
+            if (!allowCover && /歌ってみた|弾いてみた|叩いてみた|踊ってみた|covered\s*by|\bcover\b/i.test(t)) {
+              return true;
+            }
+            if (!allowLive && /\blive\b|ライブ映像|official\s*live|live\s*video|arena\s*tour|stadium/i.test(t)) {
+              return true;
+            }
+            return false;
+          };
+
+          const selfIsMv =
+            !isExcludedTitle(origLower) &&
+            /(\bmv\b|m\/v|music\s*video|official\s*(music\s*)?video|公式\s*mv|\bpv\b|［official\s*video］|\[official\s*video\])/i.test(
+              origLower
+            );
+          if (selfIsMv) {
+            chosenId = currentTrack.id;
+          } else {
+            const q = `${currentTrack.title} ${currentTrack.artist || ''}`.trim();
+            const res = await api.search(q, 'video').catch(() => null);
+            const videoCandidates: Track[] = [
+              ...(Array.isArray(res?.videos) ? res.videos : []),
+              ...(Array.isArray(res?.results) ? res.results : []),
+            ];
+            const cleanMatch = videoCandidates.find((c) => {
+              if (!c?.id || isTrackBlocked(c)) return false;
+              const t = (c.title || '').toLowerCase();
+              if (isExcludedTitle(t)) return false;
+              const candCore = normalizeTitleCore(c.title || '');
+              if (!origCore || candCore !== origCore) return false;
+              if (c.artist && currentTrack.artist && !isSameArtist(c.artist, currentTrack.artist)) {
+                return false;
+              }
+              return true;
+            });
+            if (cleanMatch?.id) {
+              chosenId = cleanMatch.id;
+            }
+          }
+        }
+
+        mvCanvasCache.set(currentTrack.id, chosenId);
+        if (!cancelled) {
+          setCanvasVideoId(chosenId);
+          setCheckingMv(false);
+        }
+      } catch {
+        mvCanvasCache.set(currentTrack.id, null);
+        if (!cancelled) {
+          setCanvasVideoId(null);
+          setCheckingMv(false);
+        }
+      }
+    };
+
+    resolveMv();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    fullScreenPlayerOpen,
+    canvasEnabled,
+    currentTrack?.id,
+    currentTrack?.title,
+    currentTrack?.artist,
+    currentTrack?.isLocal,
+    isTrackBlocked,
+  ]);
+
+  const sendCanvasCommand = useCallback((func: string, args: unknown = '') => {
+    try {
+      canvasIframeRef.current?.contentWindow?.postMessage(
+        JSON.stringify({ event: 'command', func, args, id: 999001, channel: 'widget' }),
+        '*'
+      );
+    } catch {}
+  }, []);
+
+  // Listen to Canvas MV embed events: fall back on error, wait for YT mobile HUD to fade before revealing,
+  // and immediately hide & resume if ever paused so YT's || / |> buttons never appear
+  useEffect(() => {
+    if (!showMvCanvas || !currentTrack?.id) return;
+    const onMessage = (ev: MessageEvent) => {
+      if (ev.source !== canvasIframeRef.current?.contentWindow) return;
+      try {
+        const data = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
+        if (data?.event === 'onError') {
+          clearHudRevealTimer();
+          mvCanvasCache.set(currentTrack.id, null);
+          setCanvasVideoId(null);
+          setCanvasReady(false);
+          setCanvasHudClear(false);
+          return;
+        }
+        const state =
+          data?.event === 'onStateChange' && typeof data.info === 'number'
+            ? data.info
+            : (data?.event === 'infoDelivery' || data?.event === 'initialDelivery') &&
+              typeof data?.info?.playerState === 'number'
+            ? data.info.playerState
+            : null;
+        if (state === 1) {
+          setCanvasPlayerPaused(false);
+          if (!canvasHudClearRef.current) {
+            scheduleHudReveal(4200);
+          }
+        } else if (state === 3) {
+          if (!canvasHudClearRef.current) {
+            // Delay reveal while initial buffering completes so YT HUD timer starts after playback begins
+            scheduleHudReveal(5500);
+          }
+        } else if (state === 2) {
+          // Never show YT's paused/play overlay UI; hide & immediately resume muted background playback
+          clearHudRevealTimer();
+          setCanvasPlayerPaused(true);
+          setCanvasHudClear(false);
+          sendCanvasCommand('mute');
+          sendCanvasCommand('playVideo');
+          scheduleHudReveal(3900);
+        } else if (state === 0) {
+          clearHudRevealTimer();
+          setCanvasHudClear(false);
+          sendCanvasCommand('mute');
+          sendCanvasCommand('seekTo', [clipStartSec, true]);
+          sendCanvasCommand('playVideo');
+          scheduleHudReveal(4100);
+        }
+      } catch {}
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [showMvCanvas, currentTrack?.id, clipStartSec, sendCanvasCommand, clearHudRevealTimer, scheduleHudReveal]);
+
+  // Seek smoothly ONLY while still hidden behind opacity-0 if highlightStartSec arrives right after mount
+  useEffect(() => {
+    if (!showMvCanvas || !canvasReady || !currentTrack?.id || canvasHudClearRef.current) return;
+    if (!trackTimestamps?.highlightStartSec || trackTimestamps.highlightStartSec <= 8) return;
+    const seekKey = `${currentTrack.id}:${canvasVideoId}`;
+    if (lastHighlightSeekTrackRef.current === seekKey) return;
+    lastHighlightSeekTrackRef.current = seekKey;
+    const targetSec = Math.floor(trackTimestamps.highlightStartSec);
+    if (Math.abs(targetSec - canvasMountStart) > 4) {
+      setCanvasHudClear(false);
+      sendCanvasCommand('mute');
+      sendCanvasCommand('seekTo', [targetSec, true]);
+      sendCanvasCommand('playVideo');
+      scheduleHudReveal(4100);
+    }
+  }, [
+    showMvCanvas,
+    canvasReady,
+    currentTrack?.id,
+    canvasVideoId,
+    trackTimestamps?.highlightStartSec,
+    canvasMountStart,
+    sendCanvasCommand,
+    scheduleHudReveal,
+  ]);
 
   if (!fullScreenPlayerOpen || !currentTrack) return null;
 
@@ -114,16 +411,95 @@ export const FullScreenPlayerModal: React.FC = () => {
       })
     : -1;
 
+  const floatingLine =
+    activeSyncedLyricText ||
+    (currentLyrics?.syncedLyrics?.[0]?.text ?? '');
+
+  const handleOpenPeekingLyrics = () => {
+    setTimestampsExpanded(false);
+    setInlineLyricsExpanded((prev) => {
+      const next = !prev;
+      if (next) {
+        setTimeout(() => {
+          lyricsSheetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 60);
+      }
+      return next;
+    });
+  };
+
+  const originParam =
+    typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null'
+      ? `&origin=${encodeURIComponent(window.location.origin)}`
+      : '';
+  const canvasEmbedSrc =
+    showMvCanvas && canvasVideoId
+      ? `https://www.youtube-nocookie.com/embed/${encodeURIComponent(
+          canvasVideoId
+        )}?autoplay=1&mute=1&controls=0&disablekb=1&fs=0&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0&enablejsapi=1&widgetid=999001&start=${canvasMountStart}${originParam}`
+      : '';
+
   return (
     <div className="fixed inset-0 z-50 bg-gradient-to-b from-[#2b0407] via-[#110103] to-[#040001] text-white overflow-y-auto flex flex-col justify-between animate-in slide-in-from-bottom duration-300">
-      {/* Background radial glow in deep crimson red */}
+      {/* Ambient Canvas Backdrop (Blurred Artwork base + Looping MV Canvas overlay) */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/10 rounded-full blur-3xl" />
+        {currentTrack.thumbnail && (
+          <img
+            src={currentTrack.thumbnail}
+            alt=""
+            className={`w-full h-full object-cover opacity-30 blur-3xl scale-125 transition-transform duration-[12000ms] ease-linear ${
+              isPlaying ? 'scale-[1.35]' : 'scale-125'
+            }`}
+          />
+        )}
+
+        {canvasEmbedSrc && (
+          <div className="absolute inset-0 overflow-hidden">
+            <iframe
+              key={canvasVideoId}
+              ref={canvasIframeRef}
+              src={canvasEmbedSrc}
+              title={`${currentTrack.title} MV Canvas`}
+              tabIndex={-1}
+              aria-hidden="true"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              referrerPolicy="strict-origin-when-cross-origin"
+              onLoad={() => {
+                setCanvasReady(true);
+                setCanvasHudClear(false);
+                scheduleHudReveal(4400);
+                try {
+                  canvasIframeRef.current?.contentWindow?.postMessage(
+                    JSON.stringify({ event: 'listening', id: 999001, channel: 'widget' }),
+                    '*'
+                  );
+                } catch {}
+                sendCanvasCommand('addEventListener', ['onStateChange']);
+                sendCanvasCommand('mute');
+                sendCanvasCommand('playVideo');
+              }}
+              className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[max(100vw,177.78vh)] h-[max(100vh,56.25vw)] scale-[1.18] pointer-events-none border-0 transition-opacity duration-700 ${
+                isCanvasVisualActive ? 'opacity-80' : 'opacity-0'
+              }`}
+            />
+          </div>
+        )}
+
+        {/* Cinematic Dark Vignettes for Contrast & Red/Black Tone */}
+        <div
+          className={`absolute inset-0 ${
+            isCanvasVisualActive
+              ? 'bg-gradient-to-b from-black/75 via-black/15 to-[#040001]'
+              : 'bg-gradient-to-b from-black/65 via-[#160205]/70 to-[#040001]/95'
+          }`}
+        />
+        <div className="absolute inset-x-0 bottom-0 h-[58%] bg-gradient-to-t from-[#040001] via-[#090103]/80 to-transparent" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-red-600/12 rounded-full blur-3xl" />
       </div>
 
-      <div className="relative z-10 max-w-lg w-full mx-auto min-h-full flex flex-col justify-between p-6 sm:p-8">
-        {/* Top Header Bar */}
-        <header className="flex items-center justify-between gap-4 py-2">
+      <div className="relative z-10 max-w-lg w-full mx-auto min-h-full flex flex-col justify-between p-5 sm:p-8 pb-6">
+        {/* Top Context Header Bar */}
+        <header className="flex items-center justify-between gap-4 py-1.5">
           <button
             type="button"
             onClick={() => setFullScreenPlayerOpen(false)}
@@ -134,8 +510,8 @@ export const FullScreenPlayerModal: React.FC = () => {
           </button>
 
           <div className="text-center min-w-0 flex-1 px-2">
-            <span className="text-[11px] font-bold text-neutral-400 uppercase tracking-widest block">
-              再生中のアルバム
+            <span className="text-[11px] font-bold text-neutral-300/80 tracking-wide block truncate">
+              {playbackContextLabel.source}
             </span>
             <button
               type="button"
@@ -146,10 +522,10 @@ export const FullScreenPlayerModal: React.FC = () => {
                   setFullScreenPlayerOpen(false);
                 }
               }}
-              className="text-xs sm:text-sm font-semibold text-white truncate hover:text-red-400 hover:underline transition-colors block mx-auto max-w-full cursor-pointer"
-              title="アルバムの曲一覧を表示"
+              className="text-xs sm:text-sm font-bold text-white truncate hover:text-red-400 hover:underline transition-colors block mx-auto max-w-full cursor-pointer"
+              title="アルバムを表示"
             >
-              {currentTrack.album || currentTrack.title}
+              {playbackContextLabel.subtitle || currentTrack.album || currentTrack.title}
             </button>
           </div>
 
@@ -166,15 +542,18 @@ export const FullScreenPlayerModal: React.FC = () => {
           </div>
         </header>
 
-        {/* Spotify-style Full-Screen Blurred Action Sheet (IMG_0213) */}
+        {/* Redesigned Track Action Sheet (IMG_0280 parity, NO Sleep Timer) */}
         {menuOpen && (
           <div
-            className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-2xl flex flex-col justify-between p-6 sm:p-8 animate-in fade-in duration-150"
+            className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-2xl flex flex-col justify-between p-5 sm:p-8 overflow-y-auto animate-in fade-in duration-150"
             onClick={() => setMenuOpen(false)}
           >
-            <div className="max-w-md w-full mx-auto flex-1 flex flex-col justify-center space-y-6" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="max-w-md w-full mx-auto flex-1 flex flex-col justify-center space-y-5 py-4"
+              onClick={(e) => e.stopPropagation()}
+            >
               {/* Track identity header */}
-              <div className="flex items-center gap-4 pb-2">
+              <div className="flex items-center gap-4 pb-3 border-b border-white/10">
                 <SafeImage
                   src={currentTrack.thumbnail}
                   alt={currentTrack.title}
@@ -183,22 +562,90 @@ export const FullScreenPlayerModal: React.FC = () => {
                 />
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base font-bold text-white truncate">{currentTrack.title}</h3>
-                  <p className="text-sm text-neutral-400 truncate mt-0.5">{currentTrack.artist}</p>
+                  <p className="text-xs text-neutral-400 truncate mt-0.5">
+                    {currentTrack.artist}
+                    {currentTrack.album ? ` · ${currentTrack.album}` : ''}
+                  </p>
                 </div>
               </div>
 
-              {/* Clean Spotify Action List */}
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <button
                   type="button"
                   onClick={() => {
-                    toggleLikeTrack(currentTrack);
+                    setMenuOpen(false);
+                    openVisualShareCard({ type: 'track', track: currentTrack });
+                  }}
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Share2 className="w-5 h-5 text-neutral-300" />
+                  <span>シェア（カード画像・リンク）</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFloatingLyricsOverlay((prev) => {
+                      const next = !prev;
+                      showToast(
+                        next ? 'フローティング歌詞をオンにしました' : 'フローティング歌詞をオフにしました',
+                        'info',
+                        1800
+                      );
+                      return next;
+                    });
                     setMenuOpen(false);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center justify-between gap-4 transition-colors cursor-pointer"
                 >
-                  <Heart className={`w-5 h-5 ${isLiked ? 'text-red-500 fill-red-500' : 'text-neutral-300'}`} />
-                  <span>{isLiked ? 'お気に入り解除' : 'お気に入り'}</span>
+                  <span className="flex items-center gap-4">
+                    <FileText
+                      className={`w-5 h-5 ${floatingLyricsOverlay ? 'text-red-500' : 'text-neutral-300'}`}
+                    />
+                    <span>{floatingLyricsOverlay ? '歌詞・オン' : '歌詞・オフ'}</span>
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      floatingLyricsOverlay
+                        ? 'bg-red-600/25 text-red-400 border border-red-500/40'
+                        : 'bg-white/10 text-neutral-400'
+                    }`}
+                  >
+                    {floatingLyricsOverlay ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCanvasEnabled((prev) => {
+                      const next = !prev;
+                      showToast(
+                        next ? 'Canvas（MV背景演出）をオンにしました' : 'Canvas（MV背景演出）をオフにしました',
+                        'info',
+                        1800
+                      );
+                      return next;
+                    });
+                    setMenuOpen(false);
+                  }}
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center justify-between gap-4 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-4">
+                    <Film
+                      className={`w-5 h-5 ${canvasEnabled ? 'text-red-500' : 'text-neutral-300'}`}
+                    />
+                    <span>Canvas（MV背景演出）</span>
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      canvasEnabled
+                        ? 'bg-red-600/25 text-red-400 border border-red-500/40'
+                        : 'bg-white/10 text-neutral-400'
+                    }`}
+                  >
+                    {canvasEnabled ? 'ON' : 'OFF'}
+                  </span>
                 </button>
 
                 <button
@@ -207,22 +654,10 @@ export const FullScreenPlayerModal: React.FC = () => {
                     setMenuOpen(false);
                     openAddToPlaylistModal(currentTrack);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <ListPlus className="w-5 h-5 text-neutral-300" />
                   <span>プレイリストに追加</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    openShareModal('track');
-                  }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
-                >
-                  <Share2 className="w-5 h-5 text-neutral-300" />
-                  <span>シェアする</span>
                 </button>
 
                 <button
@@ -235,10 +670,10 @@ export const FullScreenPlayerModal: React.FC = () => {
                       setFullScreenPlayerOpen(false);
                     }
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <Disc className="w-5 h-5 text-neutral-300" />
-                  <span>アルバムを表示</span>
+                  <span>アルバムに移動</span>
                 </button>
 
                 <button
@@ -253,10 +688,23 @@ export const FullScreenPlayerModal: React.FC = () => {
                       setFullScreenPlayerOpen(false);
                     }
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <ExternalLink className="w-5 h-5 text-neutral-300" />
-                  <span>アーティストを表示</span>
+                  <span>アーティストに移動</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigateTo('party');
+                    setFullScreenPlayerOpen(false);
+                  }}
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Users className="w-5 h-5 text-neutral-300" />
+                  <span>Jamを開始（リスニングパーティ）</span>
                 </button>
 
                 <button
@@ -265,10 +713,56 @@ export const FullScreenPlayerModal: React.FC = () => {
                     setMenuOpen(false);
                     startRadioForTrack(currentTrack);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <Radio className="w-5 h-5 text-neutral-300" />
-                  <span>この曲のRadioを開始</span>
+                  <span>ソングラジオに移動</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openTrackDetailModal(currentTrack);
+                  }}
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Info className="w-5 h-5 text-neutral-300" />
+                  <span>楽曲クレジットを表示</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openZeroCodeModal({
+                      type: 'track',
+                      title: currentTrack.title,
+                      subtitle: currentTrack.artist,
+                      imageUrl: currentTrack.thumbnail,
+                      url: `${window.location.origin}/?track=${encodeURIComponent(currentTrack.id)}`,
+                      codeValue: `zeromusic:track:${currentTrack.id}`,
+                      trackId: currentTrack.id,
+                    });
+                  }}
+                  className="w-full py-2.5 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <QrCode className="w-5 h-5 text-neutral-300" />
+                  <span>zero-musicコードを表示</span>
+                </button>
+
+                <div className="my-1.5 border-t border-white/10" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openShareModal('track');
+                  }}
+                  className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Link2 className="w-4 h-4 text-neutral-400" />
+                  <span>URLコピー / YouTube埋め込み</span>
                 </button>
 
                 <button
@@ -277,9 +771,9 @@ export const FullScreenPlayerModal: React.FC = () => {
                     setMenuOpen(false);
                     setEqModalOpen(true);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
                 >
-                  <Sliders className="w-5 h-5 text-neutral-300" />
+                  <Sliders className="w-4 h-4 text-neutral-400" />
                   <span>イコライザー調整</span>
                 </button>
 
@@ -296,11 +790,18 @@ export const FullScreenPlayerModal: React.FC = () => {
                         : 'high';
                     setAudioQuality(nextQ);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
                 >
-                  <Volume2 className="w-5 h-5 text-neutral-300" />
+                  <Volume2 className="w-4 h-4 text-neutral-400" />
                   <span>
-                    音質: {audioQuality === 'high' ? '最高音質 (320kbps)' : audioQuality === 'normal' ? '標準 (160kbps)' : audioQuality === 'low' ? '低音質 (節約)' : '自動'}
+                    音質:{' '}
+                    {audioQuality === 'high'
+                      ? '最高音質 (320kbps)'
+                      : audioQuality === 'normal'
+                      ? '標準 (160kbps)'
+                      : audioQuality === 'low'
+                      ? '低音質 (節約)'
+                      : '自動'}
                   </span>
                 </button>
 
@@ -310,76 +811,143 @@ export const FullScreenPlayerModal: React.FC = () => {
                     setMenuOpen(false);
                     setWrappedModalOpen(true);
                   }}
-                  className="w-full py-3 text-left text-[15px] font-semibold text-white hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
                 >
-                  <Award className="w-5 h-5 text-neutral-300" />
+                  <Award className="w-4 h-4 text-neutral-400" />
                   <span>リスニング記録 (Wrapped)</span>
                 </button>
+
+                <div className="my-1.5 border-t border-white/10" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    hideTrack(currentTrack);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-neutral-300 hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <EyeOff className="w-4 h-4 text-neutral-400" />
+                  <span>この曲を非表示にする</span>
+                </button>
+
+                {currentTrack.artist && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      blockArtist(currentTrack.artist);
+                    }}
+                    className="w-full py-2 text-left text-sm font-semibold text-neutral-300 hover:text-red-400 flex items-center gap-4 transition-colors cursor-pointer"
+                  >
+                    <Ban className="w-4 h-4 text-neutral-400" />
+                    <span>「{currentTrack.artist}」を再生しない</span>
+                  </button>
+                )}
               </div>
             </div>
 
             <button
               type="button"
               onClick={() => setMenuOpen(false)}
-              className="max-w-md w-full mx-auto py-3.5 text-center text-base font-bold text-white hover:text-neutral-300 transition-colors cursor-pointer"
+              className="max-w-md w-full mx-auto py-3 text-center text-base font-bold text-white hover:text-neutral-300 transition-colors cursor-pointer"
             >
               閉じる
             </button>
           </div>
         )}
 
-        {/* Center Artwork (Clean unobstructed square cover like Spotify IMG_0212) */}
-        <div className="my-auto py-5 flex items-center justify-center">
-          <div className="relative w-full aspect-square max-w-[330px] sm:max-w-[360px] rounded-lg overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] bg-neutral-900">
-            <SafeImage
-              src={currentTrack.thumbnail}
-              alt={currentTrack.title}
-              useBase64
-              className="w-full h-full object-cover"
-            />
-          </div>
-        </div>
-
-        {/* Track Title, Artist & Like */}
-        <div className="space-y-5 pt-2">
-          <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight truncate">
-                {currentTrack.title}
-              </h2>
-              <button
-                type="button"
-                onClick={() => {
-                  if (currentTrack.artistId) {
-                    navigateTo('artist', currentTrack.artistId);
-                    setFullScreenPlayerOpen(false);
-                  }
-                }}
-                className="text-sm sm:text-base text-neutral-300 hover:text-white font-normal truncate block mt-0.5 transition-colors cursor-pointer"
-              >
-                {currentTrack.artist}
-              </button>
+        {/* Center Artwork (Shown when there is NO MV or Canvas is OFF/loading; hidden once MV Canvas is playing) */}
+        {isCanvasVisualActive ? (
+          <div className="flex-1 min-h-[180px] sm:min-h-[240px]" />
+        ) : (
+          <div className="my-auto py-4 flex items-center justify-center">
+            <div className="relative w-full aspect-square max-w-[310px] sm:max-w-[350px] rounded-xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] bg-neutral-900 ring-1 ring-white/10">
+              <SafeImage
+                src={currentTrack.thumbnail}
+                alt={currentTrack.title}
+                useBase64
+                className="w-full h-full object-cover"
+              />
             </div>
+          </div>
+        )}
 
+        {/* Floating Live Synced Lyric Line + Track Title, Artist & Controls */}
+        <div className="space-y-4 pt-1">
+          {floatingLyricsOverlay && floatingLine && (
             <button
               type="button"
-              onClick={() => toggleLikeTrack(currentTrack)}
-              className="min-w-[44px] min-h-[44px] -mr-2 flex items-center justify-center text-neutral-300 hover:text-red-500 transition-transform active:scale-125 cursor-pointer shrink-0"
-              title={isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
-              aria-label={isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
+              onClick={handleOpenPeekingLyrics}
+              className="w-full text-left px-1 py-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group"
+              title="歌詞カードを展開"
             >
-              <Heart
-                className={`w-7 h-7 transition-colors ${
-                  isLiked ? 'text-red-500 fill-red-500' : 'text-neutral-300 hover:text-white'
+              <p className="text-base sm:text-lg font-black text-white/95 leading-snug drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] line-clamp-2 group-hover:text-red-300 transition-colors">
+                {floatingLine}
+              </p>
+            </button>
+          )}
+
+          {/* Compact Track Row + Like + Info */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <SafeImage
+                src={currentTrack.thumbnail}
+                alt={currentTrack.title}
+                useBase64
+                className={`w-12 h-12 rounded-md object-cover bg-neutral-800 shadow-lg ring-1 ring-white/15 shrink-0 ${
+                  isCanvasVisualActive ? '' : 'sm:hidden'
                 }`}
               />
-            </button>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-lg sm:text-2xl font-black text-white tracking-tight truncate">
+                  {currentTrack.title}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (currentTrack.artistId) {
+                      navigateTo('artist', currentTrack.artistId);
+                      setFullScreenPlayerOpen(false);
+                    }
+                  }}
+                  className="text-sm sm:text-base text-neutral-300 hover:text-white font-normal truncate block mt-0.5 transition-colors cursor-pointer"
+                >
+                  {currentTrack.artist}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => openTrackDetailModal(currentTrack)}
+                className="min-w-[38px] min-h-[38px] flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                title="楽曲クレジット・詳細"
+                aria-label="楽曲クレジット・詳細"
+              >
+                <Info className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLikeTrack(currentTrack)}
+                className="min-w-[42px] min-h-[42px] -mr-1.5 flex items-center justify-center text-neutral-300 hover:text-red-500 transition-transform active:scale-125 cursor-pointer shrink-0"
+                title={isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
+                aria-label={isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
+              >
+                <Heart
+                  className={`w-6 h-6 transition-colors ${
+                    isLiked ? 'text-red-500 fill-red-500' : 'text-neutral-300 hover:text-white'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
-          {/* Scrubber Timeline with YouTube Comment Heatmap Markers */}
-          <div className="space-y-2">
+          {/* Scrubber Timeline */}
+          <div className="space-y-1.5">
             <div
-              className="relative h-1.5 bg-white/20 hover:h-2 rounded-full cursor-pointer group transition-all"
+              className="relative h-1.5 bg-white/25 hover:h-2 rounded-full cursor-pointer group transition-all"
               onClick={handleProgressClick}
             >
               {trackTimestamps?.heatMarkers?.map((m, idx) => (
@@ -425,18 +993,17 @@ export const FullScreenPlayerModal: React.FC = () => {
           </div>
 
           {/* Primary Controls Row */}
-          <div className="flex items-center justify-between pt-1">
-            {/* Smart Shuffle */}
+          <div className="flex items-center justify-between pt-0.5">
             <div className="relative flex flex-col items-center">
               <button
                 type="button"
                 onClick={cycleShuffleMode}
                 className={`min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer relative ${
-                  shuffleMode !== 'off' ? 'text-red-500' : 'text-neutral-400 hover:text-white'
+                  shuffleMode !== 'off' ? 'text-red-500' : 'text-neutral-300 hover:text-white'
                 }`}
                 title={
                   shuffleMode === 'smart'
-                    ? '✨ スマートシャッフル: おすすめ曲を織り交ぜて再生中'
+                    ? 'スマートシャッフル: おすすめ曲を織り交ぜて再生中'
                     : shuffleMode === 'on'
                     ? 'シャッフル再生: ON'
                     : 'シャッフル再生: OFF'
@@ -452,7 +1019,6 @@ export const FullScreenPlayerModal: React.FC = () => {
               {shuffleMode !== 'off' && <span className="w-1 h-1 rounded-full bg-red-500 -mt-1.5" />}
             </div>
 
-            {/* Prev */}
             <button
               type="button"
               onClick={prevTrack}
@@ -462,7 +1028,6 @@ export const FullScreenPlayerModal: React.FC = () => {
               <SkipBack className="w-8 h-8 fill-current" />
             </button>
 
-            {/* Big Circular Play / Pause (White circle in Spotify style) */}
             <button
               type="button"
               onClick={togglePlay}
@@ -476,7 +1041,6 @@ export const FullScreenPlayerModal: React.FC = () => {
               )}
             </button>
 
-            {/* Next */}
             <button
               type="button"
               onClick={() => nextTrack(true)}
@@ -486,13 +1050,12 @@ export const FullScreenPlayerModal: React.FC = () => {
               <SkipForward className="w-8 h-8 fill-current" />
             </button>
 
-            {/* Repeat */}
             <div className="relative flex flex-col items-center">
               <button
                 type="button"
                 onClick={cycleRepeat}
                 className={`min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer ${
-                  repeatMode !== 'off' ? 'text-red-500' : 'text-neutral-400 hover:text-white'
+                  repeatMode !== 'off' ? 'text-red-500' : 'text-neutral-300 hover:text-white'
                 }`}
                 title={`リピート: ${repeatMode}`}
               >
@@ -506,9 +1069,45 @@ export const FullScreenPlayerModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Bottom Action Utilities */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-neutral-400 border-t border-white/5 relative">
-            {/* Speed Control Pill */}
+          {/* Connect Device / Share / Queue Row (IMG_0277 bottom icons) */}
+          <div className="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              onClick={() => setConnectModalOpen(true)}
+              className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-neutral-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+              title="デバイスに接続 (Connect)"
+            >
+              <MonitorSpeaker className="w-5 h-5" />
+              <span className="text-[11px] font-semibold">デバイス</span>
+            </button>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openVisualShareCard({ type: 'track', track: currentTrack })}
+                className="p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                title="シェアカードを作成・共有"
+              >
+                <Share2 className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setQueueOpen(true)}
+                className="relative p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                title="再生キュー"
+              >
+                <ListMusic className="w-5 h-5" />
+                {queue.length - 1 - queueIndex > 0 && (
+                  <span className="absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-600 text-[9px] font-black text-white flex items-center justify-center leading-none">
+                    {queue.length - 1 - queueIndex > 99 ? '99+' : queue.length - 1 - queueIndex}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Secondary Utility Pills (Speed, Digest, Emotion Radio, Timestamps) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-neutral-400 border-t border-white/10 relative">
             <div className="relative">
               <button
                 type="button"
@@ -526,7 +1125,7 @@ export const FullScreenPlayerModal: React.FC = () => {
 
               {speedMenuOpen && (
                 <div
-                  className="absolute bottom-full left-0 mb-2 w-32 p-1 bg-[#18181e] border border-neutral-800 rounded-xl shadow-2xl z-50 text-xs space-y-0.5 animate-in fade-in"
+                  className="absolute bottom-full left-0 mb-2 w-32 p-1 bg-[#18181e] border border-neutral-800 rounded-xl shadow-2xl z-50 text-xs space-y-0.5"
                   onClick={() => setSpeedMenuOpen(false)}
                 >
                   <div className="px-2 py-1 text-[10px] font-bold text-neutral-500 uppercase">
@@ -551,7 +1150,6 @@ export const FullScreenPlayerModal: React.FC = () => {
               )}
             </div>
 
-            {/* Digest 25s Mode Pill */}
             <button
               type="button"
               onClick={toggleDigestMode}
@@ -566,7 +1164,6 @@ export const FullScreenPlayerModal: React.FC = () => {
               <span>{digestMode ? `ダイジェスト ${digestRemainingSec}s` : 'ダイジェスト'}</span>
             </button>
 
-            {/* Emotion Radio Pill */}
             <button
               type="button"
               onClick={toggleEndlessRadio}
@@ -583,7 +1180,28 @@ export const FullScreenPlayerModal: React.FC = () => {
               </span>
             </button>
 
-            {/* Timestamps / Chapters Pill */}
+            <button
+              type="button"
+              onClick={() => setCanvasEnabled((v) => !v)}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
+                canvasEnabled && canvasVideoId
+                  ? 'bg-red-600/30 text-red-200 border border-red-500/40'
+                  : canvasEnabled
+                  ? 'bg-white/10 text-neutral-300 border border-white/10'
+                  : 'bg-white/10 text-neutral-400 hover:text-white'
+              }`}
+              title="MVがある曲は背景でMVループ再生・MVがない曲はジャケット画像を表示"
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>
+                {!canvasEnabled
+                  ? 'MV背景 OFF'
+                  : currentTrack.isLocal || (!checkingMv && !canvasVideoId)
+                  ? '画像表示 (MVなし)'
+                  : 'MV背景'}
+              </span>
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -599,49 +1217,62 @@ export const FullScreenPlayerModal: React.FC = () => {
             >
               <Clock className="w-3.5 h-3.5" />
               <span>
-                見どころ{trackTimestamps?.timestamps?.length ? ` (${trackTimestamps.timestamps.length})` : ''}
+                見どころ
+                {trackTimestamps?.timestamps?.length
+                  ? ` (${trackTimestamps.timestamps.length})`
+                  : ''}
               </span>
             </button>
+          </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setInlineLyricsExpanded((prev) => !prev);
-                setTimestampsExpanded(false);
-              }}
-              className={`px-3 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${
-                inlineLyricsExpanded
-                  ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
-                  : 'bg-white/10 text-neutral-300 hover:text-white hover:bg-white/20'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>歌詞</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => openShareModal('track')}
-              className="p-1.5 hover:text-white transition-colors cursor-pointer"
-              title="共有"
-            >
-              <Share2 className="w-4 h-4" />
-            </button>
-
+          {queue[queueIndex + 1] && (
             <button
               type="button"
               onClick={() => setQueueOpen(true)}
-              className="p-1.5 hover:text-white transition-colors cursor-pointer"
-              title="再生キュー"
+              className="w-full px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer"
             >
-              <ListMusic className="w-4 h-4" />
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-black shrink-0">
+                  次の曲
+                </span>
+                <span className="text-xs font-medium text-neutral-200 truncate">
+                  {queue[queueIndex + 1].title}
+                </span>
+              </div>
+              <span className="text-[11px] font-semibold text-red-400 shrink-0">
+                キュー ({Math.max(0, queue.length - 1 - queueIndex)})
+              </span>
             </button>
-          </div>
+          )}
+
+          {/* Bottom Peeking Colored Lyrics Drawer Handle (IMG_0277〜0279) */}
+          <button
+            type="button"
+            onClick={handleOpenPeekingLyrics}
+            className="w-full px-4 py-3 rounded-2xl bg-gradient-to-r from-[#b91c1c] to-[#991b1b] hover:from-[#dc2626] hover:to-[#b91c1c] text-white flex items-center justify-between gap-3 shadow-xl transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="text-sm font-black tracking-tight shrink-0">歌詞</span>
+              {floatingLine && (
+                <span className="text-xs text-white/85 truncate font-medium">
+                  {floatingLine}
+                </span>
+              )}
+            </div>
+            <span className="flex items-center gap-1 text-[11px] font-bold text-white/90 shrink-0">
+              <span>{inlineLyricsExpanded ? '閉じる' : '表示'}</span>
+              {inlineLyricsExpanded ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronUp className="w-4 h-4" />
+              )}
+            </span>
+          </button>
         </div>
 
         {/* Inline Timestamps / Setlist Jump Sheet */}
         {timestampsExpanded && (
-          <div className="mt-6 p-4 rounded-2xl bg-gradient-to-b from-red-950/60 to-black/90 border border-red-500/20 shadow-2xl space-y-3 animate-in slide-in-from-bottom-4 duration-200">
+          <div className="mt-4 p-4 rounded-2xl bg-gradient-to-b from-red-950/60 to-black/90 border border-red-500/20 shadow-2xl space-y-3 animate-in slide-in-from-bottom-4 duration-200">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-red-400 uppercase tracking-wider flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5" />
@@ -687,90 +1318,101 @@ export const FullScreenPlayerModal: React.FC = () => {
           </div>
         )}
 
-        {/* Inline Lyrics Preview Card (Spotify-style expandable lyrics sheet) */}
+        {/* Inline Lyrics Preview Card */}
         {inlineLyricsExpanded && (() => {
           const matchedArtist = currentLyrics?.matchedArtist?.trim() || '';
           const isMismatch = Boolean(
             currentTrack?.artist && matchedArtist && !isSameArtist(matchedArtist, currentTrack.artist)
           );
           return (
-          <div className="mt-6 p-5 rounded-2xl bg-gradient-to-b from-red-950/70 to-black/90 border border-red-500/20 shadow-2xl space-y-3 animate-in slide-in-from-bottom-4 duration-200">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                <span className="text-xs font-bold text-red-400 uppercase tracking-wider flex items-center gap-1.5 shrink-0">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>歌詞</span>
-                </span>
-                {matchedArtist && (
-                  <span
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold max-w-full truncate ${
-                      isMismatch
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                        : 'bg-white/10 text-neutral-200 border border-white/10'
-                    }`}
-                  >
-                    {isMismatch ? (
-                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                    ) : (
-                      <UserCheck className="w-2.5 h-2.5 text-red-400 shrink-0" />
-                    )}
-                    <span className="truncate">{matchedArtist}</span>
+            <div
+              ref={lyricsSheetRef}
+              className="mt-4 p-5 rounded-2xl bg-gradient-to-b from-[#991b1b]/90 via-[#450a0a]/95 to-black border border-red-500/30 shadow-2xl space-y-3 animate-in slide-in-from-bottom-4 duration-200"
+            >
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                  <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 shrink-0">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>歌詞</span>
                   </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => openLyricsSwitcher()}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors border ${
-                    isMismatch
-                      ? 'bg-amber-500 hover:bg-amber-400 text-neutral-950 border-amber-400'
-                      : 'bg-white/10 hover:bg-white/20 text-neutral-200 border-white/15'
-                  }`}
-                  title="違う歌詞の場合は別の候補に変更"
-                >
-                  <ArrowLeftRight className="w-2.5 h-2.5" />
-                  <span>歌詞変更</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInlineLyricsExpanded(false)}
-                  className="text-neutral-400 hover:text-white p-1 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {currentLyrics?.syncedLyrics && currentLyrics.syncedLyrics.length > 0 ? (
-              <div className="space-y-3 max-h-56 overflow-y-auto pr-2 scrollbar-thin">
-                {currentLyrics.syncedLyrics.map((line: SyncedLine, idx: number) => {
-                  const isActive = idx === activeLyricIndex;
-                  return (
-                    <p
-                      key={idx}
-                      onClick={() => seekTo(line.time)}
-                      className={`text-sm sm:text-base font-bold transition-all cursor-pointer ${
-                        isActive
-                          ? 'text-white text-lg scale-102 font-black drop-shadow-[0_0_12px_rgba(239,68,68,0.7)]'
-                          : 'text-neutral-500 hover:text-neutral-300'
+                  {matchedArtist && (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold max-w-full truncate ${
+                        isMismatch
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                          : 'bg-white/10 text-neutral-200 border border-white/10'
                       }`}
                     >
-                      {line.text}
-                    </p>
-                  );
-                })}
+                      {isMismatch ? (
+                        <AlertTriangle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                      ) : (
+                        <UserCheck className="w-2.5 h-2.5 text-red-300 shrink-0" />
+                      )}
+                      <span className="truncate">{matchedArtist}</span>
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openVisualShareCard({ type: 'track', track: currentTrack })}
+                    className="px-2.5 py-1 rounded-lg bg-white text-black hover:bg-neutral-200 text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Share2 className="w-2.5 h-2.5" />
+                    <span>歌詞カード</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openLyricsSwitcher()}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors border ${
+                      isMismatch
+                        ? 'bg-amber-500 hover:bg-amber-400 text-neutral-950 border-amber-400'
+                        : 'bg-white/10 hover:bg-white/20 text-neutral-200 border-white/15'
+                    }`}
+                    title="違う歌詞の場合は別の候補に変更"
+                  >
+                    <ArrowLeftRight className="w-2.5 h-2.5" />
+                    <span>歌詞変更</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInlineLyricsExpanded(false)}
+                    className="text-neutral-300 hover:text-white p-1 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            ) : currentLyrics?.lyrics ? (
-              <div className="max-h-56 overflow-y-auto pr-2 text-xs sm:text-sm text-neutral-300 whitespace-pre-wrap leading-relaxed">
-                {currentLyrics.lyrics}
-              </div>
-            ) : (
-              <p className="text-xs text-neutral-400 py-4 text-center">
-                歌詞情報を読み込み中、または未登録です
-              </p>
-            )}
-          </div>
+
+              {currentLyrics?.syncedLyrics && currentLyrics.syncedLyrics.length > 0 ? (
+                <div className="space-y-3 max-h-64 overflow-y-auto pr-2 scrollbar-thin">
+                  {currentLyrics.syncedLyrics.map((line: SyncedLine, idx: number) => {
+                    const isActive = idx === activeLyricIndex;
+                    return (
+                      <p
+                        key={idx}
+                        onClick={() => seekTo(line.time)}
+                        className={`text-sm sm:text-base font-bold transition-all cursor-pointer ${
+                          isActive
+                            ? 'text-white text-lg font-black drop-shadow-[0_0_12px_rgba(255,255,255,0.6)]'
+                            : 'text-white/55 hover:text-white/85'
+                        }`}
+                      >
+                        {line.text}
+                      </p>
+                    );
+                  })}
+                </div>
+              ) : currentLyrics?.lyrics ? (
+                <div className="max-h-64 overflow-y-auto pr-2 text-xs sm:text-sm text-neutral-200 whitespace-pre-wrap leading-relaxed">
+                  {currentLyrics.lyrics}
+                </div>
+              ) : (
+                <p className="text-xs text-neutral-300 py-4 text-center">
+                  歌詞情報を読み込み中、または未登録です
+                </p>
+              )}
+            </div>
           );
         })()}
       </div>

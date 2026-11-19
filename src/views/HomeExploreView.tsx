@@ -18,7 +18,24 @@ import {
   Tv,
   ChevronLeft,
   ChevronRight,
+  ListStart,
+  Sparkles,
+  Info,
+  EyeOff,
+  BookmarkPlus,
+  Shuffle,
+  X,
 } from 'lucide-react';
+
+interface MadeForYouMix {
+  id: string;
+  badge: string;
+  title: string;
+  subtitle: string;
+  gradient: string;
+  tracks: Track[];
+  coverUrl?: string;
+}
 
 interface FavoriteArtistChip {
   id: string;
@@ -293,6 +310,7 @@ export const HomeExploreView: React.FC = () => {
   const {
     playTrack,
     addToQueue,
+    playNext,
     toggleLikeTrack,
     likedTrackIds,
     likedTracks,
@@ -311,6 +329,11 @@ export const HomeExploreView: React.FC = () => {
     setPlayerMode,
     setVideoLayout,
     showToast,
+    listeningStats,
+    openTrackDetailModal,
+    hideTrack,
+    isTrackBlocked,
+    saveTracksAsPlaylist,
   } = usePlayer();
 
   const [data, setData] = useState<ExploreData | null>(null);
@@ -325,6 +348,12 @@ export const HomeExploreView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFromCache, setIsFromCache] = useState(false);
+
+  // Personalized Mixes (Daylist / Daily Mix / Release Radar)
+  const [madeForYouMixes, setMadeForYouMixes] = useState<MadeForYouMix[]>([]);
+  const [loadingMixes, setLoadingMixes] = useState(false);
+  const [activeMixModal, setActiveMixModal] = useState<MadeForYouMix | null>(null);
+  const mixSeedSignatureRef = useRef<string>('');
 
   const scrollAlbumShelf = (direction: 'left' | 'right') => {
     const el = albumShelfRef.current;
@@ -484,6 +513,181 @@ export const HomeExploreView: React.FC = () => {
       active = false;
     };
   }, []);
+
+  // Generate Personalized Auto-Mixes (Daylist / Daily Mix 1 & 2 / Release Radar)
+  useEffect(() => {
+    if (loading) return;
+
+    const hour = new Date().getHours();
+    const daylistSlot =
+      hour >= 5 && hour < 11
+        ? {
+            title: '朝の爽快 Daylist',
+            subtitle: '爽やかな朝にぴったりのアップテンポ＆ポップ',
+            moodId: 'happy',
+            gradient: 'from-amber-500 via-orange-600 to-rose-800',
+          }
+        : hour >= 11 && hour < 17
+        ? {
+            title: '日中の集中 Daylist',
+            subtitle: '作業・通学にちょうどいい心地よいフロー',
+            moodId: 'focus',
+            gradient: 'from-cyan-600 via-blue-700 to-slate-900',
+          }
+        : hour >= 17 && hour < 23
+        ? {
+            title: '夜のエモい Daylist',
+            subtitle: '夕方〜夜の帰り道に響くエモーショナル選曲',
+            moodId: 'emo',
+            gradient: 'from-rose-600 via-red-700 to-neutral-950',
+          }
+        : {
+            title: '深夜のチル Daylist',
+            subtitle: '深夜リラックスに寄り添うチル＆スロー',
+            moodId: 'chill',
+            gradient: 'from-indigo-700 via-purple-900 to-neutral-950',
+          };
+
+    const topArtistNames: string[] = [];
+    const pushArtist = (name?: string) => {
+      const clean = name?.trim();
+      if (!clean) return;
+      if (!topArtistNames.some((n) => n.toLowerCase() === clean.toLowerCase())) {
+        topArtistNames.push(clean);
+      }
+    };
+    listeningStats.topArtists.forEach((a) => pushArtist(a.artist));
+    followedArtists.forEach((a) => pushArtist(a.name));
+    likedTracks.forEach((t) => pushArtist(t.artist));
+    recentTracks.forEach((t) => pushArtist(t.artist));
+    pushArtist('Official髭男dism');
+    pushArtist('Mrs. GREEN APPLE');
+    pushArtist('Vaundy');
+
+    const artist1 = topArtistNames[0] || 'Official髭男dism';
+    const artist2 = topArtistNames[1] || 'Vaundy';
+    const radarArtists = topArtistNames.slice(0, 3);
+    const sig = `${daylistSlot.moodId}|${artist1}|${artist2}|${radarArtists.join(',')}`;
+    if (mixSeedSignatureRef.current === sig && madeForYouMixes.length > 0) return;
+    mixSeedSignatureRef.current = sig;
+
+    let cancelled = false;
+    setLoadingMixes(true);
+
+    const filterMixTracks = (list: Track[]): Track[] => {
+      const seen = new Set<string>();
+      return list.filter((t) => {
+        if (!t || !t.id || seen.has(t.id) || isTrackBlocked(t)) return false;
+        seen.add(t.id);
+        return true;
+      });
+    };
+
+    const buildMixes = async () => {
+      const localPool = filterMixTracks([
+        ...likedTracks,
+        ...recentTracks,
+        ...(higedanData?.songs || []),
+        ...(data?.trending || []),
+      ]);
+
+      const [moodRes, artist1Res, artist2Res, radarResList] = await Promise.all([
+        api.getMoodRecommendation(daylistSlot.moodId, artist1).catch(() => null),
+        api.search(`${artist1} 人気曲`, 'song').catch(() => null),
+        api.search(`${artist2} 人気曲`, 'song').catch(() => null),
+        Promise.all(
+          radarArtists.map((name) =>
+            api.search(`${name} 新曲`, 'song').catch(() => null)
+          )
+        ),
+      ]);
+
+      if (cancelled) return;
+
+      const daylistTracks = filterMixTracks([
+        ...((moodRes?.tracks || []) as Track[]),
+        ...localPool.slice(0, 6),
+      ]).slice(0, 15);
+
+      const mix1Tracks = filterMixTracks([
+        ...localPool.filter(
+          (t) => t.artist?.toLowerCase().includes(artist1.toLowerCase())
+        ),
+        ...((artist1Res?.results || artist1Res?.songs || []) as Track[]),
+      ]).slice(0, 15);
+
+      const mix2Tracks = filterMixTracks([
+        ...localPool.filter(
+          (t) => t.artist?.toLowerCase().includes(artist2.toLowerCase())
+        ),
+        ...((artist2Res?.results || artist2Res?.songs || []) as Track[]),
+      ]).slice(0, 15);
+
+      const radarSearchTracks = radarResList.flatMap(
+        (res) => (res?.results || res?.songs || []) as Track[]
+      );
+      const radarTracks = filterMixTracks([
+        ...radarSearchTracks,
+        ...(data?.trending || []),
+      ]).slice(0, 15);
+
+      const nextMixes: MadeForYouMix[] = [
+        {
+          id: `daylist-${daylistSlot.moodId}`,
+          badge: 'DAYLIST',
+          title: daylistSlot.title,
+          subtitle: daylistSlot.subtitle,
+          gradient: daylistSlot.gradient,
+          tracks: daylistTracks,
+          coverUrl: daylistTracks[0]?.thumbnail,
+        },
+        {
+          id: 'daily-mix-1',
+          badge: 'DAILY MIX 1',
+          title: `${artist1} ミックス`,
+          subtitle: `${artist1} とよく聴くスタイルを中心に編成`,
+          gradient: 'from-red-600 via-rose-800 to-neutral-950',
+          tracks: mix1Tracks,
+          coverUrl: mix1Tracks[0]?.thumbnail,
+        },
+        {
+          id: 'daily-mix-2',
+          badge: 'DAILY MIX 2',
+          title: `${artist2} ミックス`,
+          subtitle: `${artist2} ほかお気に入り傾向から生成`,
+          gradient: 'from-emerald-600 via-teal-800 to-neutral-950',
+          tracks: mix2Tracks,
+          coverUrl: mix2Tracks[0]?.thumbnail,
+        },
+        {
+          id: 'release-radar',
+          badge: 'RELEASE RADAR',
+          title: '新譜レーダー',
+          subtitle: `${radarArtists.join('・')} などの注目・新着セレクション`,
+          gradient: 'from-fuchsia-600 via-purple-800 to-neutral-950',
+          tracks: radarTracks,
+          coverUrl: radarTracks[0]?.thumbnail,
+        },
+      ].filter((m) => m.tracks.length > 0);
+
+      setMadeForYouMixes(nextMixes);
+      setLoadingMixes(false);
+    };
+
+    buildMixes();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loading,
+    listeningStats.topArtists,
+    followedArtists,
+    likedTracks,
+    recentTracks,
+    higedanData,
+    data,
+    isTrackBlocked,
+  ]);
 
   const getGreeting = () => {
     const hour = new Date().getHours();
@@ -929,7 +1133,81 @@ export const HomeExploreView: React.FC = () => {
         </div>
       </section>
 
-      {/* 2. おすすめステーション (Spotify Radio Shelf) */}
+      {/* 2. あなた専用ミックス (Daily Mix / Daylist / 新譜レーダー) */}
+      {(loadingMixes || madeForYouMixes.length > 0) && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-xl sm:text-[22px] font-black text-white tracking-tight flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-red-500" />
+              <span>あなた専用ミックス</span>
+            </h2>
+            {loadingMixes && (
+              <span className="text-[11px] text-neutral-400 flex items-center gap-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+                <span>生成中...</span>
+              </span>
+            )}
+          </div>
+
+          <div className="flex md:grid md:grid-cols-4 gap-3.5 md:gap-4 overflow-x-auto md:overflow-visible pb-2 md:pb-0 -mx-3 px-3 md:mx-0 md:px-0 scrollbar-none snap-x snap-mandatory">
+            {madeForYouMixes.map((mix) => (
+              <div
+                key={mix.id}
+                onClick={() => setActiveMixModal(mix)}
+                className="w-[152px] sm:w-[168px] md:w-auto shrink-0 snap-start group cursor-pointer flex flex-col gap-2"
+              >
+                <div
+                  className={`aspect-square rounded-md overflow-hidden bg-gradient-to-br ${mix.gradient} relative shadow-lg`}
+                >
+                  {mix.coverUrl && (
+                    <SafeImage
+                      src={mix.coverUrl}
+                      alt={mix.title}
+                      useBase64
+                      className="w-full h-full object-cover opacity-80 group-hover:scale-105 transition-transform duration-300"
+                    />
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-black/30 pointer-events-none" />
+                  <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/75 text-[9px] font-black tracking-wider text-white border border-white/15">
+                    {mix.badge}
+                  </div>
+                  <div className="absolute bottom-2.5 left-2.5 right-12 pointer-events-none">
+                    <p className="text-xs font-black text-white leading-tight line-clamp-2 drop-shadow">
+                      {mix.title}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (mix.tracks.length > 0) {
+                        playTrack(mix.tracks[0], mix.tracks);
+                        showToast(`「${mix.title}」を再生中`, 'success', 2000);
+                      }
+                    }}
+                    className="absolute bottom-2 right-2 w-9 h-9 md:w-10 md:h-10 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-xl shadow-black/60 md:opacity-0 md:translate-y-1.5 md:group-hover:opacity-100 md:group-hover:translate-y-0 transition-all cursor-pointer"
+                    title="今すぐ再生"
+                    aria-label={`${mix.title} を再生`}
+                  >
+                    <Play className="w-4 h-4 fill-white ml-0.5" />
+                  </button>
+                </div>
+
+                <div className="min-w-0">
+                  <h3 className="text-[13px] sm:text-sm font-bold text-white line-clamp-1 group-hover:text-red-400 transition-colors">
+                    {mix.title}
+                  </h3>
+                  <p className="text-xs text-neutral-400 line-clamp-2 mt-0.5">
+                    {mix.subtitle}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* 2.5 おすすめステーション (Spotify Radio Shelf) */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xl sm:text-[22px] font-black text-white tracking-tight">
@@ -1016,7 +1294,10 @@ export const HomeExploreView: React.FC = () => {
             </div>
           </button>
 
-          {recentTracks.slice(0, 12).map((track) => {
+          {recentTracks
+            .filter((t) => !isTrackBlocked(t))
+            .slice(0, 12)
+            .map((track) => {
             const isCurrent = currentTrack?.id === track.id;
             return (
               <div
@@ -1031,6 +1312,32 @@ export const HomeExploreView: React.FC = () => {
                     useBase64
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />
+                  <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openTrackDetailModal(track);
+                      }}
+                      className="w-7 h-7 rounded-full bg-black/70 hover:bg-neutral-800 text-white/90 hover:text-white backdrop-blur-md flex items-center justify-center shadow cursor-pointer"
+                      title="楽曲の詳細"
+                      aria-label="楽曲の詳細"
+                    >
+                      <Info className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        playNext(track);
+                      }}
+                      className="w-7 h-7 rounded-full bg-black/70 hover:bg-red-600 text-white/90 hover:text-white backdrop-blur-md flex items-center justify-center shadow cursor-pointer"
+                      title="次に再生"
+                      aria-label="次に再生"
+                    >
+                      <ListStart className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   <div
                     className={`hidden md:flex absolute bottom-2.5 right-2.5 w-10 h-10 rounded-full bg-red-600 text-white items-center justify-center shadow-xl transition-all pointer-events-none ${
                       isCurrent
@@ -1076,7 +1383,7 @@ export const HomeExploreView: React.FC = () => {
 
           <div className="flex gap-3.5 overflow-x-auto pb-2 -mx-3 px-3 scrollbar-none snap-x snap-mandatory">
             {userPlaylists.map((pl) => {
-              const cover = pl.tracks[0]?.thumbnail;
+              const cover = pl.coverImage || pl.tracks[0]?.thumbnail;
               return (
                 <div
                   key={pl.id}
@@ -1094,7 +1401,7 @@ export const HomeExploreView: React.FC = () => {
                       <SafeImage
                         src={cover}
                         alt={pl.name}
-                        useBase64
+                        useBase64={!cover.startsWith('data:')}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
@@ -1253,7 +1560,10 @@ export const HomeExploreView: React.FC = () => {
           </div>
 
           <div className="divide-y divide-white/5">
-            {oriconList.slice(0, 10).map((track, idx) => {
+            {oriconList
+              .filter((t) => !isTrackBlocked(t))
+              .slice(0, 10)
+              .map((track, idx) => {
               const isCurrent = currentTrack?.id === track.id;
               const isLiked = likedTrackIds.has(track.id);
 
@@ -1300,14 +1610,14 @@ export const HomeExploreView: React.FC = () => {
                     <p className="text-xs text-neutral-400 truncate mt-0.5">{track.artist}</p>
                   </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-0.5 shrink-0">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         toggleLikeTrack(track);
                       }}
-                      className="w-10 h-10 flex items-center justify-center text-neutral-400 hover:text-red-500 transition-colors cursor-pointer"
+                      className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-red-500 transition-colors cursor-pointer"
                       title={isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
                     >
                       <Heart
@@ -1318,12 +1628,38 @@ export const HomeExploreView: React.FC = () => {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        addToQueue(track);
+                        playNext(track);
                       }}
-                      className="w-10 h-10 flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
-                      title="キューに追加"
+                      className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                      title="次に再生"
+                      aria-label="次に再生"
+                    >
+                      <ListStart className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addToQueue(track);
+                        showToast(`「${track.title}」をキューの末尾に追加しました`, 'info', 2000);
+                      }}
+                      className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                      title="キューの最後に追加"
+                      aria-label="キューの最後に追加"
                     >
                       <Plus className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openTrackDetailModal(track);
+                      }}
+                      className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                      title="楽曲の詳細"
+                      aria-label="楽曲の詳細"
+                    >
+                      <Info className="w-4 h-4" />
                     </button>
                     {track.duration && (
                       <span className="hidden sm:inline-block w-11 text-right text-xs font-mono text-neutral-400 tabular-nums">
@@ -1452,6 +1788,162 @@ export const HomeExploreView: React.FC = () => {
             ))}
           </div>
         </section>
+      )}
+
+      {/* Made For You Mix Preview Modal */}
+      {activeMixModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setActiveMixModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-2xl max-h-[88vh] bg-[#111114] border border-white/10 rounded-t-3xl sm:rounded-2xl overflow-hidden flex flex-col shadow-2xl"
+          >
+            <div className={`p-5 sm:p-6 bg-gradient-to-br ${activeMixModal.gradient} relative`}>
+              <button
+                type="button"
+                onClick={() => setActiveMixModal(null)}
+                className="absolute top-4 right-4 w-9 h-9 rounded-full bg-black/50 hover:bg-black/75 text-white flex items-center justify-center cursor-pointer"
+                aria-label="閉じる"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex items-end gap-4 pr-10">
+                <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-lg overflow-hidden bg-black/30 shadow-xl shrink-0">
+                  {activeMixModal.coverUrl && (
+                    <SafeImage
+                      src={activeMixModal.coverUrl}
+                      alt={activeMixModal.title}
+                      useBase64
+                      className="w-full h-full object-cover"
+                    />
+                  )}
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <span className="inline-block px-2 py-0.5 rounded bg-black/50 text-[10px] font-black tracking-wider text-white">
+                    {activeMixModal.badge}
+                  </span>
+                  <h3 className="text-xl sm:text-2xl font-black text-white leading-tight">
+                    {activeMixModal.title}
+                  </h3>
+                  <p className="text-xs text-white/85 line-clamp-2">
+                    {activeMixModal.subtitle} · {activeMixModal.tracks.length}曲
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const playable = activeMixModal.tracks.filter((t) => !isTrackBlocked(t));
+                    if (playable.length > 0) {
+                      playTrack(playable[0], playable);
+                      setActiveMixModal(null);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>すべて再生</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const playable = activeMixModal.tracks
+                      .filter((t) => !isTrackBlocked(t))
+                      .sort(() => Math.random() - 0.5);
+                    if (playable.length > 0) {
+                      playTrack(playable[0], playable);
+                      setActiveMixModal(null);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-full bg-black/50 hover:bg-black/70 text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 cursor-pointer"
+                >
+                  <Shuffle className="w-3.5 h-3.5" />
+                  <span>シャッフル</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const playable = activeMixModal.tracks.filter((t) => !isTrackBlocked(t));
+                    if (playable.length > 0) {
+                      saveTracksAsPlaylist(activeMixModal.title, playable);
+                      showToast(`「${activeMixModal.title}」をマイプレイリストに保存しました`, 'success', 2500);
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-full bg-black/50 hover:bg-black/70 text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 cursor-pointer"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5" />
+                  <span>プレイリストに保存</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-white/5 p-2 sm:p-3">
+              {activeMixModal.tracks
+                .filter((t) => !isTrackBlocked(t))
+                .map((track, idx) => (
+                  <div
+                    key={`mix-row-${track.id}-${idx}`}
+                    onClick={() => playTrack(track, activeMixModal.tracks)}
+                    className="flex items-center gap-3 px-2.5 py-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors"
+                  >
+                    <span className="w-5 text-center text-xs font-mono text-neutral-500 shrink-0">
+                      {idx + 1}
+                    </span>
+                    <SafeImage
+                      src={track.thumbnail}
+                      alt={track.title}
+                      useBase64
+                      className="w-10 h-10 rounded object-cover bg-neutral-800 shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-white truncate">{track.title}</p>
+                      <p className="text-xs text-neutral-400 truncate">{track.artist}</p>
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playNext(track);
+                        }}
+                        className="p-2 text-neutral-400 hover:text-red-400 cursor-pointer"
+                        title="次に再生"
+                      >
+                        <ListStart className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openTrackDetailModal(track);
+                        }}
+                        className="p-2 text-neutral-400 hover:text-white cursor-pointer"
+                        title="楽曲の詳細"
+                      >
+                        <Info className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          hideTrack(track);
+                        }}
+                        className="p-2 text-neutral-400 hover:text-red-400 cursor-pointer"
+                        title="この曲を非表示"
+                      >
+                        <EyeOff className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

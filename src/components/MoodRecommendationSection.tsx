@@ -22,6 +22,7 @@ import {
   ChevronUp,
   ThumbsUp,
   Loader2,
+  ListStart,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { CommentEmotionData, Track } from '../types/music';
@@ -64,7 +65,7 @@ const POPULAR_ARTISTS = [
 ];
 
 export const MoodRecommendationSection: React.FC = () => {
-  const { playTrack, addToQueue, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying } =
+  const { playTrack, addToQueue, playNext, showToast, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying } =
     usePlayer();
 
   const [selectedMood, setSelectedMood] = useState<string>('energy');
@@ -654,10 +655,25 @@ export const MoodRecommendationSection: React.FC = () => {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          playNext(track);
+                        }}
+                        className="p-1.5 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                        title="次に再生"
+                        aria-label="次に再生"
+                      >
+                        <ListStart className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           addToQueue(track);
+                          showToast(`「${track.title}」をキューの末尾に追加しました`, 'info', 2000);
                         }}
                         className="p-1.5 rounded-full hover:bg-neutral-800 text-neutral-500 hover:text-white transition-colors cursor-pointer"
-                        title="キューに追加"
+                        title="キューの最後に追加"
+                        aria-label="キューの最後に追加"
                       >
                         <Plus className="w-4 h-4" />
                       </button>

@@ -18,7 +18,33 @@ import {
   Sparkles,
   Disc,
   ListMusic,
+  ArrowUpDown,
+  ChevronUp,
+  ChevronDown,
+  GripVertical,
+  Check,
+  ListStart,
+  Pencil,
+  Info,
+  EyeOff,
+  Ban,
+  ImagePlus,
+  RefreshCw,
+  RotateCcw,
+  Loader2,
+  X,
+  Users,
+  FolderPlus,
+  Folder,
+  FolderOpen,
+  LayoutGrid,
+  List,
+  Pin,
+  Search,
+  Disc3,
+  QrCode,
 } from 'lucide-react';
+import { api } from '../services/api';
 import { parseLocalAudioFile } from '../services/localTracks';
 import {
   getAllOfflineTracks,
@@ -33,20 +59,47 @@ export const LibraryView: React.FC = () => {
     likedTracks,
     likedAlbums,
     likedPlaylists,
+    followedArtists,
+    toggleFollowArtist,
     recentTracks,
     userPlaylists,
+    userFolders,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    assignPlaylistToFolder,
+    togglePinUserPlaylist,
     playTrack,
     addToQueue,
+    playNext,
+    showToast,
     toggleLikeTrack,
     toggleLikeAlbum,
     toggleLikePlaylist,
     toggleLikeUserPlaylist,
     createUserPlaylist,
+    addToUserPlaylist,
     deleteUserPlaylist,
+    removeFromUserPlaylist,
+    reorderUserPlaylists,
+    sortUserPlaylists,
+    reorderUserPlaylistTracks,
+    sortUserPlaylistTracks,
+    updateUserPlaylist,
+    hiddenTracks,
+    blockedArtists,
+    unhideTrack,
+    unblockArtist,
+    isTrackBlocked,
+    openTrackDetailModal,
     currentTrack,
     setImportModalOpen,
     openAddToPlaylistModal,
     openShareModal,
+    openVisualShareCard,
+    openZeroCodeModal,
+    setCollabModalOpen,
+    setMatchModalOpen,
     navigateTo,
     libraryTab: activeTab,
     setLibraryTab: setActiveTab,
@@ -56,10 +109,45 @@ export const LibraryView: React.FC = () => {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+  const [isReorderingPlaylists, setIsReorderingPlaylists] = useState(false);
+  const [isReorderingTracks, setIsReorderingTracks] = useState(false);
+  const [dragPlaylistIdx, setDragPlaylistIdx] = useState<number | null>(null);
+  const [dragOverPlaylistIdx, setDragOverPlaylistIdx] = useState<number | null>(null);
+  const [dragTrackIdx, setDragTrackIdx] = useState<number | null>(null);
+  const [dragOverTrackIdx, setDragOverTrackIdx] = useState<number | null>(null);
+
+  // Playlist edit modal state
+  const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editCoverImage, setEditCoverImage] = useState('');
+  const coverFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Recommended tracks for selected playlist
+  const [playlistSuggestions, setPlaylistSuggestions] = useState<Track[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionsRefreshKey, setSuggestionsRefreshKey] = useState(0);
+
+  // Hidden/Blocked manager modal/panel
+  const [showBlockedManager, setShowBlockedManager] = useState(false);
+
+  // Library UI state: Create bottom sheet, Folders, Grid/List toggle, Search filter, Sub-views (Albums/Artists/Folders)
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [editFolderName, setEditFolderName] = useState('');
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [searchFilterOpen, setSearchFilterOpen] = useState(false);
+  const [libraryFilterQuery, setLibraryFilterQuery] = useState('');
+  const [subCategory, setSubCategory] = useState<'none' | 'albums' | 'artists' | 'folders'>('none');
 
   useEffect(() => {
     if (libraryResetSeq > 0) {
       setSelectedPlaylistId(null);
+      setSelectedFolderId(null);
+      setSubCategory('none');
     }
   }, [libraryResetSeq]);
 
@@ -133,106 +221,893 @@ export const LibraryView: React.FC = () => {
   const handleCreatePlaylist = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPlaylistName.trim()) return;
-    createUserPlaylist(newPlaylistName.trim());
+    const created = createUserPlaylist(newPlaylistName.trim());
     setNewPlaylistName('');
     setIsCreatingPlaylist(false);
+    if (created && selectedFolderId) {
+      assignPlaylistToFolder(created.id, selectedFolderId);
+    }
   };
 
+  const handleCreateFolderSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    const folder = createFolder(newFolderName.trim());
+    setNewFolderName('');
+    setIsCreatingFolder(false);
+    if (folder) {
+      setActiveTab('playlists');
+      setSubCategory('none');
+      setSelectedFolderId(folder.id);
+    }
+  };
+
+  const normalizedFilter = libraryFilterQuery.trim().toLowerCase();
+  const matchesQuery = (text?: string) =>
+    !normalizedFilter || (text || '').toLowerCase().includes(normalizedFilter);
+
   const currentSelectedPlaylist = userPlaylists.find((p) => p.id === selectedPlaylistId);
+  const currentSelectedFolder = userFolders.find((f) => f.id === selectedFolderId);
+
+  const displayedPlaylists = [...userPlaylists]
+    .filter((pl) => {
+      if (selectedFolderId && currentSelectedFolder) {
+        if (!currentSelectedFolder.playlistIds.includes(pl.id)) return false;
+      }
+      return matchesQuery(pl.name) || matchesQuery(pl.description);
+    })
+    .sort((a, b) => {
+      if (isReorderingPlaylists) return 0;
+      const pinDiff = (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0);
+      return pinDiff;
+    });
+
+  const filteredLikedTracks = likedTracks.filter(
+    (t) => matchesQuery(t.title) || matchesQuery(t.artist) || matchesQuery(t.album)
+  );
+  const filteredLikedAlbums = likedAlbums.filter(
+    (a) => matchesQuery(a.title) || matchesQuery(a.artist)
+  );
+  const filteredFollowedArtists = followedArtists.filter((a) => matchesQuery(a.name));
+  const filteredRecentTracks = recentTracks.filter(
+    (t) => matchesQuery(t.title) || matchesQuery(t.artist)
+  );
+
+  // Fetch recommended tracks for the selected playlist
+  useEffect(() => {
+    if (!currentSelectedPlaylist || activeTab !== 'playlists') {
+      setPlaylistSuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingSuggestions(true);
+
+    const existingIds = new Set(currentSelectedPlaylist.tracks.map((t) => t.id));
+    const seedTracks = currentSelectedPlaylist.tracks;
+
+    const loadSuggestions = async () => {
+      const collected: Track[] = [];
+      const seen = new Set<string>(existingIds);
+      const pushCandidate = (t?: Track) => {
+        if (!t || !t.id || seen.has(t.id) || isTrackBlocked(t)) return;
+        seen.add(t.id);
+        collected.push(t);
+      };
+
+      try {
+        if (seedTracks.length > 0) {
+          const seedIdx = suggestionsRefreshKey % seedTracks.length;
+          const seed = seedTracks[seedIdx] || seedTracks[0];
+          const relRes = await api.getRelated(seed.id).catch(() => []);
+          (Array.isArray(relRes) ? relRes : []).forEach(pushCandidate);
+
+          if (collected.length < 6 && seed.artist) {
+            const artRes = await api.search(`${seed.artist} 人気曲`, 'song').catch(() => null);
+            ((artRes?.results || artRes?.songs || []) as Track[]).forEach(pushCandidate);
+          }
+        } else {
+          const q = currentSelectedPlaylist.name?.trim() || 'J-Pop ヒット曲';
+          const searchRes = await api.search(q, 'song').catch(() => null);
+          ((searchRes?.results || searchRes?.songs || []) as Track[]).forEach(pushCandidate);
+        }
+      } catch {}
+
+      if (!cancelled) {
+        setPlaylistSuggestions(collected.slice(0, 8));
+        setLoadingSuggestions(false);
+      }
+    };
+
+    loadSuggestions();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSelectedPlaylist?.id, activeTab, suggestionsRefreshKey, isTrackBlocked]);
+
+  const openPlaylistEditor = (pl: typeof userPlaylists[number]) => {
+    setEditingPlaylistId(pl.id);
+    setEditName(pl.name);
+    setEditDescription(pl.description || '');
+    setEditCoverImage(pl.coverImage || '');
+  };
+
+  const handleCoverImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) return;
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 360;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const compressed = canvas.toDataURL('image/jpeg', 0.8);
+          setEditCoverImage(compressed);
+        } else {
+          setEditCoverImage(dataUrl);
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSavePlaylistEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPlaylistId) return;
+    updateUserPlaylist(editingPlaylistId, {
+      name: editName.trim() || undefined,
+      description: editDescription.trim(),
+      coverImage: editCoverImage.trim(),
+    });
+    setEditingPlaylistId(null);
+  };
 
   return (
     <div className="space-y-6 pb-20">
       {/* Header */}
-      <div className="border-b border-neutral-800/80 pb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <span className="text-xs font-mono text-neutral-400 uppercase tracking-wider">
-            マイ コレクション
-          </span>
-          <h1 className="text-2xl font-bold text-white mt-0.5">
-            ライブラリ (Library)
-          </h1>
-        </div>
+      <div className="border-b border-neutral-800/80 pb-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-600 to-rose-700 flex items-center justify-center text-white font-black text-sm shadow-lg shadow-red-600/25 shrink-0">
+              ZM
+            </div>
+            <div className="min-w-0">
+              <span className="text-[11px] font-mono text-neutral-400 uppercase tracking-wider">
+                マイ コレクション
+              </span>
+              <h1 className="text-xl sm:text-2xl font-bold text-white leading-tight">
+                マイライブラリ
+              </h1>
+            </div>
+          </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Tab switch */}
-          <div className="flex items-center gap-1.5 p-1 bg-neutral-900 border border-neutral-800 rounded-xl overflow-x-auto scrollbar-none">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => {
-                setActiveTab('liked');
-                setSelectedPlaylistId(null);
+                setSearchFilterOpen((v) => !v);
+                if (searchFilterOpen) setLibraryFilterQuery('');
               }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                activeTab === 'liked' && !selectedPlaylistId
-                  ? 'bg-neutral-800 text-white shadow-sm'
-                  : 'text-neutral-400 hover:text-white'
+              className={`w-9 h-9 rounded-full flex items-center justify-center border transition-colors cursor-pointer ${
+                searchFilterOpen || libraryFilterQuery
+                  ? 'bg-red-600/20 border-red-500/50 text-red-400'
+                  : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-neutral-300'
               }`}
+              title="ライブラリ内を検索"
+              aria-label="ライブラリ内を検索"
             >
-              <Heart className="w-3.5 h-3.5 text-red-500 fill-red-500" />
-              <span>
-                お気に入り ({likedTracks.length + likedAlbums.length + likedPlaylists.length + userPlaylists.filter((p) => p.isLiked).length})
+              <Search className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCreateSheetOpen(true)}
+              className="w-9 h-9 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-600/25 active:scale-95 transition-all cursor-pointer"
+              title="プレイリスト・コラボ・Blend・フォルダを作成"
+              aria-label="新規作成"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowBlockedManager((v) => !v)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-full flex items-center gap-1.5 border transition-colors shrink-0 cursor-pointer ${
+                showBlockedManager
+                  ? 'bg-red-600/20 border-red-500/50 text-red-300'
+                  : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-neutral-300'
+              }`}
+              title="非表示にした曲・ブロック中のアーティストを管理"
+            >
+              <EyeOff className="w-3.5 h-3.5 text-neutral-400" />
+              <span className="hidden sm:inline">
+                非表示・ブロック ({hiddenTracks.length + blockedArtists.length})
+              </span>
+              <span className="sm:hidden">
+                {hiddenTracks.length + blockedArtists.length}
               </span>
             </button>
 
             <button
               type="button"
-              onClick={() => {
-                setActiveTab('history');
-                setSelectedPlaylistId(null);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                activeTab === 'history' && !selectedPlaylistId
-                  ? 'bg-neutral-800 text-white shadow-sm'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
+              onClick={() => setImportModalOpen(true)}
+              className="px-3.5 py-1.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-white font-semibold text-xs rounded-full flex items-center gap-1.5 active:scale-95 transition-all shrink-0 cursor-pointer"
             >
-              <History className="w-3.5 h-3.5" />
-              <span>最近の再生 ({recentTracks.length})</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('playlists')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                activeTab === 'playlists' || selectedPlaylistId
-                  ? 'bg-neutral-800 text-white shadow-sm'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              <Library className="w-3.5 h-3.5 text-red-500" />
-              <span>プレイリスト ({userPlaylists.length})</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('local');
-                setSelectedPlaylistId(null);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                activeTab === 'local' && !selectedPlaylistId
-                  ? 'bg-neutral-800 text-white shadow-sm'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
-              <span>ローカル音源 ({localTracks.length})</span>
+              <Link2 className="w-3.5 h-3.5 text-red-400" />
+              <span className="hidden sm:inline">URLインポート</span>
             </button>
           </div>
+        </div>
+
+        {/* Inline Library Search Bar */}
+        {searchFilterOpen && (
+          <div className="relative">
+            <Search className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={libraryFilterQuery}
+              onChange={(e) => setLibraryFilterQuery(e.target.value)}
+              placeholder="プレイリスト、アルバム、アーティスト、曲名で絞り込み..."
+              autoFocus
+              className="w-full bg-neutral-900 border border-neutral-800 focus:border-red-500 text-xs sm:text-sm text-white rounded-xl pl-10 pr-9 py-2.5 focus:outline-none"
+            />
+            {libraryFilterQuery && (
+              <button
+                type="button"
+                onClick={() => setLibraryFilterQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white cursor-pointer"
+                aria-label="クリア"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Filter Chips */}
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none pb-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('playlists');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'playlists' && subCategory === 'none'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <Library className="w-3.5 h-3.5" />
+            <span>プレイリスト ({userPlaylists.length})</span>
+          </button>
 
           <button
             type="button"
-            onClick={() => setImportModalOpen(true)}
-            className="px-3.5 py-1.5 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl flex items-center gap-1.5 shadow-md shadow-red-600/20 active:scale-95 transition-all shrink-0 cursor-pointer"
+            onClick={() => {
+              setActiveTab('liked');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'liked' && subCategory === 'none'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
           >
-            <Link2 className="w-3.5 h-3.5" />
-            <span>URLインポート</span>
+            <Heart className="w-3.5 h-3.5 fill-current" />
+            <span>
+              お気に入り ({likedTracks.length + likedAlbums.length + likedPlaylists.length + userPlaylists.filter((p) => p.isLiked).length})
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubCategory('albums');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              subCategory === 'albums'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <Disc3 className="w-3.5 h-3.5" />
+            <span>アルバム ({likedAlbums.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubCategory('artists');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              subCategory === 'artists'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>アーティスト ({followedArtists.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubCategory('folders');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              subCategory === 'folders'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <Folder className="w-3.5 h-3.5" />
+            <span>フォルダ ({userFolders.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('history');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'history' && subCategory === 'none'
+                ? 'bg-red-600 text-white shadow-sm shadow-red-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>最近の再生 ({recentTracks.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('local');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'local' && subCategory === 'none'
+                ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
+            <span>ローカル音源 ({localTracks.length})</span>
           </button>
         </div>
       </div>
 
+      {/* Create Action Bottom Sheet ("+" button: プレイリスト / コラボプレイリスト / Blend / フォルダ) */}
+      {createSheetOpen && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+          onClick={() => setCreateSheetOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md bg-neutral-900 border-t sm:border border-neutral-800 rounded-t-3xl sm:rounded-3xl p-5 pb-8 sm:pb-6 space-y-2 shadow-2xl"
+          >
+            <div className="w-10 h-1 rounded-full bg-neutral-700 mx-auto mb-3 sm:hidden" />
+            <div className="flex items-center justify-between px-1 pb-2">
+              <h3 className="text-sm font-bold text-white">新規作成</h3>
+              <button
+                type="button"
+                onClick={() => setCreateSheetOpen(false)}
+                className="p-1.5 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 cursor-pointer"
+                aria-label="閉じる"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCreateSheetOpen(false);
+                setActiveTab('playlists');
+                setSubCategory('none');
+                setIsCreatingPlaylist(true);
+              }}
+              className="w-full flex items-center gap-3.5 p-3 rounded-2xl hover:bg-neutral-800/80 transition-colors text-left cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-white shrink-0">
+                <Music className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-white">プレイリスト</p>
+                <p className="text-xs text-neutral-400">楽曲やエピソードでプレイリストを作成します</p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCreateSheetOpen(false);
+                setCollabModalOpen(true);
+              }}
+              className="w-full flex items-center gap-3.5 p-3 rounded-2xl hover:bg-neutral-800/80 transition-colors text-left cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-white shrink-0">
+                <Users className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-white">コラボプレイリスト</p>
+                <p className="text-xs text-neutral-400">友達と一緒にプレイリストを作成できます</p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCreateSheetOpen(false);
+                setMatchModalOpen(true);
+              }}
+              className="w-full flex items-center gap-3.5 p-3 rounded-2xl hover:bg-neutral-800/80 transition-colors text-left cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-red-400 shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-white">Blend</p>
+                <p className="text-xs text-neutral-400">友達と音楽の好みを組み合わせてプレイリストを作成</p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCreateSheetOpen(false);
+                setActiveTab('playlists');
+                setSubCategory('none');
+                setIsCreatingFolder(true);
+              }}
+              className="w-full flex items-center gap-3.5 p-3 rounded-2xl hover:bg-neutral-800/80 transition-colors text-left cursor-pointer"
+            >
+              <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-white shrink-0">
+                <FolderPlus className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-white">フォルダ</p>
+                <p className="text-xs text-neutral-400">プレイリストを整理できます</p>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden Tracks & Blocked Artists Management Panel */}
+      {showBlockedManager && (
+        <div className="bg-neutral-900/80 border border-neutral-800 rounded-2xl p-4 sm:p-5 space-y-5 shadow-xl">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <EyeOff className="w-4 h-4 text-red-500" />
+              <h2 className="text-sm font-bold text-white">
+                非表示の曲・再生しないアーティストの管理
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowBlockedManager(false)}
+              className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 cursor-pointer"
+              aria-label="閉じる"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <p className="text-xs text-neutral-400">
+            非表示にした曲や再生しないアーティストは、自動キュー補充やおすすめから自動的に除外・スキップされます。
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Blocked Artists */}
+            <div className="bg-neutral-950/60 border border-neutral-800/80 rounded-xl p-3.5 space-y-2.5">
+              <h3 className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
+                <Ban className="w-3.5 h-3.5 text-red-400" />
+                <span>再生しないアーティスト ({blockedArtists.length})</span>
+              </h3>
+              {blockedArtists.length === 0 ? (
+                <p className="text-xs text-neutral-500 py-3">
+                  ブロック中のアーティストはありません。
+                </p>
+              ) : (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                  {blockedArtists.map((artistName) => (
+                    <div
+                      key={artistName}
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-neutral-900/90 border border-neutral-800/70"
+                    >
+                      <span className="text-xs font-medium text-white truncate">
+                        {artistName}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => unblockArtist(artistName)}
+                        className="px-2.5 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-[11px] font-semibold text-neutral-200 flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>解除</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Hidden Tracks */}
+            <div className="bg-neutral-950/60 border border-neutral-800/80 rounded-xl p-3.5 space-y-2.5">
+              <h3 className="text-xs font-bold text-neutral-300 flex items-center gap-1.5">
+                <EyeOff className="w-3.5 h-3.5 text-red-400" />
+                <span>非表示の曲 ({hiddenTracks.length})</span>
+              </h3>
+              {hiddenTracks.length === 0 ? (
+                <p className="text-xs text-neutral-500 py-3">
+                  非表示にした曲はありません。
+                </p>
+              ) : (
+                <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                  {hiddenTracks.map((track) => (
+                    <div
+                      key={track.id}
+                      className="flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg bg-neutral-900/90 border border-neutral-800/70"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SafeImage
+                          src={track.thumbnail}
+                          alt={track.title}
+                          useBase64
+                          className="w-8 h-8 rounded object-cover bg-neutral-800 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-white truncate">{track.title}</p>
+                          <p className="text-[11px] text-neutral-400 truncate">{track.artist}</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => unhideTrack(track.id)}
+                        className="px-2.5 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 text-[11px] font-semibold text-neutral-200 flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>再表示</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subcategory: Saved Albums */}
+      {subCategory === 'albums' && !selectedPlaylistId && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <Disc3 className="w-4 h-4 text-red-500" />
+              <span>保存済みアルバム ({filteredLikedAlbums.length})</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => setViewMode((m) => (m === 'list' ? 'grid' : 'list'))}
+              className="p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white cursor-pointer"
+              title={viewMode === 'list' ? 'グリッド表示に切替' : 'リスト表示に切替'}
+            >
+              {viewMode === 'list' ? <LayoutGrid className="w-4 h-4" /> : <List className="w-4 h-4" />}
+            </button>
+          </div>
+          {filteredLikedAlbums.length === 0 ? (
+            <div className="py-16 text-center text-xs text-neutral-500">
+              お気に入りのアルバムがありません。
+            </div>
+          ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3.5">
+              {filteredLikedAlbums.map((album) => (
+                <div
+                  key={album.id}
+                  onClick={() => navigateTo('album', album.id)}
+                  className="group p-3 bg-neutral-900/50 hover:bg-neutral-800/70 border border-neutral-800/80 hover:border-red-600/40 rounded-2xl cursor-pointer flex flex-col gap-2 transition-all"
+                >
+                  <div className="aspect-square rounded-xl overflow-hidden bg-neutral-800 relative">
+                    <SafeImage
+                      src={album.thumbnail}
+                      alt={album.title}
+                      useBase64
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-xs font-bold text-white truncate">{album.title}</h4>
+                    <p className="text-[11px] text-neutral-400 truncate">アルバム • {album.artist}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {filteredLikedAlbums.map((album) => (
+                <div
+                  key={album.id}
+                  onClick={() => navigateTo('album', album.id)}
+                  className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-neutral-900/40 hover:bg-neutral-800/70 border border-neutral-800/60 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <SafeImage
+                      src={album.thumbnail}
+                      alt={album.title}
+                      useBase64
+                      className="w-12 h-12 rounded-lg object-cover bg-neutral-800 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-white truncate">{album.title}</p>
+                      <p className="text-xs text-neutral-400 truncate">アルバム • {album.artist}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleLikeAlbum(album);
+                    }}
+                    className="p-2 text-red-500 hover:text-neutral-400 cursor-pointer"
+                    title="お気に入り解除"
+                  >
+                    <Heart className="w-4 h-4 fill-current" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Subcategory: Followed Artists */}
+      {subCategory === 'artists' && !selectedPlaylistId && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <Users className="w-4 h-4 text-red-500" />
+              <span>フォロー中のアーティスト ({filteredFollowedArtists.length})</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => setViewMode((m) => (m === 'list' ? 'grid' : 'list'))}
+              className="p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white cursor-pointer"
+              title={viewMode === 'list' ? 'グリッド表示に切替' : 'リスト表示に切替'}
+            >
+              {viewMode === 'list' ? <LayoutGrid className="w-4 h-4" /> : <List className="w-4 h-4" />}
+            </button>
+          </div>
+          {filteredFollowedArtists.length === 0 ? (
+            <div className="py-16 text-center text-xs text-neutral-500">
+              フォロー中のアーティストはまだいません。
+            </div>
+          ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {filteredFollowedArtists.map((artist) => (
+                <div
+                  key={artist.id}
+                  onClick={() => navigateTo('artist', artist.id)}
+                  className="group p-3.5 bg-neutral-900/50 hover:bg-neutral-800/70 border border-neutral-800/80 hover:border-red-600/40 rounded-2xl cursor-pointer flex flex-col items-center text-center gap-2.5 transition-all"
+                >
+                  <div className="w-24 h-24 rounded-full overflow-hidden bg-neutral-800 shadow-lg">
+                    <SafeImage
+                      src={artist.thumbnail}
+                      alt={artist.name}
+                      useBase64
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                    />
+                  </div>
+                  <div className="min-w-0 w-full">
+                    <h4 className="text-xs font-bold text-white truncate">{artist.name}</h4>
+                    <p className="text-[11px] text-neutral-400">アーティスト</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {filteredFollowedArtists.map((artist) => (
+                <div
+                  key={artist.id}
+                  onClick={() => navigateTo('artist', artist.id)}
+                  className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-neutral-900/40 hover:bg-neutral-800/70 border border-neutral-800/60 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <SafeImage
+                      src={artist.thumbnail}
+                      alt={artist.name}
+                      useBase64
+                      className="w-12 h-12 rounded-full object-cover bg-neutral-800 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-white truncate">{artist.name}</p>
+                      <p className="text-xs text-neutral-400">アーティスト</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openVisualShareCard({ type: 'artist', artist });
+                      }}
+                      className="p-2 text-neutral-400 hover:text-white cursor-pointer"
+                      title="アーティストカードをシェア"
+                    >
+                      <Share2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFollowArtist(artist);
+                      }}
+                      className="px-3 py-1 rounded-full bg-neutral-800 hover:bg-neutral-700 text-[11px] font-semibold text-neutral-200 cursor-pointer"
+                    >
+                      フォロー中
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Subcategory: Folders Manager */}
+      {subCategory === 'folders' && !selectedPlaylistId && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <Folder className="w-4 h-4 text-red-500" />
+              <span>プレイリストフォルダ ({userFolders.length})</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => setIsCreatingFolder(true)}
+              className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+            >
+              <FolderPlus className="w-3.5 h-3.5" />
+              <span>フォルダを作成</span>
+            </button>
+          </div>
+
+          {isCreatingFolder && (
+            <form
+              onSubmit={handleCreateFolderSubmit}
+              className="p-4 bg-neutral-900 border border-neutral-800 rounded-xl flex items-center gap-3"
+            >
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="フォルダ名を入力..."
+                className="flex-1 bg-neutral-950 border border-neutral-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-red-500"
+                autoFocus
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg"
+              >
+                作成
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCreatingFolder(false)}
+                className="px-3 py-2 text-neutral-400 hover:text-white text-xs"
+              >
+                キャンセル
+              </button>
+            </form>
+          )}
+
+          {userFolders.length === 0 ? (
+            <div className="py-16 text-center space-y-2 text-neutral-500">
+              <Folder className="w-10 h-10 mx-auto text-neutral-600" />
+              <p className="text-xs">フォルダを作成してプレイリストを整理できます。</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
+              {userFolders.map((folder) => {
+                const count = userPlaylists.filter((p) => folder.playlistIds.includes(p.id)).length;
+                return (
+                  <div
+                    key={folder.id}
+                    onClick={() => {
+                      setSelectedFolderId(folder.id);
+                      setActiveTab('playlists');
+                      setSubCategory('none');
+                    }}
+                    className="p-4 bg-neutral-900/50 hover:bg-neutral-800/70 border border-neutral-800 rounded-2xl cursor-pointer flex items-center justify-between gap-3 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-11 h-11 rounded-xl bg-neutral-800 flex items-center justify-center text-red-400 shrink-0">
+                        <FolderOpen className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        {editingFolderId === folder.id ? (
+                          <input
+                            type="text"
+                            value={editFolderName}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setEditFolderName(e.target.value)}
+                            onBlur={() => {
+                              if (editFolderName.trim()) renameFolder(folder.id, editFolderName.trim());
+                              setEditingFolderId(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                if (editFolderName.trim()) renameFolder(folder.id, editFolderName.trim());
+                                setEditingFolderId(null);
+                              }
+                            }}
+                            autoFocus
+                            className="bg-neutral-950 border border-red-500 text-xs text-white rounded px-2 py-1 w-36 focus:outline-none"
+                          />
+                        ) : (
+                          <p className="text-sm font-bold text-white truncate">{folder.name}</p>
+                        )}
+                        <p className="text-xs text-neutral-400">{count}個のプレイリスト</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingFolderId(folder.id);
+                          setEditFolderName(folder.name);
+                        }}
+                        className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                        title="フォルダ名を変更"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteFolder(folder.id);
+                        }}
+                        className="p-1.5 text-neutral-500 hover:text-red-400 cursor-pointer"
+                        title="フォルダを削除"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Liked Tracks View */}
-      {activeTab === 'liked' && !selectedPlaylistId && (
+      {subCategory === 'none' && activeTab === 'liked' && !selectedPlaylistId && (
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 bg-gradient-to-r from-red-950/40 to-neutral-900/60 border border-red-500/20 rounded-2xl">
             <div className="flex items-center gap-4">
@@ -337,11 +1212,11 @@ export const LibraryView: React.FC = () => {
                       className="group p-3 bg-neutral-900/50 hover:bg-neutral-800/70 border border-neutral-800/80 hover:border-red-600/40 rounded-2xl cursor-pointer flex flex-col gap-2 transition-all"
                     >
                       <div className="aspect-square rounded-xl overflow-hidden bg-neutral-800 relative flex items-center justify-center">
-                        {pl.tracks[0]?.thumbnail ? (
+                        {(pl.coverImage || pl.tracks[0]?.thumbnail) ? (
                           <SafeImage
-                            src={pl.tracks[0].thumbnail}
+                            src={pl.coverImage || pl.tracks[0]?.thumbnail || ''}
                             alt={pl.name}
-                            useBase64
+                            useBase64={!pl.coverImage?.startsWith('data:')}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                           />
                         ) : (
@@ -413,7 +1288,7 @@ export const LibraryView: React.FC = () => {
             </div>
           ) : likedTracks.length > 0 ? (
             <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
-              {likedTracks.map((track, idx) => {
+              {filteredLikedTracks.map((track, idx) => {
                 const isCurrent = currentTrack?.id === track.id;
                 return (
                   <div
@@ -472,13 +1347,35 @@ export const LibraryView: React.FC = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => addToQueue(track)}
-                        className="p-1.5 text-neutral-400 hover:text-white"
-                        title="キューに追加"
+                        onClick={() => playNext(track)}
+                        className="p-1.5 text-neutral-400 hover:text-red-400 cursor-pointer"
+                        title="次に再生"
+                        aria-label="次に再生"
+                      >
+                        <ListStart className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addToQueue(track);
+                          showToast(`「${track.title}」をキューの末尾に追加しました`, 'info', 2000);
+                        }}
+                        className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                        title="キューの最後に追加"
+                        aria-label="キューの最後に追加"
                       >
                         <Plus className="w-4 h-4" />
                       </button>
-                      <span className="text-xs font-mono text-neutral-400 tabular-nums">
+                      <button
+                        type="button"
+                        onClick={() => openTrackDetailModal(track)}
+                        className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                        title="楽曲の詳細"
+                        aria-label="楽曲の詳細"
+                      >
+                        <Info className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs font-mono text-neutral-400 tabular-nums hidden sm:inline">
                         {track.duration}
                       </span>
                     </div>
@@ -491,7 +1388,7 @@ export const LibraryView: React.FC = () => {
       )}
 
       {/* Play History View */}
-      {activeTab === 'history' && !selectedPlaylistId && (
+      {subCategory === 'none' && activeTab === 'history' && !selectedPlaylistId && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -500,13 +1397,13 @@ export const LibraryView: React.FC = () => {
             </h2>
           </div>
 
-          {recentTracks.length === 0 ? (
+          {filteredRecentTracks.length === 0 ? (
             <div className="py-20 text-center text-xs text-neutral-500">
               再生履歴はまだありません。
             </div>
           ) : (
             <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
-              {recentTracks.map((track, idx) => (
+              {filteredRecentTracks.map((track, idx) => (
                 <div
                   key={`${track.id}-${idx}`}
                   className="flex items-center gap-3.5 px-4 py-3 hover:bg-neutral-800/50 group transition-colors"
@@ -532,16 +1429,46 @@ export const LibraryView: React.FC = () => {
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
+                      onClick={() => playNext(track)}
+                      className="p-1.5 text-neutral-400 hover:text-red-400 cursor-pointer"
+                      title="次に再生"
+                      aria-label="次に再生"
+                    >
+                      <ListStart className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addToQueue(track);
+                        showToast(`「${track.title}」をキューの末尾に追加しました`, 'info', 2000);
+                      }}
+                      className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                      title="キューの最後に追加"
+                      aria-label="キューの最後に追加"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => openAddToPlaylistModal(track)}
-                      className="p-1.5 text-neutral-400 hover:text-white"
+                      className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
                       title="プレイリストに追加"
                     >
                       <ListPlus className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
+                      onClick={() => openTrackDetailModal(track)}
+                      className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                      title="楽曲の詳細"
+                      aria-label="楽曲の詳細"
+                    >
+                      <Info className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => playTrack(track)}
-                      className="p-1.5 text-neutral-300 hover:text-white"
+                      className="p-1.5 text-neutral-300 hover:text-white cursor-pointer"
                       title="再生"
                     >
                       <Play className="w-4 h-4 fill-current" />
@@ -555,19 +1482,93 @@ export const LibraryView: React.FC = () => {
       )}
 
       {/* Playlists View */}
-      {activeTab === 'playlists' && (
+      {subCategory === 'none' && activeTab === 'playlists' && (
         <div className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-base font-bold text-white">作成したプレイリスト</h2>
             <div className="flex items-center gap-2">
+              {selectedFolderId && currentSelectedFolder ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedFolderId(null)}
+                  className="px-2.5 py-1 rounded-full bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-red-400" />
+                  <span>{currentSelectedFolder.name}</span>
+                  <X className="w-3 h-3 text-neutral-400" />
+                </button>
+              ) : (
+                <h2 className="text-base font-bold text-white">マイコレクション</h2>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {userPlaylists.length > 1 && (
+                <>
+                  <select
+                    aria-label="プレイリスト一覧の並び替え"
+                    defaultValue=""
+                    onChange={(e) => {
+                      const val = e.target.value as
+                        | 'liked'
+                        | 'newest'
+                        | 'oldest'
+                        | 'name'
+                        | 'tracksDesc'
+                        | '';
+                      if (val) {
+                        sortUserPlaylists(val);
+                        e.target.value = '';
+                      }
+                    }}
+                    className="px-2.5 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 text-xs font-medium rounded-lg border border-neutral-700/80 focus:outline-none focus:border-red-500 cursor-pointer"
+                  >
+                    <option value="" disabled>
+                      一括並び替え...
+                    </option>
+                    <option value="liked">お気に入り優先</option>
+                    <option value="name">名前順 (あいうえお/A-Z)</option>
+                    <option value="tracksDesc">曲数が多い順</option>
+                    <option value="newest">新しい順</option>
+                    <option value="oldest">古い順</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setIsReorderingPlaylists((v) => !v)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 border transition-colors cursor-pointer ${
+                      isReorderingPlaylists
+                        ? 'bg-red-600/20 border-red-500/50 text-red-300'
+                        : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-white/10'
+                    }`}
+                    title="ドラッグまたは矢印ボタンでプレイリストの表示順を手動変更"
+                  >
+                    {isReorderingPlaylists ? (
+                      <Check className="w-3.5 h-3.5 text-red-400" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-neutral-300" />
+                    )}
+                    <span>{isReorderingPlaylists ? '並び替え完了' : '順番入替'}</span>
+                  </button>
+                </>
+              )}
               <button
                 type="button"
-                onClick={() => setImportModalOpen(true)}
-                className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 border border-white/10 shadow transition-colors cursor-pointer"
-                title="YouTubeまたはSpotifyのプレイリストURLから一括登録"
+                onClick={() => setViewMode((m) => (m === 'list' ? 'grid' : 'list'))}
+                className="p-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 rounded-lg border border-neutral-700/80 cursor-pointer"
+                title={viewMode === 'list' ? 'グリッド表示に切替' : 'リスト表示に切替'}
+                aria-label="表示モード切替"
               >
-                <Link2 className="w-3.5 h-3.5 text-red-400" />
-                <span>URLから一括インポート</span>
+                {viewMode === 'list' ? (
+                  <LayoutGrid className="w-4 h-4" />
+                ) : (
+                  <List className="w-4 h-4" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCreatingFolder(true)}
+                className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 border border-white/10 shadow transition-colors cursor-pointer"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-red-400" />
+                <span className="hidden sm:inline">フォルダ</span>
               </button>
               <button
                 type="button"
@@ -575,12 +1576,43 @@ export const LibraryView: React.FC = () => {
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>新規プレイリスト作成</span>
+                <span>新規作成</span>
               </button>
             </div>
           </div>
 
-          {/* New Playlist input form modal/drawer */}
+          {/* New Folder input form */}
+          {isCreatingFolder && (
+            <form
+              onSubmit={handleCreateFolderSubmit}
+              className="p-4 bg-neutral-900 border border-neutral-800 rounded-xl flex items-center gap-3"
+            >
+              <FolderPlus className="w-4 h-4 text-red-500 shrink-0" />
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                placeholder="新しいフォルダ名を入力..."
+                className="flex-1 bg-neutral-950 border border-neutral-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-red-500"
+                autoFocus
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg"
+              >
+                作成
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsCreatingFolder(false)}
+                className="px-3 py-2 text-neutral-400 hover:text-white text-xs"
+              >
+                キャンセル
+              </button>
+            </form>
+          )}
+
+          {/* New Playlist input form */}
           {isCreatingPlaylist && (
             <form
               onSubmit={handleCreatePlaylist}
@@ -610,69 +1642,287 @@ export const LibraryView: React.FC = () => {
             </form>
           )}
 
-          {/* Playlists grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {[...userPlaylists]
-              .sort((a, b) => Number(Boolean(b.isLiked)) - Number(Boolean(a.isLiked)))
-              .map((pl) => (
-              <div
-                key={pl.id}
-                onClick={() => setSelectedPlaylistId(pl.id)}
-                className="p-4 bg-neutral-900/40 hover:bg-neutral-800/60 border border-neutral-800 rounded-xl cursor-pointer flex items-center justify-between group transition-all"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-12 h-12 rounded-lg bg-neutral-800 flex items-center justify-center text-red-500 shrink-0">
-                    <ListPlus className="w-6 h-6" />
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-semibold text-white truncate group-hover:text-red-400">
-                      {pl.name}
-                    </h3>
-                    <p className="text-xs text-neutral-400">{pl.tracks.length}曲</p>
+          {/* Pinned お気に入りの曲 + Folders quick strip */}
+          {!selectedFolderId && (
+            <div className="space-y-2.5">
+              {/* Pinned Liked Songs Entry (Spotify IMG_0283 style) */}
+              {matchesQuery('お気に入りの曲') && (
+                <div
+                  onClick={() => {
+                    setActiveTab('liked');
+                    setSelectedPlaylistId(null);
+                  }}
+                  className="p-3 bg-neutral-900/50 hover:bg-neutral-800/70 border border-neutral-800/80 hover:border-red-500/40 rounded-xl cursor-pointer flex items-center justify-between gap-3 transition-colors"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-indigo-600 via-rose-600 to-red-500 flex items-center justify-center text-white shadow-md shrink-0">
+                      <Heart className="w-5 h-5 fill-current" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-white truncate">お気に入りの曲</p>
+                      <p className="text-xs text-neutral-400 flex items-center gap-1.5 mt-0.5">
+                        <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />
+                        <span>プレイリスト • {likedTracks.length}曲</span>
+                      </p>
+                    </div>
                   </div>
                 </div>
+              )}
 
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleLikeUserPlaylist(pl.id);
-                    }}
-                    className={`p-1.5 transition-colors cursor-pointer ${
-                      pl.isLiked
-                        ? 'text-red-500'
-                        : 'text-neutral-400 hover:text-red-400 sm:opacity-0 sm:group-hover:opacity-100'
-                    }`}
-                    title={pl.isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
-                  >
-                    <Heart className={`w-4 h-4 ${pl.isLiked ? 'fill-red-500 text-red-500' : ''}`} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openShareModal('playlist', { name: pl.name, tracks: pl.tracks });
-                    }}
-                    className="p-1.5 text-neutral-400 hover:text-blue-400 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
-                    title="共有リンクを発行"
-                  >
-                    <Share2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteUserPlaylist(pl.id);
-                    }}
-                    className="p-1.5 text-neutral-500 hover:text-red-400 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
-                    title="削除"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+              {/* Folders Strip */}
+              {userFolders.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {userFolders
+                    .filter((f) => matchesQuery(f.name))
+                    .map((folder) => {
+                      const count = userPlaylists.filter((p) =>
+                        folder.playlistIds.includes(p.id)
+                      ).length;
+                      return (
+                        <div
+                          key={folder.id}
+                          onClick={() => setSelectedFolderId(folder.id)}
+                          className="px-3 py-2 rounded-xl bg-neutral-900/70 hover:bg-neutral-800 border border-neutral-800 flex items-center gap-2 cursor-pointer transition-colors"
+                        >
+                          <Folder className="w-4 h-4 text-red-400 shrink-0" />
+                          <span className="text-xs font-semibold text-white">{folder.name}</span>
+                          <span className="text-[11px] text-neutral-400">({count})</span>
+                        </div>
+                      );
+                    })}
                 </div>
-              </div>
-            ))}
+              )}
+            </div>
+          )}
+
+          {/* Playlists List or Grid */}
+          <div
+            className={
+              viewMode === 'grid'
+                ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4'
+                : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5'
+            }
+          >
+            {displayedPlaylists.map((pl) => {
+              const plIdx = userPlaylists.findIndex((p) => p.id === pl.id);
+              const assignedFolder = userFolders.find((f) => f.playlistIds.includes(pl.id));
+              if (viewMode === 'grid') {
+                return (
+                  <div
+                    key={pl.id}
+                    onClick={() => setSelectedPlaylistId(pl.id)}
+                    className={`group p-3 bg-neutral-900/50 hover:bg-neutral-800/70 border rounded-2xl cursor-pointer flex flex-col gap-2.5 transition-all ${
+                      selectedPlaylistId === pl.id
+                        ? 'border-red-500/60 bg-neutral-800/50'
+                        : 'border-neutral-800'
+                    }`}
+                  >
+                    <div className="aspect-square rounded-xl overflow-hidden bg-neutral-800 relative flex items-center justify-center">
+                      {(pl.coverImage || pl.tracks[0]?.thumbnail) ? (
+                        <SafeImage
+                          src={pl.coverImage || pl.tracks[0]?.thumbnail || ''}
+                          alt={pl.name}
+                          useBase64={!pl.coverImage?.startsWith('data:')}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                        />
+                      ) : (
+                        <ListPlus className="w-10 h-10 text-red-500" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePinUserPlaylist(pl.id);
+                        }}
+                        className={`absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center transition-opacity cursor-pointer ${
+                          pl.isPinned
+                            ? 'bg-red-600 text-white'
+                            : 'bg-black/65 text-neutral-300 opacity-0 group-hover:opacity-100'
+                        }`}
+                        title={pl.isPinned ? 'ピン留め解除' : 'ピン留め'}
+                      >
+                        <Pin className={`w-3.5 h-3.5 ${pl.isPinned ? 'fill-current' : ''}`} />
+                      </button>
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-xs sm:text-sm font-bold text-white truncate group-hover:text-red-400">
+                        {pl.name}
+                      </h3>
+                      <p className="text-[11px] text-neutral-400 truncate flex items-center gap-1 mt-0.5">
+                        {pl.isPinned && <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />}
+                        {pl.isCollab && <Users className="w-3 h-3 text-red-400 shrink-0" />}
+                        <span>{pl.tracks.length}曲</span>
+                      </p>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={pl.id}
+                  draggable={userPlaylists.length > 1}
+                  onDragStart={() => setDragPlaylistIdx(plIdx)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (dragPlaylistIdx !== null && dragOverPlaylistIdx !== plIdx) {
+                      setDragOverPlaylistIdx(plIdx);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverPlaylistIdx === plIdx) setDragOverPlaylistIdx(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragPlaylistIdx !== null && dragPlaylistIdx !== plIdx) {
+                      reorderUserPlaylists(dragPlaylistIdx, plIdx);
+                    }
+                    setDragPlaylistIdx(null);
+                    setDragOverPlaylistIdx(null);
+                  }}
+                  onDragEnd={() => {
+                    setDragPlaylistIdx(null);
+                    setDragOverPlaylistIdx(null);
+                  }}
+                  onClick={() => setSelectedPlaylistId(pl.id)}
+                  className={`p-3.5 bg-neutral-900/40 hover:bg-neutral-800/60 border rounded-xl cursor-pointer flex items-center justify-between gap-2 group transition-all ${
+                    dragOverPlaylistIdx === plIdx
+                      ? 'border-red-500 bg-red-950/20 scale-[1.01]'
+                      : selectedPlaylistId === pl.id
+                      ? 'border-red-500/50 bg-neutral-800/50'
+                      : 'border-neutral-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    {isReorderingPlaylists && (
+                      <GripVertical className="w-4 h-4 text-neutral-500 shrink-0 cursor-grab active:cursor-grabbing" />
+                    )}
+                    <div className="w-12 h-12 rounded-lg bg-neutral-800 flex items-center justify-center text-red-500 shrink-0 overflow-hidden">
+                      {(pl.coverImage || pl.tracks[0]?.thumbnail) ? (
+                        <SafeImage
+                          src={pl.coverImage || pl.tracks[0]?.thumbnail || ''}
+                          alt={pl.name}
+                          useBase64={!pl.coverImage?.startsWith('data:')}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <ListPlus className="w-6 h-6" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        {pl.isPinned && (
+                          <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />
+                        )}
+                        <h3 className="text-sm font-semibold text-white truncate group-hover:text-red-400">
+                          {pl.name}
+                        </h3>
+                      </div>
+                      <p className="text-xs text-neutral-400 truncate flex items-center gap-1.5">
+                        <span>{pl.tracks.length}曲</span>
+                        {pl.isCollab && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-600/20 text-red-300 font-semibold">
+                            コラボ
+                          </span>
+                        )}
+                        {assignedFolder && (
+                          <span className="text-[10px] text-neutral-500 truncate">
+                            • {assignedFolder.name}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    {isReorderingPlaylists ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={plIdx === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reorderUserPlaylists(plIdx, plIdx - 1);
+                          }}
+                          className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-neutral-200 cursor-pointer disabled:cursor-not-allowed"
+                          title="前へ移動"
+                          aria-label="前へ移動"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={plIdx === userPlaylists.length - 1}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reorderUserPlaylists(plIdx, plIdx + 1);
+                          }}
+                          className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-neutral-200 cursor-pointer disabled:cursor-not-allowed"
+                          title="後ろへ移動"
+                          aria-label="後ろへ移動"
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePinUserPlaylist(pl.id);
+                          }}
+                          className={`p-1.5 transition-colors cursor-pointer ${
+                            pl.isPinned
+                              ? 'text-red-500'
+                              : 'text-neutral-400 hover:text-white sm:opacity-0 sm:group-hover:opacity-100'
+                          }`}
+                          title={pl.isPinned ? 'ピン留め解除' : 'トップにピン留め'}
+                        >
+                          <Pin className={`w-3.5 h-3.5 ${pl.isPinned ? 'fill-current' : ''}`} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleLikeUserPlaylist(pl.id);
+                          }}
+                          className={`p-1.5 transition-colors cursor-pointer ${
+                            pl.isLiked
+                              ? 'text-red-500'
+                              : 'text-neutral-400 hover:text-red-400 sm:opacity-0 sm:group-hover:opacity-100'
+                          }`}
+                          title={pl.isLiked ? 'お気に入り解除' : 'お気に入りに追加'}
+                        >
+                          <Heart className={`w-4 h-4 ${pl.isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openShareModal('playlist', { name: pl.name, tracks: pl.tracks });
+                          }}
+                          className="p-1.5 text-neutral-400 hover:text-blue-400 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                          title="共有リンクを発行"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteUserPlaylist(pl.id);
+                          }}
+                          className="p-1.5 text-neutral-500 hover:text-red-400 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                          title="削除"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           {/* External / Liked Playlists */}
@@ -720,13 +1970,138 @@ export const LibraryView: React.FC = () => {
 
           {/* Selected playlist tracks detail view */}
           {currentSelectedPlaylist && (
-            <div className="pt-6 border-t border-neutral-800 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-bold text-white">{currentSelectedPlaylist.name}</h3>
-                  <p className="text-xs text-neutral-400">{currentSelectedPlaylist.tracks.length}曲</p>
+            <div className="pt-6 border-t border-neutral-800 space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-start gap-4 min-w-0">
+                  <div
+                    onClick={() => openPlaylistEditor(currentSelectedPlaylist)}
+                    className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl bg-neutral-800 border border-neutral-700/60 overflow-hidden shrink-0 flex items-center justify-center relative group cursor-pointer shadow-lg"
+                    title="クリックしてカバーや詳細を編集"
+                  >
+                    {(currentSelectedPlaylist.coverImage || currentSelectedPlaylist.tracks[0]?.thumbnail) ? (
+                      <SafeImage
+                        src={
+                          currentSelectedPlaylist.coverImage ||
+                          currentSelectedPlaylist.tracks[0]?.thumbnail ||
+                          ''
+                        }
+                        alt={currentSelectedPlaylist.name}
+                        useBase64={!currentSelectedPlaylist.coverImage?.startsWith('data:')}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <ListMusic className="w-9 h-9 text-neutral-500" />
+                    )}
+                    <div className="absolute inset-0 bg-black/55 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <Pencil className="w-5 h-5 text-white" />
+                    </div>
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <h3 className="text-lg sm:text-xl font-bold text-white truncate">
+                      {currentSelectedPlaylist.name}
+                    </h3>
+                    {currentSelectedPlaylist.description && (
+                      <p className="text-xs text-neutral-300 line-clamp-2 max-w-xl">
+                        {currentSelectedPlaylist.description}
+                      </p>
+                    )}
+                    <p className="text-xs text-neutral-400">
+                      {currentSelectedPlaylist.tracks.length}曲
+                    </p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {userFolders.length > 0 && (
+                    <select
+                      aria-label="フォルダに移動"
+                      value={
+                        userFolders.find((f) =>
+                          f.playlistIds.includes(currentSelectedPlaylist.id)
+                        )?.id || ''
+                      }
+                      onChange={(e) =>
+                        assignPlaylistToFolder(
+                          currentSelectedPlaylist.id,
+                          e.target.value || null
+                        )
+                      }
+                      className="px-2.5 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 text-xs font-medium rounded-lg border border-neutral-700 focus:outline-none focus:border-red-500 cursor-pointer"
+                    >
+                      <option value="">フォルダ未設定</option>
+                      {userFolders.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          📁 {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => togglePinUserPlaylist(currentSelectedPlaylist.id)}
+                    className={`p-2 rounded-lg border transition-colors cursor-pointer ${
+                      currentSelectedPlaylist.isPinned
+                        ? 'bg-red-600/20 border-red-500/40 text-red-400'
+                        : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-700 text-neutral-300 hover:text-white'
+                    }`}
+                    title={currentSelectedPlaylist.isPinned ? 'ピン留め解除' : 'ピン留め'}
+                  >
+                    <Pin className={`w-4 h-4 ${currentSelectedPlaylist.isPinned ? 'fill-current' : ''}`} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openPlaylistEditor(currentSelectedPlaylist)}
+                    className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-neutral-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="プレイリスト名・説明・カバー画像を編集"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-neutral-300" />
+                    <span>編集</span>
+                  </button>
+                  {currentSelectedPlaylist.tracks.length > 1 && (
+                    <>
+                      <select
+                        aria-label="曲順を並び替え"
+                        defaultValue=""
+                        onChange={(e) => {
+                          const val = e.target.value as
+                            | 'title'
+                            | 'artist'
+                            | 'durationDesc'
+                            | 'reverse'
+                            | '';
+                          if (val) {
+                            sortUserPlaylistTracks(currentSelectedPlaylist.id, val);
+                            e.target.value = '';
+                          }
+                        }}
+                        className="px-2.5 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 text-xs font-medium rounded-lg border border-neutral-700 focus:outline-none focus:border-red-500 cursor-pointer"
+                      >
+                        <option value="" disabled>
+                          曲順を一括整理...
+                        </option>
+                        <option value="title">曲名順 (あいうえお/A-Z)</option>
+                        <option value="artist">アーティスト順</option>
+                        <option value="durationDesc">再生時間が長い順</option>
+                        <option value="reverse">現在の逆順</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setIsReorderingTracks((v) => !v)}
+                        className={`px-3 py-2 text-xs font-semibold rounded-lg flex items-center gap-1.5 border transition-colors cursor-pointer ${
+                          isReorderingTracks
+                            ? 'bg-red-600/20 border-red-500/50 text-red-300'
+                            : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-700 text-neutral-200'
+                        }`}
+                        title="ドラッグまたは矢印ボタンで曲順を手動入替"
+                      >
+                        {isReorderingTracks ? (
+                          <Check className="w-3.5 h-3.5 text-red-400" />
+                        ) : (
+                          <ArrowUpDown className="w-3.5 h-3.5" />
+                        )}
+                        <span>{isReorderingTracks ? '入替完了' : '曲順入替'}</span>
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => toggleLikeUserPlaylist(currentSelectedPlaylist.id)}
@@ -742,12 +2117,33 @@ export const LibraryView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() =>
+                      openZeroCodeModal({
+                        type: 'playlist',
+                        title: currentSelectedPlaylist.name,
+                        subtitle: `${currentSelectedPlaylist.tracks.length}曲 • zero-music プレイリスト`,
+                        imageUrl:
+                          currentSelectedPlaylist.coverImage ||
+                          currentSelectedPlaylist.tracks[0]?.thumbnail,
+                        url: `${window.location.origin}/?collab=${encodeURIComponent(
+                          currentSelectedPlaylist.collabCode || currentSelectedPlaylist.id
+                        )}`,
+                        codeValue: `zeromusic:playlist:${currentSelectedPlaylist.id}`,
+                      })
+                    }
+                    className="p-2 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-neutral-300 hover:text-white transition-colors cursor-pointer"
+                    title="zero-musicコードを表示"
+                  >
+                    <QrCode className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
                       openShareModal('playlist', {
                         name: currentSelectedPlaylist.name,
                         tracks: currentSelectedPlaylist.tracks,
                       })
                     }
-                    className="px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors"
+                    className="px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="このプレイリストの共有リンクを発行"
                   >
                     <Share2 className="w-3.5 h-3.5" />
@@ -759,10 +2155,14 @@ export const LibraryView: React.FC = () => {
                       onClick={() =>
                         playTrack(
                           currentSelectedPlaylist.tracks[0],
-                          currentSelectedPlaylist.tracks
+                          currentSelectedPlaylist.tracks,
+                          {
+                            source: 'プレイリストから再生中',
+                            subtitle: currentSelectedPlaylist.name,
+                          }
                         )
                       }
-                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5"
+                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
                       <span>再生</span>
@@ -770,6 +2170,128 @@ export const LibraryView: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {/* Edit Playlist Form Modal/Panel */}
+              {editingPlaylistId === currentSelectedPlaylist.id && (
+                <form
+                  onSubmit={handleSavePlaylistEdit}
+                  className="bg-neutral-900 border border-neutral-700/80 rounded-2xl p-4 sm:p-5 space-y-4 shadow-2xl"
+                >
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Pencil className="w-4 h-4 text-red-500" />
+                      <span>プレイリスト情報を編集</span>
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setEditingPlaylistId(null)}
+                      className="p-1 text-neutral-400 hover:text-white cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="flex flex-col items-center gap-2 shrink-0">
+                      <div className="w-24 h-24 rounded-xl bg-neutral-950 border border-neutral-800 overflow-hidden flex items-center justify-center">
+                        {(editCoverImage || currentSelectedPlaylist.tracks[0]?.thumbnail) ? (
+                          <SafeImage
+                            src={editCoverImage || currentSelectedPlaylist.tracks[0]?.thumbnail || ''}
+                            alt="カバープレビュー"
+                            useBase64={!editCoverImage.startsWith('data:')}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <ImagePlus className="w-7 h-7 text-neutral-500" />
+                        )}
+                      </div>
+                      <input
+                        ref={coverFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleCoverImageUpload}
+                        className="hidden"
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => coverFileInputRef.current?.click()}
+                          className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-[11px] font-medium rounded-lg flex items-center gap-1 cursor-pointer"
+                        >
+                          <ImagePlus className="w-3 h-3" />
+                          <span>画像選択</span>
+                        </button>
+                        {editCoverImage && (
+                          <button
+                            type="button"
+                            onClick={() => setEditCoverImage('')}
+                            className="px-2 py-1 bg-neutral-800 hover:bg-red-950/60 text-neutral-400 hover:text-red-400 text-[11px] rounded-lg cursor-pointer"
+                          >
+                            リセット
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex-1 space-y-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                          プレイリスト名
+                        </label>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          placeholder="プレイリスト名..."
+                          required
+                          className="w-full bg-neutral-950 border border-neutral-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-red-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                          説明文
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={editDescription}
+                          onChange={(e) => setEditDescription(e.target.value)}
+                          placeholder="気分やシーン、メモなど自由に入力..."
+                          className="w-full bg-neutral-950 border border-neutral-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-red-500 resize-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-neutral-400 mb-1">
+                          カバー画像URL（任意・空欄で1曲目のアートワーク）
+                        </label>
+                        <input
+                          type="text"
+                          value={editCoverImage.startsWith('data:') ? '(ローカル画像を適用中)' : editCoverImage}
+                          onChange={(e) => setEditCoverImage(e.target.value)}
+                          readOnly={editCoverImage.startsWith('data:')}
+                          placeholder="https://..."
+                          className="w-full bg-neutral-950 border border-neutral-800 text-xs text-neutral-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-red-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPlaylistId(null)}
+                      className="px-3.5 py-2 text-xs text-neutral-400 hover:text-white cursor-pointer"
+                    >
+                      キャンセル
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                    >
+                      保存する
+                    </button>
+                  </div>
+                </form>
+              )}
 
               {currentSelectedPlaylist.tracks.length === 0 ? (
                 <div className="py-10 text-center text-xs text-neutral-500">
@@ -780,9 +2302,41 @@ export const LibraryView: React.FC = () => {
                   {currentSelectedPlaylist.tracks.map((track, idx) => (
                     <div
                       key={track.id}
-                      className="flex items-center gap-3.5 px-4 py-3 hover:bg-neutral-800/50 group transition-colors"
+                      draggable={currentSelectedPlaylist.tracks.length > 1}
+                      onDragStart={() => setDragTrackIdx(idx)}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (dragTrackIdx !== null && dragOverTrackIdx !== idx) {
+                          setDragOverTrackIdx(idx);
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverTrackIdx === idx) setDragOverTrackIdx(null);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (dragTrackIdx !== null && dragTrackIdx !== idx) {
+                          reorderUserPlaylistTracks(currentSelectedPlaylist.id, dragTrackIdx, idx);
+                        }
+                        setDragTrackIdx(null);
+                        setDragOverTrackIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDragTrackIdx(null);
+                        setDragOverTrackIdx(null);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/50 group transition-colors ${
+                        dragOverTrackIdx === idx ? 'bg-red-950/30 border-t-2 border-red-500' : ''
+                      }`}
                     >
-                      <span className="w-6 text-center text-xs font-mono text-neutral-500">
+                      {currentSelectedPlaylist.tracks.length > 1 && (
+                        <GripVertical
+                          className={`w-4 h-4 text-neutral-600 hover:text-neutral-300 shrink-0 cursor-grab active:cursor-grabbing ${
+                            isReorderingTracks ? 'text-neutral-400' : 'opacity-40 group-hover:opacity-100'
+                          }`}
+                        />
+                      )}
+                      <span className="w-6 text-center text-xs font-mono text-neutral-500 shrink-0">
                         {idx + 1}
                       </span>
                       <SafeImage
@@ -800,18 +2354,204 @@ export const LibraryView: React.FC = () => {
                         </p>
                         <p className="text-xs text-neutral-400 truncate">{track.artist}</p>
                       </div>
-                      <span className="text-xs font-mono text-neutral-400">{track.duration}</span>
+
+                      {isReorderingTracks ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() =>
+                              reorderUserPlaylistTracks(currentSelectedPlaylist.id, idx, idx - 1)
+                            }
+                            className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-neutral-200 cursor-pointer disabled:cursor-not-allowed"
+                            title="1つ上へ"
+                            aria-label="1つ上へ"
+                          >
+                            <ChevronUp className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === currentSelectedPlaylist.tracks.length - 1}
+                            onClick={() =>
+                              reorderUserPlaylistTracks(currentSelectedPlaylist.id, idx, idx + 1)
+                            }
+                            className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-30 text-neutral-200 cursor-pointer disabled:cursor-not-allowed"
+                            title="1つ下へ"
+                            aria-label="1つ下へ"
+                          >
+                            <ChevronDown className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              removeFromUserPlaylist(currentSelectedPlaylist.id, track.id)
+                            }
+                            className="p-1.5 rounded-lg bg-neutral-800 hover:bg-red-950/60 text-neutral-400 hover:text-red-400 cursor-pointer"
+                            title="プレイリストから削除"
+                            aria-label="プレイリストから削除"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => playNext(track)}
+                            className="p-1.5 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                            title="次に再生"
+                            aria-label="次に再生"
+                          >
+                            <ListStart className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openTrackDetailModal(track)}
+                            className="p-1.5 text-neutral-400 hover:text-white transition-colors cursor-pointer"
+                            title="楽曲の詳細"
+                            aria-label="楽曲の詳細"
+                          >
+                            <Info className="w-4 h-4" />
+                          </button>
+                          <span className="text-xs font-mono text-neutral-400 hidden sm:inline">
+                            {track.duration}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              removeFromUserPlaylist(currentSelectedPlaylist.id, track.id)
+                            }
+                            className="p-1 text-neutral-500 hover:text-red-400 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
+                            title="プレイリストから削除"
+                            aria-label="プレイリストから削除"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
+
+              {/* おすすめの曲（1タップで追加） */}
+              <div className="pt-4 border-t border-neutral-800/70 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-red-500" />
+                      <span>おすすめの曲（1タップで追加）</span>
+                    </h4>
+                    <p className="text-[11px] text-neutral-400 mt-0.5">
+                      {currentSelectedPlaylist.tracks.length > 0
+                        ? 'このプレイリストの収録曲をもとに提案しています'
+                        : 'プレイリスト名をもとに提案しています'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSuggestionsRefreshKey((k) => k + 1)}
+                    disabled={loadingSuggestions}
+                    className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-neutral-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingSuggestions ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    <span>更新</span>
+                  </button>
+                </div>
+
+                {loadingSuggestions && playlistSuggestions.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+                    <span>おすすめ曲を探しています...</span>
+                  </div>
+                ) : playlistSuggestions.length === 0 ? (
+                  <p className="text-xs text-neutral-500 py-4">
+                    現在提案できる曲がありません。「更新」を押して再検索できます。
+                  </p>
+                ) : (
+                  <div className="bg-neutral-900/30 border border-neutral-800/70 rounded-2xl divide-y divide-neutral-800/50 overflow-hidden">
+                    {playlistSuggestions.map((track) => {
+                      const alreadyIn = currentSelectedPlaylist.tracks.some(
+                        (t) => t.id === track.id
+                      );
+                      return (
+                        <div
+                          key={`sug-${track.id}`}
+                          className="flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-800/40 transition-colors"
+                        >
+                          <div
+                            onClick={() => playTrack(track, playlistSuggestions)}
+                            className="relative w-10 h-10 rounded-lg overflow-hidden bg-neutral-800 shrink-0 cursor-pointer group"
+                          >
+                            <SafeImage
+                              src={track.thumbnail}
+                              alt={track.title}
+                              useBase64
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                              <Play className="w-3.5 h-3.5 fill-white text-white ml-0.5" />
+                            </div>
+                          </div>
+
+                          <div
+                            onClick={() => playTrack(track, playlistSuggestions)}
+                            className="flex-1 min-w-0 cursor-pointer"
+                          >
+                            <p className="text-xs sm:text-sm font-semibold text-white truncate hover:underline">
+                              {track.title}
+                            </p>
+                            <p className="text-[11px] text-neutral-400 truncate">
+                              {track.artist}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => openTrackDetailModal(track)}
+                              className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
+                              title="楽曲の詳細"
+                              aria-label="楽曲の詳細"
+                            >
+                              <Info className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={alreadyIn}
+                              onClick={() => {
+                                addToUserPlaylist(currentSelectedPlaylist.id, track);
+                                setPlaylistSuggestions((prev) =>
+                                  prev.filter((t) => t.id !== track.id)
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                                alreadyIn
+                                  ? 'bg-neutral-800 text-neutral-500 cursor-default'
+                                  : 'bg-white/10 hover:bg-red-600 text-white border border-white/15 hover:border-red-500'
+                              }`}
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>{alreadyIn ? '追加済み' : '追加'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
       )}
 
       {/* Local Tracks View */}
-      {activeTab === 'local' && (
+      {subCategory === 'none' && activeTab === 'local' && (
         <div className="space-y-6">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-6 bg-gradient-to-r from-cyan-950/40 via-neutral-900 to-blue-950/40 border border-cyan-500/20 rounded-2xl shadow-xl">
             <div className="flex items-center gap-4">
@@ -970,9 +2710,19 @@ export const LibraryView: React.FC = () => {
 
                       <button
                         type="button"
+                        onClick={() => playNext(track)}
+                        title="次に再生"
+                        aria-label="次に再生"
+                        className="p-2 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                      >
+                        <ListStart className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => openAddToPlaylistModal(track)}
                         title="プレイリストに追加"
-                        className="p-2 text-neutral-500 hover:text-white transition-colors"
+                        className="p-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
                       >
                         <ListPlus className="w-4 h-4" />
                       </button>

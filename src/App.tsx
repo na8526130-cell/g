@@ -35,6 +35,10 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { FullScreenPlayerModal } from './components/FullScreenPlayerModal';
 import { BottomTabBar } from './components/BottomTabBar';
 import { ListeningWrappedModal } from './components/ListeningWrappedModal';
+import { DeviceModeSelector } from './components/DeviceModeSelector';
+import { TrackDetailModal } from './components/TrackDetailModal';
+import { ConnectDeviceModal } from './components/ConnectDeviceModal';
+import { ZeroCodeModal } from './components/ZeroCodeModal';
 
 const MainLayout: React.FC = () => {
   const {
@@ -59,6 +63,7 @@ const MainLayout: React.FC = () => {
     setNotificationDrawerOpen,
     storyModalOpen,
     setStoryModalOpen,
+    visualShareTarget,
     quizModalOpen,
     setQuizModalOpen,
     matchModalOpen,
@@ -66,7 +71,14 @@ const MainLayout: React.FC = () => {
     collabModalOpen,
     setCollabModalOpen,
     currentLyrics,
+    deviceMode,
   } = usePlayer();
+
+  if (!deviceMode) {
+    return <DeviceModeSelector />;
+  }
+
+  const isMobileMode = deviceMode === 'mobile';
 
   return (
     <div className="min-h-screen bg-[#070708] text-neutral-100 flex flex-col font-sans selection:bg-red-600 selection:text-white relative">
@@ -129,7 +141,13 @@ const MainLayout: React.FC = () => {
       <TopNavbar />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 md:px-8 pt-6 pb-36">
+      <main
+        className={`flex-1 w-full mx-auto ${
+          isMobileMode
+            ? 'max-w-lg px-4 pt-4 pb-36'
+            : 'max-w-7xl px-6 md:px-8 pt-6 pb-28'
+        }`}
+      >
         {/* Dynamic View Content */}
         {activeView === 'home' && <HomeExploreView />}
         {activeView === 'search' && <SearchView />}
@@ -145,8 +163,8 @@ const MainLayout: React.FC = () => {
       {/* Persistent Bottom Player Bar */}
       <PlayerBar />
 
-      {/* Spotify Bottom Navigation Bar */}
-      <BottomTabBar />
+      {/* Spotify Bottom Navigation Bar (Mobile Edition) */}
+      {isMobileMode && <BottomTabBar />}
 
       {/* Spotify Full-Screen Now Playing Modal */}
       <FullScreenPlayerModal />
@@ -189,6 +207,7 @@ const MainLayout: React.FC = () => {
         onClose={() => setStoryModalOpen(false)}
         track={currentTrack}
         lyrics={currentLyrics}
+        target={visualShareTarget}
       />
       <IntroQuizModal
         isOpen={quizModalOpen}
@@ -205,6 +224,13 @@ const MainLayout: React.FC = () => {
 
       {/* Spotify Wrapped Modal */}
       <ListeningWrappedModal />
+
+      {/* Track Detail & Credits Modal */}
+      <TrackDetailModal />
+
+      {/* Connect Device & ZeroCode Modals */}
+      <ConnectDeviceModal />
+      <ZeroCodeModal />
 
       {/* In-App PWA Install Promotion Banner */}
       <PWAInstallBanner />
