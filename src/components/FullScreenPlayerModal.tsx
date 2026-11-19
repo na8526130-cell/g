@@ -130,12 +130,30 @@ export const FullScreenPlayerModal: React.FC = () => {
   const [canvasVideoId, setCanvasVideoId] = useState<string | null>(null);
   const [canvasReady, setCanvasReady] = useState(false);
   const [canvasHudClear, setCanvasHudClear] = useState(false);
+  const [canvasActivated, setCanvasActivated] = useState(false);
   const [canvasPlayerPaused, setCanvasPlayerPaused] = useState(false);
   const [checkingMv, setCheckingMv] = useState(false);
   const canvasIframeRef = useRef<HTMLIFrameElement>(null);
   const hudRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loopCycleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seekDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasHudClearRef = useRef(false);
   canvasHudClearRef.current = canvasHudClear;
+
+  const clearCanvasTimers = useCallback(() => {
+    if (hudRevealTimerRef.current) {
+      clearTimeout(hudRevealTimerRef.current);
+      hudRevealTimerRef.current = null;
+    }
+    if (loopCycleTimerRef.current) {
+      clearTimeout(loopCycleTimerRef.current);
+      loopCycleTimerRef.current = null;
+    }
+    if (seekDelayTimerRef.current) {
+      clearTimeout(seekDelayTimerRef.current);
+      seekDelayTimerRef.current = null;
+    }
+  }, []);
 
   const clearHudRevealTimer = useCallback(() => {
     if (hudRevealTimerRef.current) {
@@ -155,7 +173,7 @@ export const FullScreenPlayerModal: React.FC = () => {
     [clearHudRevealTimer]
   );
 
-  useEffect(() => () => clearHudRevealTimer(), [clearHudRevealTimer]);
+  useEffect(() => () => clearCanvasTimers(), [clearCanvasTimers]);
 
   const showMvCanvas = Boolean(
     fullScreenPlayerOpen && canvasEnabled && currentTrack && !currentTrack.isLocal && canvasVideoId
@@ -163,6 +181,15 @@ export const FullScreenPlayerModal: React.FC = () => {
   const isCanvasVisualActive = Boolean(
     showMvCanvas && canvasReady && canvasHudClear && !canvasPlayerPaused
   );
+  const isCanvasLayoutActive = Boolean(
+    showMvCanvas && (canvasActivated || isCanvasVisualActive)
+  );
+
+  useEffect(() => {
+    if (isCanvasVisualActive) {
+      setCanvasActivated(true);
+    }
+  }, [isCanvasVisualActive]);
 
   const clipStartSec =
     trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec > 8
@@ -170,23 +197,27 @@ export const FullScreenPlayerModal: React.FC = () => {
       : duration > 60
       ? 28
       : 6;
+  const clipStartSecRef = useRef(clipStartSec);
+  clipStartSecRef.current = clipStartSec;
+  const getPreloadStart = (startSec: number) => (startSec > 4 ? startSec - 4 : startSec);
 
   // Keep the iframe mount start time fixed per video ID so async duration/highlight updates seek instead of remounting
-  const [canvasMountStart, setCanvasMountStart] = useState<number>(28);
+  const [canvasMountStart, setCanvasMountStart] = useState<number>(24);
   const lastHighlightSeekTrackRef = useRef<string | null>(null);
   useEffect(() => {
-    setCanvasMountStart(clipStartSec);
+    setCanvasMountStart(getPreloadStart(clipStartSec));
     lastHighlightSeekTrackRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasVideoId]);
 
   // Resolve official MV video ID for Canvas background; keep null when no MV exists
   useEffect(() => {
-    clearHudRevealTimer();
+    clearCanvasTimers();
     if (!fullScreenPlayerOpen || !canvasEnabled || !currentTrack?.id || currentTrack.isLocal) {
       setCanvasVideoId(null);
       setCanvasReady(false);
       setCanvasHudClear(false);
+      setCanvasActivated(false);
       setCheckingMv(false);
       return;
     }
@@ -194,6 +225,7 @@ export const FullScreenPlayerModal: React.FC = () => {
     let cancelled = false;
     setCanvasReady(false);
     setCanvasHudClear(false);
+    setCanvasActivated(false);
     setCanvasPlayerPaused(false);
 
     if (mvCanvasCache.has(currentTrack.id)) {
@@ -343,17 +375,17 @@ export const FullScreenPlayerModal: React.FC = () => {
           }
         } else if (state === 2) {
           // Never show YT's paused/play overlay UI; hide & immediately resume muted background playback
-          clearHudRevealTimer();
+          clearCanvasTimers();
           setCanvasPlayerPaused(true);
           setCanvasHudClear(false);
           sendCanvasCommand('mute');
           sendCanvasCommand('playVideo');
           scheduleHudReveal(3900);
         } else if (state === 0) {
-          clearHudRevealTimer();
+          clearCanvasTimers();
           setCanvasHudClear(false);
           sendCanvasCommand('mute');
-          sendCanvasCommand('seekTo', [clipStartSec, true]);
+          sendCanvasCommand('seekTo', [getPreloadStart(clipStartSec), true]);
           sendCanvasCommand('playVideo');
           scheduleHudReveal(4100);
         }
@@ -361,7 +393,32 @@ export const FullScreenPlayerModal: React.FC = () => {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [showMvCanvas, currentTrack?.id, clipStartSec, sendCanvasCommand, clearHudRevealTimer, scheduleHudReveal]);
+  }, [showMvCanvas, currentTrack?.id, clipStartSec, sendCanvasCommand, clearCanvasTimers, scheduleHudReveal]);
+
+  // Loop strictly a 14-second MV clip cleanly: fade out to blurred artwork, seek 4s before clip start while hidden,
+  // wait for YouTube's HUD overlay to fade completely, then fade back in for the next 14 seconds
+  useEffect(() => {
+    if (!isCanvasVisualActive) return;
+    loopCycleTimerRef.current = setTimeout(() => {
+      loopCycleTimerRef.current = null;
+      setCanvasHudClear(false);
+      seekDelayTimerRef.current = setTimeout(() => {
+        seekDelayTimerRef.current = null;
+        const preloadSec = getPreloadStart(clipStartSecRef.current);
+        sendCanvasCommand('mute');
+        sendCanvasCommand('seekTo', [preloadSec, true]);
+        sendCanvasCommand('playVideo');
+        scheduleHudReveal(4100);
+      }, 550);
+    }, 14000);
+
+    return () => {
+      if (loopCycleTimerRef.current) {
+        clearTimeout(loopCycleTimerRef.current);
+        loopCycleTimerRef.current = null;
+      }
+    };
+  }, [isCanvasVisualActive, sendCanvasCommand, scheduleHudReveal]);
 
   // Seek smoothly ONLY while still hidden behind opacity-0 if highlightStartSec arrives right after mount
   useEffect(() => {
@@ -370,11 +427,11 @@ export const FullScreenPlayerModal: React.FC = () => {
     const seekKey = `${currentTrack.id}:${canvasVideoId}`;
     if (lastHighlightSeekTrackRef.current === seekKey) return;
     lastHighlightSeekTrackRef.current = seekKey;
-    const targetSec = Math.floor(trackTimestamps.highlightStartSec);
-    if (Math.abs(targetSec - canvasMountStart) > 4) {
+    const preloadTarget = getPreloadStart(Math.floor(trackTimestamps.highlightStartSec));
+    if (Math.abs(preloadTarget - canvasMountStart) > 4) {
       setCanvasHudClear(false);
       sendCanvasCommand('mute');
-      sendCanvasCommand('seekTo', [targetSec, true]);
+      sendCanvasCommand('seekTo', [preloadTarget, true]);
       sendCanvasCommand('playVideo');
       scheduleHudReveal(4100);
     }
@@ -858,7 +915,7 @@ export const FullScreenPlayerModal: React.FC = () => {
         )}
 
         {/* Center Artwork (Shown when there is NO MV or Canvas is OFF/loading; hidden once MV Canvas is playing) */}
-        {isCanvasVisualActive ? (
+        {isCanvasLayoutActive ? (
           <div className="flex-1 min-h-[180px] sm:min-h-[240px]" />
         ) : (
           <div className="my-auto py-4 flex items-center justify-center">
@@ -896,7 +953,7 @@ export const FullScreenPlayerModal: React.FC = () => {
                 alt={currentTrack.title}
                 useBase64
                 className={`w-12 h-12 rounded-md object-cover bg-neutral-800 shadow-lg ring-1 ring-white/15 shrink-0 ${
-                  isCanvasVisualActive ? '' : 'sm:hidden'
+                  isCanvasLayoutActive ? '' : 'sm:hidden'
                 }`}
               />
               <div className="min-w-0 flex-1">

@@ -48162,12 +48162,29 @@ var FullScreenPlayerModal = () => {
 	const [canvasVideoId, setCanvasVideoId] = (0, import_react.useState)(null);
 	const [canvasReady, setCanvasReady] = (0, import_react.useState)(false);
 	const [canvasHudClear, setCanvasHudClear] = (0, import_react.useState)(false);
+	const [canvasActivated, setCanvasActivated] = (0, import_react.useState)(false);
 	const [canvasPlayerPaused, setCanvasPlayerPaused] = (0, import_react.useState)(false);
 	const [checkingMv, setCheckingMv] = (0, import_react.useState)(false);
 	const canvasIframeRef = (0, import_react.useRef)(null);
 	const hudRevealTimerRef = (0, import_react.useRef)(null);
+	const loopCycleTimerRef = (0, import_react.useRef)(null);
+	const seekDelayTimerRef = (0, import_react.useRef)(null);
 	const canvasHudClearRef = (0, import_react.useRef)(false);
 	canvasHudClearRef.current = canvasHudClear;
+	const clearCanvasTimers = (0, import_react.useCallback)(() => {
+		if (hudRevealTimerRef.current) {
+			clearTimeout(hudRevealTimerRef.current);
+			hudRevealTimerRef.current = null;
+		}
+		if (loopCycleTimerRef.current) {
+			clearTimeout(loopCycleTimerRef.current);
+			loopCycleTimerRef.current = null;
+		}
+		if (seekDelayTimerRef.current) {
+			clearTimeout(seekDelayTimerRef.current);
+			seekDelayTimerRef.current = null;
+		}
+	}, []);
 	const clearHudRevealTimer = (0, import_react.useCallback)(() => {
 		if (hudRevealTimerRef.current) {
 			clearTimeout(hudRevealTimerRef.current);
@@ -48181,28 +48198,37 @@ var FullScreenPlayerModal = () => {
 			setCanvasHudClear(true);
 		}, delayMs);
 	}, [clearHudRevealTimer]);
-	(0, import_react.useEffect)(() => () => clearHudRevealTimer(), [clearHudRevealTimer]);
+	(0, import_react.useEffect)(() => () => clearCanvasTimers(), [clearCanvasTimers]);
 	const showMvCanvas = Boolean(fullScreenPlayerOpen && canvasEnabled && currentTrack && !currentTrack.isLocal && canvasVideoId);
 	const isCanvasVisualActive = Boolean(showMvCanvas && canvasReady && canvasHudClear && !canvasPlayerPaused);
+	const isCanvasLayoutActive = Boolean(showMvCanvas && (canvasActivated || isCanvasVisualActive));
+	(0, import_react.useEffect)(() => {
+		if (isCanvasVisualActive) setCanvasActivated(true);
+	}, [isCanvasVisualActive]);
 	const clipStartSec = trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec > 8 ? Math.floor(trackTimestamps.highlightStartSec) : duration > 60 ? 28 : 6;
-	const [canvasMountStart, setCanvasMountStart] = (0, import_react.useState)(28);
+	const clipStartSecRef = (0, import_react.useRef)(clipStartSec);
+	clipStartSecRef.current = clipStartSec;
+	const getPreloadStart = (startSec) => startSec > 4 ? startSec - 4 : startSec;
+	const [canvasMountStart, setCanvasMountStart] = (0, import_react.useState)(24);
 	const lastHighlightSeekTrackRef = (0, import_react.useRef)(null);
 	(0, import_react.useEffect)(() => {
-		setCanvasMountStart(clipStartSec);
+		setCanvasMountStart(getPreloadStart(clipStartSec));
 		lastHighlightSeekTrackRef.current = null;
 	}, [canvasVideoId]);
 	(0, import_react.useEffect)(() => {
-		clearHudRevealTimer();
+		clearCanvasTimers();
 		if (!fullScreenPlayerOpen || !canvasEnabled || !currentTrack?.id || currentTrack.isLocal) {
 			setCanvasVideoId(null);
 			setCanvasReady(false);
 			setCanvasHudClear(false);
+			setCanvasActivated(false);
 			setCheckingMv(false);
 			return;
 		}
 		let cancelled = false;
 		setCanvasReady(false);
 		setCanvasHudClear(false);
+		setCanvasActivated(false);
 		setCanvasPlayerPaused(false);
 		if (mvCanvasCache.has(currentTrack.id)) {
 			const cached = mvCanvasCache.get(currentTrack.id) ?? null;
@@ -48301,17 +48327,17 @@ var FullScreenPlayerModal = () => {
 				} else if (state === 3) {
 					if (!canvasHudClearRef.current) scheduleHudReveal(5500);
 				} else if (state === 2) {
-					clearHudRevealTimer();
+					clearCanvasTimers();
 					setCanvasPlayerPaused(true);
 					setCanvasHudClear(false);
 					sendCanvasCommand("mute");
 					sendCanvasCommand("playVideo");
 					scheduleHudReveal(3900);
 				} else if (state === 0) {
-					clearHudRevealTimer();
+					clearCanvasTimers();
 					setCanvasHudClear(false);
 					sendCanvasCommand("mute");
-					sendCanvasCommand("seekTo", [clipStartSec, true]);
+					sendCanvasCommand("seekTo", [getPreloadStart(clipStartSec), true]);
 					sendCanvasCommand("playVideo");
 					scheduleHudReveal(4100);
 				}
@@ -48324,7 +48350,32 @@ var FullScreenPlayerModal = () => {
 		currentTrack?.id,
 		clipStartSec,
 		sendCanvasCommand,
-		clearHudRevealTimer,
+		clearCanvasTimers,
+		scheduleHudReveal
+	]);
+	(0, import_react.useEffect)(() => {
+		if (!isCanvasVisualActive) return;
+		loopCycleTimerRef.current = setTimeout(() => {
+			loopCycleTimerRef.current = null;
+			setCanvasHudClear(false);
+			seekDelayTimerRef.current = setTimeout(() => {
+				seekDelayTimerRef.current = null;
+				const preloadSec = getPreloadStart(clipStartSecRef.current);
+				sendCanvasCommand("mute");
+				sendCanvasCommand("seekTo", [preloadSec, true]);
+				sendCanvasCommand("playVideo");
+				scheduleHudReveal(4100);
+			}, 550);
+		}, 14e3);
+		return () => {
+			if (loopCycleTimerRef.current) {
+				clearTimeout(loopCycleTimerRef.current);
+				loopCycleTimerRef.current = null;
+			}
+		};
+	}, [
+		isCanvasVisualActive,
+		sendCanvasCommand,
 		scheduleHudReveal
 	]);
 	(0, import_react.useEffect)(() => {
@@ -48333,11 +48384,11 @@ var FullScreenPlayerModal = () => {
 		const seekKey = `${currentTrack.id}:${canvasVideoId}`;
 		if (lastHighlightSeekTrackRef.current === seekKey) return;
 		lastHighlightSeekTrackRef.current = seekKey;
-		const targetSec = Math.floor(trackTimestamps.highlightStartSec);
-		if (Math.abs(targetSec - canvasMountStart) > 4) {
+		const preloadTarget = getPreloadStart(Math.floor(trackTimestamps.highlightStartSec));
+		if (Math.abs(preloadTarget - canvasMountStart) > 4) {
 			setCanvasHudClear(false);
 			sendCanvasCommand("mute");
-			sendCanvasCommand("seekTo", [targetSec, true]);
+			sendCanvasCommand("seekTo", [preloadTarget, true]);
 			sendCanvasCommand("playVideo");
 			scheduleHudReveal(4100);
 		}
@@ -48697,7 +48748,7 @@ var FullScreenPlayerModal = () => {
 						children: "閉じる"
 					})]
 				}),
-				isCanvasVisualActive ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "flex-1 min-h-[180px] sm:min-h-[240px]" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+				isCanvasLayoutActive ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "flex-1 min-h-[180px] sm:min-h-[240px]" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 					className: "my-auto py-4 flex items-center justify-center",
 					children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 						className: "relative w-full aspect-square max-w-[310px] sm:max-w-[350px] rounded-xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] bg-neutral-900 ring-1 ring-white/10",
@@ -48730,7 +48781,7 @@ var FullScreenPlayerModal = () => {
 									src: currentTrack.thumbnail,
 									alt: currentTrack.title,
 									useBase64: true,
-									className: `w-12 h-12 rounded-md object-cover bg-neutral-800 shadow-lg ring-1 ring-white/15 shrink-0 ${isCanvasVisualActive ? "" : "sm:hidden"}`
+									className: `w-12 h-12 rounded-md object-cover bg-neutral-800 shadow-lg ring-1 ring-white/15 shrink-0 ${isCanvasLayoutActive ? "" : "sm:hidden"}`
 								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 									className: "min-w-0 flex-1",
 									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
