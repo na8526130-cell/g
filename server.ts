@@ -616,7 +616,7 @@ export async function createApp(options?: {
     }
   });
 
-  // Search autocomplete suggestions + instant Romaji/Kana/Alias conversions
+  // Search autocomplete suggestions + instant Romaji/Kana/Alias conversions (6h cached)
   app.get('/api/music/suggestions', async (req, res) => {
     const query = String(req.query.q || '').trim();
     if (!query) {
@@ -626,6 +626,15 @@ export async function createApp(options?: {
     const conversions = getSearchConversions(query);
     const expanded = expandSearchQuery(query);
     const suggestSeed = expanded.effectiveQuery || query;
+    const suggestCacheKey = `suggest_ja_v1:${suggestSeed.toLowerCase()}`;
+    const cachedSuggest = kvCache.get<{ suggestions: string[] }>(suggestCacheKey);
+    if (cachedSuggest) {
+      return res.json({
+        suggestions: cachedSuggest.suggestions || [],
+        conversions,
+        fromCache: true,
+      });
+    }
 
     try {
       const yt = await getInnertube();
@@ -649,6 +658,10 @@ export async function createApp(options?: {
           if (flat.length >= 10) break;
         }
         if (flat.length >= 10) break;
+      }
+
+      if (flat.length > 0) {
+        kvCache.set(suggestCacheKey, { suggestions: flat }, 6 * 3600);
       }
 
       recordLog({
@@ -767,7 +780,7 @@ export async function createApp(options?: {
           playlists,
           videos,
         };
-        kvCache.set(cacheKey, payload, 3600);
+        kvCache.set(cacheKey, payload, 6 * 3600);
         return res.json(payload);
       }
 
@@ -839,7 +852,7 @@ export async function createApp(options?: {
       });
 
       const payload = { results: formattedItems, type: searchType };
-      kvCache.set(cacheKey, payload, 3600);
+      kvCache.set(cacheKey, payload, 6 * 3600);
       res.json(payload);
     } catch (err: any) {
       recordLog({
@@ -863,8 +876,14 @@ export async function createApp(options?: {
       return res.json({ hasMv: false, videoId: null });
     }
 
-    const cacheKey = `mv_canvas_v2:${id}:${title.toLowerCase()}:${artist.toLowerCase()}`;
-    const cached = kvCache.get<{ hasMv: boolean; videoId: string | null; title?: string }>(cacheKey);
+    const cacheKey = `mv_canvas_v3:${id}:${title.toLowerCase()}:${artist.toLowerCase()}`;
+    const cached = kvCache.get<{
+      hasMv: boolean;
+      videoId: string | null;
+      title?: string;
+      chorusStartSec?: number;
+      mvDurationSec?: number;
+    }>(cacheKey);
     if (cached) {
       return res.json({ ...cached, fromCache: true });
     }
@@ -1024,8 +1043,68 @@ export async function createApp(options?: {
         }
       }
 
+      let chorusStartSec: number | undefined;
+      let mvDurationSec: number | undefined;
+
+      if (verified?.id) {
+        try {
+          const watchRes = await fetch(
+            `https://www.youtube.com/watch?v=${encodeURIComponent(verified.id)}`,
+            {
+              headers: {
+                'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                'Accept-Language': 'ja,en;q=0.9',
+              },
+              signal: AbortSignal.timeout(3000),
+            }
+          );
+          if (watchRes.ok) {
+            const html = await watchRes.text();
+            const durMatch = html.match(/"lengthSeconds":"(\d+)"/);
+            if (durMatch) {
+              mvDurationSec = Number(durMatch[1]);
+            }
+            const durForWindow = mvDurationSec && mvDurationSec > 30 ? mvDurationSec : 220;
+            const minSec = Math.max(22, Math.floor(durForWindow * 0.18));
+            const maxSec = Math.floor(durForWindow * 0.84);
+
+            const heatMatches = [
+              ...html.matchAll(
+                /"startMillis":"(\d+)","durationMillis":"(\d+)","intensityScoreNormalized":([0-9.]+)/g
+              ),
+            ];
+            if (heatMatches.length > 0) {
+              const peaks = heatMatches
+                .map((m) => ({
+                  sec: Math.round(Number(m[1]) / 1000),
+                  score: Number(m[3]),
+                }))
+                .filter((p) => p.sec >= minSec && p.sec <= maxSec && !isNaN(p.score))
+                .sort((a, b) => b.score - a.score);
+              if (peaks.length > 0) {
+                // Step back 3s from peak center so the chorus entrance is captured cleanly
+                chorusStartSec = Math.max(20, peaks[0].sec - 3);
+              }
+            }
+
+            if (!chorusStartSec && mvDurationSec && mvDurationSec > 45) {
+              chorusStartSec = Math.round(mvDurationSec * 0.30);
+            }
+          }
+        } catch {
+          // ignore watch heatmap timeout and fall back gracefully
+        }
+      }
+
       const result = verified
-        ? { hasMv: true, videoId: verified.id, title: verified.title }
+        ? {
+            hasMv: true,
+            videoId: verified.id,
+            title: verified.title,
+            ...(chorusStartSec ? { chorusStartSec } : {}),
+            ...(mvDurationSec ? { mvDurationSec } : {}),
+          }
         : { hasMv: false, videoId: null };
 
       kvCache.set(cacheKey, result, 24 * 3600);
@@ -1140,7 +1219,7 @@ export async function createApp(options?: {
         totalCount: finalTracks.length,
       };
 
-      kvCache.set(cacheKey, payload, 3600);
+      kvCache.set(cacheKey, payload, 6 * 3600);
 
       recordLog({
         endpoint: 'spotify.search',

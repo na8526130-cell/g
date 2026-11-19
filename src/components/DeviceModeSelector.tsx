@@ -1,9 +1,35 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Smartphone, Monitor, ArrowRight, Check } from 'lucide-react';
 import { DeviceMode, usePlayer } from '../context/PlayerContext';
+import { api } from '../services/api';
 
 export const DeviceModeSelector: React.FC = () => {
-  const { setDeviceMode } = usePlayer();
+  const {
+    setDeviceMode,
+    currentTrack,
+    listeningStats,
+    followedArtists,
+    likedTracks,
+    recentTracks,
+  } = usePlayer();
+
+  useEffect(() => {
+    const topArtists: string[] = [];
+    const pushArtist = (name?: string) => {
+      const clean = name?.trim();
+      if (!clean) return;
+      if (!topArtists.some((a) => a.toLowerCase() === clean.toLowerCase())) {
+        topArtists.push(clean);
+      }
+    };
+    listeningStats.topArtists.forEach((a) => pushArtist(a.artist));
+    followedArtists.forEach((a) => pushArtist(a.name));
+    likedTracks.forEach((t) => pushArtist(t.artist));
+    recentTracks.forEach((t) => pushArtist(t.artist));
+
+    api.prefetchBootData({ currentTrack, topArtists });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const recommendedMode = useMemo<DeviceMode>(() => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {

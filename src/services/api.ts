@@ -1,5 +1,144 @@
 import { Track, Album, Artist, Playlist, LyricsData, ExploreData, InnerTubeLog, OriconTrack } from '../types/music';
 import { toBase64Image } from '../utils/imageBase64';
+import { saveOfflineMeta } from './offlineStorage';
+
+interface ApiMemoEntry<T = any> {
+  promise: Promise<T>;
+  expiresAt: number;
+}
+
+const apiMemoCache = new Map<string, ApiMemoEntry>();
+let bootPrefetchTriggered = false;
+
+const PERSIST_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours automatic cache
+const PERSIST_CACHE_PREFIX = 'zm_qc_v1:';
+const PERSIST_INDEX_KEY = 'zm_qc_idx_v1';
+const PERSIST_MAX_ITEMS = 90;
+
+function hashCacheKey(key: string): string {
+  let h1 = 0xdeadbeef ^ key.length;
+  let h2 = 0x41c6ce57 ^ key.length;
+  for (let i = 0; i < key.length; i++) {
+    const ch = key.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `${(h2 >>> 0).toString(36)}${(h1 >>> 0).toString(36)}`;
+}
+
+function readPersistedCache<T>(key: string): T | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const storageKey = PERSIST_CACHE_PREFIX + hashCacheKey(key);
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.exp !== 'number' || parsed.exp <= Date.now()) {
+      window.localStorage.removeItem(storageKey);
+      return null;
+    }
+    return parsed.data as T;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedCache<T>(key: string, data: T, ttlMs: number): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const hashed = hashCacheKey(key);
+    const storageKey = PERSIST_CACHE_PREFIX + hashed;
+    const serialized = JSON.stringify({ exp: Date.now() + ttlMs, data });
+    if (serialized.length > 180000) return; // Skip oversized payloads to preserve quota
+
+    let index: string[] = [];
+    try {
+      const idxRaw = window.localStorage.getItem(PERSIST_INDEX_KEY);
+      if (idxRaw) index = JSON.parse(idxRaw);
+      if (!Array.isArray(index)) index = [];
+    } catch {
+      index = [];
+    }
+
+    index = index.filter((k) => k !== hashed);
+    index.push(hashed);
+
+    while (index.length > PERSIST_MAX_ITEMS) {
+      const oldest = index.shift();
+      if (oldest) {
+        try {
+          window.localStorage.removeItem(PERSIST_CACHE_PREFIX + oldest);
+        } catch {}
+      }
+    }
+
+    try {
+      window.localStorage.setItem(storageKey, serialized);
+    } catch {
+      // QuotaExceeded: evict half of oldest entries and retry once
+      const evictCount = Math.max(10, Math.floor(index.length / 2));
+      for (let i = 0; i < evictCount; i++) {
+        const victim = index.shift();
+        if (victim) {
+          try {
+            window.localStorage.removeItem(PERSIST_CACHE_PREFIX + victim);
+          } catch {}
+        }
+      }
+      window.localStorage.setItem(storageKey, serialized);
+    }
+    window.localStorage.setItem(PERSIST_INDEX_KEY, JSON.stringify(index));
+  } catch {}
+}
+
+interface MemoOptions<T> {
+  bypass?: boolean;
+  persist?: boolean;
+  shouldPersist?: (val: T) => boolean;
+}
+
+function withApiMemo<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+  optionsOrBypass: boolean | MemoOptions<T> = false
+): Promise<T> {
+  const opts: MemoOptions<T> =
+    typeof optionsOrBypass === 'boolean' ? { bypass: optionsOrBypass } : optionsOrBypass;
+  const now = Date.now();
+  if (!opts.bypass) {
+    const existing = apiMemoCache.get(key);
+    if (existing && existing.expiresAt > now) {
+      return existing.promise;
+    }
+    if (opts.persist) {
+      const persisted = readPersistedCache<T>(key);
+      if (persisted !== null) {
+        const p = Promise.resolve(persisted);
+        apiMemoCache.set(key, { promise: p, expiresAt: now + ttlMs });
+        return p;
+      }
+    }
+  }
+  const promise = fetcher()
+    .then((val) => {
+      if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) {
+        writePersistedCache(key, val, ttlMs);
+      }
+      return val;
+    })
+    .catch((err) => {
+      const cur = apiMemoCache.get(key);
+      if (cur && cur.promise === promise) {
+        apiMemoCache.delete(key);
+      }
+      throw err;
+    });
+  apiMemoCache.set(key, { promise, expiresAt: now + ttlMs });
+  return promise;
+}
 
 export const api = {
   async getHealth() {
@@ -7,84 +146,141 @@ export const api = {
     return res.json();
   },
 
-  async getExplore(): Promise<ExploreData> {
-    const res = await fetch('/api/music/explore');
-    if (!res.ok) throw new Error('Failed to fetch explore');
-    return res.json();
+  getExplore(): Promise<ExploreData> {
+    return withApiMemo(
+      'explore',
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch('/api/music/explore');
+        if (!res.ok) throw new Error('Failed to fetch explore');
+        return res.json();
+      },
+      { persist: true }
+    );
   },
 
-  async getOriconRanking(type: 'streaming' | 'digital' = 'streaming'): Promise<OriconTrack[]> {
-    try {
-      const res = await fetch(`/api/music/oricon?type=${type}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.items || [];
-    } catch {
-      return [];
-    }
+  getOriconRanking(type: 'streaming' | 'digital' = 'streaming'): Promise<OriconTrack[]> {
+    return withApiMemo(
+      `oricon:${type}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/oricon?type=${type}`);
+          if (!res.ok) return [];
+          const data = await res.json();
+          return data.items || [];
+        } catch {
+          return [];
+        }
+      },
+      { persist: true, shouldPersist: (items) => Array.isArray(items) && items.length > 0 }
+    );
   },
 
   async getSuggestions(query: string): Promise<string[]> {
-    if (!query) return [];
-    try {
-      const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(query)}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.suggestions || [];
-    } catch {
-      return [];
-    }
+    const clean = query.trim();
+    if (!clean) return [];
+    const data = await this.getSuggestionsWithConversions(clean);
+    return data.suggestions || [];
   },
 
-  async getSuggestionsWithConversions(query: string): Promise<{
+  getSuggestionsWithConversions(query: string): Promise<{
     suggestions: string[];
     conversions: { query: string; label: string; kind: 'alias' | 'kana' | 'romaji' }[];
   }> {
-    if (!query) return { suggestions: [], conversions: [] };
-    try {
-      const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(query)}`);
-      if (!res.ok) return { suggestions: [], conversions: [] };
-      const data = await res.json();
-      return {
-        suggestions: data.suggestions || [],
-        conversions: data.conversions || [],
-      };
-    } catch {
-      return { suggestions: [], conversions: [] };
-    }
+    const clean = query.trim();
+    if (!clean) return Promise.resolve({ suggestions: [], conversions: [] });
+    return withApiMemo(
+      `suggest:${clean.toLowerCase()}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(clean)}`);
+          if (!res.ok) return { suggestions: [], conversions: [] };
+          const data = await res.json();
+          return {
+            suggestions: data.suggestions || [],
+            conversions: data.conversions || [],
+          };
+        } catch {
+          return { suggestions: [], conversions: [] };
+        }
+      },
+      {
+        persist: true,
+        shouldPersist: (d) =>
+          (Array.isArray(d?.suggestions) && d.suggestions.length > 0) ||
+          (Array.isArray(d?.conversions) && d.conversions.length > 0),
+      }
+    );
   },
 
-  async search(
+  search(
     query: string,
     type: 'all' | 'song' | 'video' | 'album' | 'artist' | 'playlist' = 'all',
     raw = false
   ) {
     const rawQs = raw ? '&raw=1' : '';
-    const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}`);
-    if (!res.ok) throw new Error('Failed to execute search');
-    return res.json();
+    const normQ = query.trim().toLowerCase();
+    const key = `search:${type}:${raw ? '1' : '0'}:${normQ}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}`);
+        if (!res.ok) throw new Error('Failed to execute search');
+        return res.json();
+      },
+      {
+        persist: true,
+        shouldPersist: (d: any) =>
+          Boolean(
+            d &&
+              ((Array.isArray(d.results) && d.results.length > 0) ||
+                (Array.isArray(d.songs) && d.songs.length > 0) ||
+                (Array.isArray(d.artists) && d.artists.length > 0) ||
+                (Array.isArray(d.albums) && d.albums.length > 0) ||
+                (Array.isArray(d.playlists) && d.playlists.length > 0))
+          ),
+      }
+    );
   },
 
-  async getMvCanvas(
+  getMvCanvas(
     videoId: string,
     title?: string,
     artist?: string
-  ): Promise<{ hasMv: boolean; videoId: string | null; title?: string; fromServer?: boolean }> {
-    try {
-      const params = new URLSearchParams();
-      if (videoId) params.append('id', videoId);
-      if (title) params.append('title', title);
-      if (artist) params.append('artist', artist);
-      const res = await fetch(`/api/music/mv-canvas?${params.toString()}`);
-      if (!res.ok) throw new Error('mv-canvas unavailable');
-      const data = await res.json();
-      return { ...data, fromServer: true };
-    } catch {
-      return { hasMv: false, videoId: null, fromServer: false };
-    }
+  ): Promise<{
+    hasMv: boolean;
+    videoId: string | null;
+    title?: string;
+    chorusStartSec?: number;
+    mvDurationSec?: number;
+    fromServer?: boolean;
+  }> {
+    const key = `mv-canvas-v3:${videoId}:${(title || '').toLowerCase()}:${(artist || '').toLowerCase()}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const params = new URLSearchParams();
+          if (videoId) params.append('id', videoId);
+          if (title) params.append('title', title);
+          if (artist) params.append('artist', artist);
+          const res = await fetch(`/api/music/mv-canvas?${params.toString()}`);
+          if (!res.ok) throw new Error('mv-canvas unavailable');
+          const data = await res.json();
+          return { ...data, fromServer: true };
+        } catch {
+          return { hasMv: false, videoId: null, fromServer: false };
+        }
+      },
+      { persist: true, shouldPersist: (d) => Boolean(d?.fromServer) }
+    );
   },
 
-  async searchSpotify(
+  searchSpotify(
     query: string,
     raw = false
   ): Promise<{
@@ -94,17 +290,26 @@ export const api = {
     effectiveQuery?: string;
     matchedAlias?: string;
   }> {
-    try {
-      const rawQs = raw ? '&raw=1' : '';
-      const res = await fetch(`/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}`);
-      if (!res.ok) return { tracks: [], query };
-      return res.json();
-    } catch {
-      return { tracks: [], query };
-    }
+    const normQ = query.trim().toLowerCase();
+    if (!normQ) return Promise.resolve({ tracks: [], query });
+    const rawQs = raw ? '&raw=1' : '';
+    return withApiMemo(
+      `spotify-search:${raw ? '1' : '0'}:${normQ}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}`);
+          if (!res.ok) return { tracks: [], query };
+          return res.json();
+        } catch {
+          return { tracks: [], query };
+        }
+      },
+      { persist: true, shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0 }
+    );
   },
 
-  async getMoodRecommendation(mood: string, artist?: string, forceRefresh = false): Promise<{
+  getMoodRecommendation(mood: string, artist?: string, forceRefresh = false): Promise<{
     success: boolean;
     mood: { id: string; name: string; icon: string; tagline: string };
     artist: string | null;
@@ -115,13 +320,22 @@ export const api = {
     topEmotionTags?: string[];
     tracks: Track[];
   }> {
-    const params = new URLSearchParams();
-    if (mood) params.append('mood', mood);
-    if (artist && artist !== '指定なし' && artist !== 'all') params.append('artist', artist);
-    if (forceRefresh) params.append('refresh', '1');
-    const res = await fetch(`/api/music/mood-recommend?${params.toString()}`);
-    if (!res.ok) throw new Error('Failed to fetch mood recommendation');
-    return res.json();
+    const cleanArtist = artist && artist !== '指定なし' && artist !== 'all' ? artist : '';
+    const key = `mood-rec:${mood}:${cleanArtist.toLowerCase()}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const params = new URLSearchParams();
+        if (mood) params.append('mood', mood);
+        if (cleanArtist) params.append('artist', cleanArtist);
+        if (forceRefresh) params.append('refresh', '1');
+        const res = await fetch(`/api/music/mood-recommend?${params.toString()}`);
+        if (!res.ok) throw new Error('Failed to fetch mood recommendation');
+        return res.json();
+      },
+      { bypass: forceRefresh, persist: true, shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0 }
+    );
   },
 
   async getTrackCommentEmotions(
@@ -138,20 +352,28 @@ export const api = {
     return res.json();
   },
 
-  async getTrackTimestamps(
+  getTrackTimestamps(
     videoId: string,
     title?: string,
     artist?: string,
     duration?: number
   ): Promise<import('../types/music').TrackTimestampsData & { success: boolean }> {
-    const params = new URLSearchParams();
-    if (title) params.append('title', title);
-    if (artist) params.append('artist', artist);
-    if (duration && duration > 0) params.append('duration', String(Math.floor(duration)));
-    const qs = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/music/timestamps/${encodeURIComponent(videoId)}${qs}`);
-    if (!res.ok) throw new Error('Failed to fetch track timestamps');
-    return res.json();
+    const key = `timestamps:${videoId}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const params = new URLSearchParams();
+        if (title) params.append('title', title);
+        if (artist) params.append('artist', artist);
+        if (duration && duration > 0) params.append('duration', String(Math.floor(duration)));
+        const qs = params.toString() ? `?${params.toString()}` : '';
+        const res = await fetch(`/api/music/timestamps/${encodeURIComponent(videoId)}${qs}`);
+        if (!res.ok) throw new Error('Failed to fetch track timestamps');
+        return res.json();
+      },
+      { persist: true, shouldPersist: (d) => Boolean(d?.success) }
+    );
   },
 
   async getArtistSetlists(artistName: string): Promise<{
@@ -168,7 +390,7 @@ export const api = {
     }
   },
 
-  async getSpotifyCurated(): Promise<{
+  getSpotifyCurated(): Promise<{
     playlists: {
       id: string;
       spotifyId: string;
@@ -179,16 +401,18 @@ export const api = {
       trackCount: number;
     }[];
   }> {
-    try {
-      const res = await fetch('/api/music/spotify/curated');
-      if (!res.ok) return { playlists: [] };
-      return res.json();
-    } catch {
-      return { playlists: [] };
-    }
+    return withApiMemo('spotify-curated', 5 * 60 * 1000, async () => {
+      try {
+        const res = await fetch('/api/music/spotify/curated');
+        if (!res.ok) return { playlists: [] };
+        return res.json();
+      } catch {
+        return { playlists: [] };
+      }
+    });
   },
 
-  async getSpotifyCuratedPlaylist(id: string): Promise<{
+  getSpotifyCuratedPlaylist(id: string): Promise<{
     id: string;
     spotifyId: string;
     title: string;
@@ -197,48 +421,71 @@ export const api = {
     tracks: Track[];
     totalTracks: number;
   } | null> {
-    try {
-      const res = await fetch(`/api/music/spotify/curated/${id}`);
-      if (!res.ok) return null;
-      return res.json();
-    } catch {
-      return null;
-    }
+    return withApiMemo(
+      `spotify-curated:${id}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/spotify/curated/${id}`);
+          if (!res.ok) return null;
+          return res.json();
+        } catch {
+          return null;
+        }
+      },
+      { persist: true, shouldPersist: (d) => Boolean(d && Array.isArray(d.tracks) && d.tracks.length > 0) }
+    );
   },
 
-  async getLyrics(
+  getLyrics(
     videoId: string,
     title?: string,
     artist?: string,
     duration?: number
   ): Promise<LyricsData> {
-    try {
-      const params = new URLSearchParams();
-      if (title) params.append('title', title);
-      if (artist) params.append('artist', artist);
-      if (duration) params.append('duration', String(duration));
-      const queryStr = params.toString() ? `?${params.toString()}` : '';
+    const key = `lyrics:${videoId}:${duration || ''}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const params = new URLSearchParams();
+          if (title) params.append('title', title);
+          if (artist) params.append('artist', artist);
+          if (duration) params.append('duration', String(duration));
+          const queryStr = params.toString() ? `?${params.toString()}` : '';
 
-      const res = await fetch(`/api/music/lyrics/${videoId}${queryStr}`);
-      if (!res.ok) return { available: false, isSynced: false, lyrics: '' };
-      return res.json();
-    } catch (err: any) {
-      return { available: false, isSynced: false, lyrics: '', error: err.message };
-    }
+          const res = await fetch(`/api/music/lyrics/${videoId}${queryStr}`);
+          if (!res.ok) return { available: false, isSynced: false, lyrics: '' };
+          return res.json();
+        } catch (err: any) {
+          return { available: false, isSynced: false, lyrics: '', error: err.message };
+        }
+      },
+      { persist: true, shouldPersist: (d) => !d?.error }
+    );
   },
 
-  async getRelated(videoId: string): Promise<Track[]> {
-    try {
-      const res = await fetch(`/api/music/related/${videoId}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.related || [];
-    } catch {
-      return [];
-    }
+  getRelated(videoId: string): Promise<Track[]> {
+    const key = `related:${videoId}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/related/${videoId}`);
+          if (!res.ok) return [];
+          const data = await res.json();
+          return data.related || [];
+        } catch {
+          return [];
+        }
+      },
+      { persist: true, shouldPersist: (arr) => Array.isArray(arr) && arr.length > 0 }
+    );
   },
 
-  async getArtist(artistId: string): Promise<{
+  getArtist(artistId: string): Promise<{
     header: Artist;
     topSongs: Track[];
     albums: Album[];
@@ -246,30 +493,51 @@ export const api = {
     relatedArtists?: Artist[];
     featuredPlaylists?: Playlist[];
   }> {
-    const res = await fetch(`/api/music/artist/${artistId}`);
-    if (!res.ok) throw new Error('Failed to fetch artist');
-    return res.json();
+    return withApiMemo(
+      `artist:${artistId}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch(`/api/music/artist/${artistId}`);
+        if (!res.ok) throw new Error('Failed to fetch artist');
+        return res.json();
+      },
+      { persist: true }
+    );
   },
 
-  async getAlbum(albumId: string): Promise<{
+  getAlbum(albumId: string): Promise<{
     header: Album;
     tracks: (Track & { index: number })[];
   }> {
-    const res = await fetch(`/api/music/album/${albumId}`);
-    if (!res.ok) throw new Error('Failed to fetch album');
-    return res.json();
+    return withApiMemo(
+      `album:${albumId}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch(`/api/music/album/${albumId}`);
+        if (!res.ok) throw new Error('Failed to fetch album');
+        return res.json();
+      },
+      { persist: true }
+    );
   },
 
-  async getPlaylist(playlistId: string): Promise<{
+  getPlaylist(playlistId: string): Promise<{
     header: Playlist;
     tracks: (Track & { index: number })[];
   }> {
-    const res = await fetch(`/api/music/playlist/${playlistId}`);
-    if (!res.ok) throw new Error('Failed to fetch playlist');
-    return res.json();
+    return withApiMemo(
+      `playlist:${playlistId}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch(`/api/music/playlist/${playlistId}`);
+        if (!res.ok) throw new Error('Failed to fetch playlist');
+        return res.json();
+      },
+      { persist: true }
+    );
   },
 
-  async getTrackDetails(videoId: string): Promise<{
+  getTrackDetails(videoId: string): Promise<{
     track: Track;
     details?: {
       publishedDate?: string;
@@ -285,13 +553,20 @@ export const api = {
       relatedArtists?: { id?: string; name: string; thumbnail?: string }[];
     };
   } | null> {
-    try {
-      const res = await fetch(`/api/music/track/${encodeURIComponent(videoId)}?rich=1`);
-      if (!res.ok) return null;
-      return res.json();
-    } catch {
-      return null;
-    }
+    return withApiMemo(
+      `track-details:${videoId}`,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        try {
+          const res = await fetch(`/api/music/track/${encodeURIComponent(videoId)}?rich=1`);
+          if (!res.ok) return null;
+          return res.json();
+        } catch {
+          return null;
+        }
+      },
+      { persist: true, shouldPersist: (d) => Boolean(d) }
+    );
   },
 
   async getInnerTubeLogs(): Promise<{ logs: InnerTubeLog[] }> {
@@ -309,14 +584,144 @@ export const api = {
     return res.json();
   },
 
-  async getHigedanSpotlight(): Promise<{
+  getHigedanSpotlight(): Promise<{
     artist: string;
     tagline: string;
     songs: Track[];
   }> {
-    const res = await fetch('/api/music/featured/higedan');
-    if (!res.ok) throw new Error('Failed to fetch Higedan spotlight');
-    return res.json();
+    return withApiMemo(
+      'higedan-spotlight',
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const res = await fetch('/api/music/featured/higedan');
+        if (!res.ok) throw new Error('Failed to fetch Higedan spotlight');
+        return res.json();
+      },
+      { persist: true }
+    );
+  },
+
+  /**
+   * Prefetch core Home data, mixes, artist metadata, and YouTube IFrame script
+   * while the user is choosing between Mobile and PC mode.
+   */
+  prefetchBootData(options?: { currentTrack?: Track | null; topArtists?: string[] }) {
+    if (bootPrefetchTriggered) return;
+    bootPrefetchTriggered = true;
+
+    // 1. Preload YouTube IFrame API script so player initializes immediately
+    if (typeof document !== 'undefined' && !(window as any).YT?.Player) {
+      if (!document.getElementById('yt-iframe-api-script')) {
+        const tag = document.createElement('script');
+        tag.id = 'yt-iframe-api-script';
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+      }
+    }
+
+    // 2. Core Home Explore + Official髭男dism spotlight + Artist albums + Curated + Default mood
+    this.getExplore()
+      .then((res) => saveOfflineMeta('cached_explore', res).catch(() => {}))
+      .catch(() => {});
+    this.getHigedanSpotlight()
+      .then((res) => saveOfflineMeta('cached_higedan', res).catch(() => {}))
+      .catch(() => {});
+    this.getArtist('UC84Rm0a3gimYXPtqp5O_JRw').catch(() => {});
+    this.getSpotifyCurated().catch(() => {});
+    this.getMoodRecommendation('energy').catch(() => {});
+
+    // 3. Time-of-day Daylist + Personalized Daily Mix & Release Radar seeds
+    const hour = new Date().getHours();
+    const daylistMoodId =
+      hour >= 5 && hour < 11
+        ? 'happy'
+        : hour >= 11 && hour < 17
+        ? 'focus'
+        : hour >= 17 && hour < 23
+        ? 'emo'
+        : 'chill';
+
+    const artistSeeds: string[] = [];
+    const pushSeed = (name?: string) => {
+      const clean = name?.trim();
+      if (!clean) return;
+      if (!artistSeeds.some((a) => a.toLowerCase() === clean.toLowerCase())) {
+        artistSeeds.push(clean);
+      }
+    };
+    (options?.topArtists || []).forEach(pushSeed);
+    pushSeed('Official髭男dism');
+    pushSeed('Mrs. GREEN APPLE');
+    pushSeed('Vaundy');
+
+    const artist1 = artistSeeds[0] || 'Official髭男dism';
+    const artist2 = artistSeeds[1] || 'Vaundy';
+    const radarArtists = artistSeeds.slice(0, 3);
+
+    this.getMoodRecommendation(daylistMoodId, artist1).catch(() => {});
+    this.search(`${artist1} 人気曲`, 'song').catch(() => {});
+    this.search(`${artist2} 人気曲`, 'song').catch(() => {});
+    radarArtists.forEach((name) => {
+      this.search(`${name} 新曲`, 'song').catch(() => {});
+    });
+
+    // 4. Warm missing home artist avatar chips and store in localStorage
+    try {
+      const ARTIST_CACHE_KEY = 'yt_music_home_artists_v1';
+      let cachedMap: Record<string, any> = {};
+      const raw = localStorage.getItem(ARTIST_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.data && parsed?.ts && Date.now() - parsed.ts < 12 * 60 * 60 * 1000) {
+          cachedMap = parsed.data;
+        }
+      }
+      const chipTargets = ['Mrs. GREEN APPLE', 'Vaundy', 'YOASOBI', 'King Gnu', 'RADWIMPS', 'back number'];
+      const missingChips = chipTargets.filter((name) => !cachedMap[name]?.thumbnail);
+      if (missingChips.length > 0) {
+        Promise.all(
+          missingChips.map(async (name) => {
+            try {
+              const [artistRes, songRes] = await Promise.all([
+                this.search(name, 'artist').catch(() => null),
+                this.search(name, 'song').catch(() => null),
+              ]);
+              const firstArtist = artistRes?.results?.[0] || artistRes?.artists?.[0];
+              const firstSong = songRes?.results?.[0] || songRes?.songs?.[0];
+              const thumb = firstArtist?.thumbnail || firstSong?.thumbnail;
+              const channelId = firstArtist?.id?.startsWith('UC') ? firstArtist.id : firstSong?.artistId;
+              if (!thumb && !firstSong) return null;
+              return [name, { id: channelId, thumbnail: thumb, track: firstSong }] as const;
+            } catch {
+              return null;
+            }
+          })
+        ).then((entries) => {
+          let changed = false;
+          const nextMap = { ...cachedMap };
+          entries.forEach((entry) => {
+            if (entry) {
+              nextMap[entry[0]] = entry[1];
+              changed = true;
+            }
+          });
+          if (changed) {
+            try {
+              localStorage.setItem(ARTIST_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: nextMap }));
+            } catch {}
+          }
+        });
+      }
+    } catch {}
+
+    // 5. If a track was restored from previous session, warm its lyrics/timestamps/related/MV Canvas
+    const track = options?.currentTrack;
+    if (track && track.id && !track.isLocal) {
+      this.getLyrics(track.id, track.title, track.artist, track.durationSeconds).catch(() => {});
+      this.getTrackTimestamps(track.id, track.title, track.artist, track.durationSeconds).catch(() => {});
+      this.getRelated(track.id).catch(() => {});
+      this.getMvCanvas(track.id, track.title, track.artist).catch(() => {});
+    }
   },
 
   async importPlaylist(url: string): Promise<{

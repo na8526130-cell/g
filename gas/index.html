@@ -24176,106 +24176,523 @@ async function toBase64Image(rawSrc) {
 	inFlightRequests.set(trimmed, promise);
 	return promise;
 }
+// src/services/offlineStorage.ts
+var DB_NAME = "ZeroMusicOfflineDB";
+var DB_VERSION = 1;
+var STORE_TRACKS = "offline_tracks";
+var STORE_META = "cached_meta";
+var activeBlobUrls = /* @__PURE__ */ new Map();
+var dbPromise = null;
+function openOfflineDB() {
+	if (dbPromise) return dbPromise;
+	dbPromise = new Promise((resolve, reject) => {
+		if (typeof window === "undefined" || !window.indexedDB) {
+			reject(/* @__PURE__ */ new Error("IndexedDB not supported in this environment"));
+			return;
+		}
+		const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+		request.onupgradeneeded = (event) => {
+			const db = event.target.result;
+			if (!db.objectStoreNames.contains(STORE_TRACKS)) db.createObjectStore(STORE_TRACKS, { keyPath: "id" });
+			if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: "key" });
+		};
+		request.onsuccess = () => {
+			resolve(request.result);
+		};
+		request.onerror = () => {
+			reject(request.error);
+		};
+	});
+	return dbPromise;
+}
+/**
+* Save an audio file (File or Blob) to IndexedDB for offline playback
+*/
+async function saveOfflineTrack(file, title, artist = "ローカル音源", album = "オフライン保存", durationSeconds = 180, durationText = "3:00") {
+	const db = await openOfflineDB();
+	const id = `offline_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+	const fileType = file.type || "audio/mpeg";
+	const stored = {
+		id,
+		title,
+		artist,
+		album,
+		duration: durationText,
+		durationSeconds,
+		thumbnail: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces",
+		blob: file,
+		fileName: file instanceof File ? file.name : `${title}.mp3`,
+		fileType,
+		addedAt: Date.now()
+	};
+	return new Promise((resolve, reject) => {
+		const req = db.transaction([STORE_TRACKS], "readwrite").objectStore(STORE_TRACKS).put(stored);
+		req.onsuccess = () => {
+			const audioUrl = URL.createObjectURL(file);
+			activeBlobUrls.set(id, audioUrl);
+			resolve({
+				id: stored.id,
+				title: stored.title,
+				artist: stored.artist,
+				album: stored.album,
+				duration: stored.duration,
+				durationSeconds: stored.durationSeconds,
+				thumbnail: stored.thumbnail,
+				isLocal: true,
+				audioUrl
+			});
+		};
+		req.onerror = () => reject(req.error);
+	});
+}
+/**
+* Retrieve all offline tracks stored in IndexedDB
+*/
+async function getAllOfflineTracks() {
+	try {
+		const db = await openOfflineDB();
+		return new Promise((resolve, reject) => {
+			const req = db.transaction([STORE_TRACKS], "readonly").objectStore(STORE_TRACKS).getAll();
+			req.onsuccess = () => {
+				resolve((req.result || []).map((s) => {
+					let audioUrl = activeBlobUrls.get(s.id);
+					if (!audioUrl) try {
+						audioUrl = URL.createObjectURL(s.blob);
+						activeBlobUrls.set(s.id, audioUrl);
+					} catch {
+						audioUrl = "";
+					}
+					return {
+						id: s.id,
+						title: s.title,
+						artist: s.artist,
+						album: s.album,
+						duration: s.duration,
+						durationSeconds: s.durationSeconds,
+						thumbnail: s.thumbnail,
+						isLocal: true,
+						audioUrl
+					};
+				}));
+			};
+			req.onerror = () => reject(req.error);
+		});
+	} catch (err) {
+		console.warn("[OfflineDB] Error fetching offline tracks:", err);
+		return [];
+	}
+}
+/**
+* Prepare an offline track for active playback, ensuring an active blob URL exists
+*/
+async function getPlayableOfflineTrack(track) {
+	if (!track.isLocal) return track;
+	if (track.audioUrl && activeBlobUrls.has(track.id)) return track;
+	try {
+		const db = await openOfflineDB();
+		return new Promise((resolve) => {
+			const req = db.transaction([STORE_TRACKS], "readonly").objectStore(STORE_TRACKS).get(track.id);
+			req.onsuccess = () => {
+				const item = req.result;
+				if (item && item.blob) {
+					const url = URL.createObjectURL(item.blob);
+					activeBlobUrls.set(track.id, url);
+					resolve({
+						...track,
+						audioUrl: url
+					});
+				} else resolve(track);
+			};
+			req.onerror = () => resolve(track);
+		});
+	} catch {
+		return track;
+	}
+}
+/**
+* Delete a track from IndexedDB offline storage
+*/
+async function deleteOfflineTrack(id) {
+	const db = await openOfflineDB();
+	if (activeBlobUrls.has(id)) {
+		try {
+			URL.revokeObjectURL(activeBlobUrls.get(id));
+		} catch {}
+		activeBlobUrls.delete(id);
+	}
+	return new Promise((resolve, reject) => {
+		const req = db.transaction([STORE_TRACKS], "readwrite").objectStore(STORE_TRACKS).delete(id);
+		req.onsuccess = () => resolve();
+		req.onerror = () => reject(req.error);
+	});
+}
+/**
+* Persistent metadata cache in IndexedDB (for explore feeds, chart backups, lyrics)
+*/
+async function saveOfflineMeta(key, data) {
+	try {
+		(await openOfflineDB()).transaction([STORE_META], "readwrite").objectStore(STORE_META).put({
+			key,
+			data,
+			updatedAt: Date.now()
+		});
+	} catch (err) {
+		console.warn("[OfflineDB] Failed to save meta:", key, err);
+	}
+}
+async function getOfflineMeta(key) {
+	try {
+		const db = await openOfflineDB();
+		return new Promise((resolve) => {
+			const req = db.transaction([STORE_META], "readonly").objectStore(STORE_META).get(key);
+			req.onsuccess = () => {
+				if (req.result && req.result.data) resolve(req.result.data);
+				else resolve(null);
+			};
+			req.onerror = () => resolve(null);
+		});
+	} catch {
+		return null;
+	}
+}
+/**
+* Generate a clean, synthesized 16-bit 44.1kHz stereo Lofi Chill Loop in pure WAV format
+* Allows instant offline testing without needing external audio files.
+*/
+function generateLofiWavBlob() {
+	const sampleRate = 44100;
+	const durationSec = 14;
+	const numChannels = 2;
+	const numSamples = sampleRate * durationSec;
+	const blockAlign = 4;
+	const byteRate = sampleRate * blockAlign;
+	const dataSize = numSamples * blockAlign;
+	const buffer = /* @__PURE__ */ new ArrayBuffer(2469644);
+	const view = new DataView(buffer);
+	const writeString = (offset, str) => {
+		for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+	};
+	writeString(0, "RIFF");
+	view.setUint32(4, 2469636, true);
+	writeString(8, "WAVE");
+	writeString(12, "fmt ");
+	view.setUint32(16, 16, true);
+	view.setUint16(20, 1, true);
+	view.setUint16(22, numChannels, true);
+	view.setUint32(24, sampleRate, true);
+	view.setUint32(28, byteRate, true);
+	view.setUint16(32, blockAlign, true);
+	view.setUint16(34, 16, true);
+	writeString(36, "data");
+	view.setUint32(40, dataSize, true);
+	const chordFreqs = [
+		[
+			146.83,
+			220,
+			261.63,
+			329.63
+		],
+		[
+			196,
+			246.94,
+			329.63,
+			392
+		],
+		[
+			130.81,
+			196,
+			246.94,
+			329.63
+		],
+		[
+			220,
+			261.63,
+			329.63,
+			392
+		]
+	];
+	let offset = 44;
+	const chordDuration = durationSec / 4;
+	for (let i = 0; i < numSamples; i++) {
+		const t = i / sampleRate;
+		const currentChord = chordFreqs[Math.floor(t / chordDuration) % chordFreqs.length];
+		const chordTime = t % chordDuration;
+		const env = Math.sin(chordTime / chordDuration * Math.PI) * .45;
+		let sampleL = 0;
+		let sampleR = 0;
+		for (let c = 0; c < currentChord.length; c++) {
+			const freq = currentChord[c];
+			const tone = Math.sin(2 * Math.PI * freq * t) * .35 + Math.sin(4 * Math.PI * freq * t) * .12;
+			const pan = c / (currentChord.length - 1) * .4 - .2;
+			sampleL += tone * env * (.5 - pan);
+			sampleR += tone * env * (.5 + pan);
+		}
+		const bassFreq = currentChord[0] / 2;
+		const bass = Math.sin(2 * Math.PI * bassFreq * t) * .35 * env;
+		sampleL += bass;
+		sampleR += bass;
+		const crackle = (Math.random() * 2 - 1) * .008;
+		sampleL += crackle;
+		sampleR += crackle;
+		const intSampleL = Math.max(-1, Math.min(1, sampleL)) * 32767;
+		const intSampleR = Math.max(-1, Math.min(1, sampleR)) * 32767;
+		view.setInt16(offset, intSampleL, true);
+		view.setInt16(offset + 2, intSampleR, true);
+		offset += 4;
+	}
+	return new Blob([buffer], { type: "audio/wav" });
+}
+/**
+* Seed a demo offline track so users can test offline playback immediately
+*/
+async function seedDemoOfflineTrack() {
+	return saveOfflineTrack(generateLofiWavBlob(), "Midnight Tokyo (オフライン試聴デモ)", "Zero Music Audio Lab", "オフライン・パック Vol.1", 14, "0:14");
+}
 // src/services/api.ts
+var apiMemoCache = /* @__PURE__ */ new Map();
+var bootPrefetchTriggered = false;
+var PERSIST_CACHE_TTL_MS = 216e5;
+var PERSIST_CACHE_PREFIX = "zm_qc_v1:";
+var PERSIST_INDEX_KEY = "zm_qc_idx_v1";
+var PERSIST_MAX_ITEMS = 90;
+function hashCacheKey(key) {
+	let h1 = 3735928559 ^ key.length;
+	let h2 = 1103547991 ^ key.length;
+	for (let i = 0; i < key.length; i++) {
+		const ch = key.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507) ^ Math.imul(h2 ^ h2 >>> 13, 3266489909);
+	h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507) ^ Math.imul(h1 ^ h1 >>> 13, 3266489909);
+	return `${(h2 >>> 0).toString(36)}${(h1 >>> 0).toString(36)}`;
+}
+function readPersistedCache(key) {
+	if (typeof window === "undefined" || !window.localStorage) return null;
+	try {
+		const storageKey = PERSIST_CACHE_PREFIX + hashCacheKey(key);
+		const raw = window.localStorage.getItem(storageKey);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed.exp !== "number" || parsed.exp <= Date.now()) {
+			window.localStorage.removeItem(storageKey);
+			return null;
+		}
+		return parsed.data;
+	} catch {
+		return null;
+	}
+}
+function writePersistedCache(key, data, ttlMs) {
+	if (typeof window === "undefined" || !window.localStorage) return;
+	try {
+		const hashed = hashCacheKey(key);
+		const storageKey = PERSIST_CACHE_PREFIX + hashed;
+		const serialized = JSON.stringify({
+			exp: Date.now() + ttlMs,
+			data
+		});
+		if (serialized.length > 18e4) return;
+		let index = [];
+		try {
+			const idxRaw = window.localStorage.getItem(PERSIST_INDEX_KEY);
+			if (idxRaw) index = JSON.parse(idxRaw);
+			if (!Array.isArray(index)) index = [];
+		} catch {
+			index = [];
+		}
+		index = index.filter((k) => k !== hashed);
+		index.push(hashed);
+		while (index.length > PERSIST_MAX_ITEMS) {
+			const oldest = index.shift();
+			if (oldest) try {
+				window.localStorage.removeItem(PERSIST_CACHE_PREFIX + oldest);
+			} catch {}
+		}
+		try {
+			window.localStorage.setItem(storageKey, serialized);
+		} catch {
+			const evictCount = Math.max(10, Math.floor(index.length / 2));
+			for (let i = 0; i < evictCount; i++) {
+				const victim = index.shift();
+				if (victim) try {
+					window.localStorage.removeItem(PERSIST_CACHE_PREFIX + victim);
+				} catch {}
+			}
+			window.localStorage.setItem(storageKey, serialized);
+		}
+		window.localStorage.setItem(PERSIST_INDEX_KEY, JSON.stringify(index));
+	} catch {}
+}
+function withApiMemo(key, ttlMs, fetcher, optionsOrBypass = false) {
+	const opts = typeof optionsOrBypass === "boolean" ? { bypass: optionsOrBypass } : optionsOrBypass;
+	const now = Date.now();
+	if (!opts.bypass) {
+		const existing = apiMemoCache.get(key);
+		if (existing && existing.expiresAt > now) return existing.promise;
+		if (opts.persist) {
+			const persisted = readPersistedCache(key);
+			if (persisted !== null) {
+				const p = Promise.resolve(persisted);
+				apiMemoCache.set(key, {
+					promise: p,
+					expiresAt: now + ttlMs
+				});
+				return p;
+			}
+		}
+	}
+	const promise = fetcher().then((val) => {
+		if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) writePersistedCache(key, val, ttlMs);
+		return val;
+	}).catch((err) => {
+		const cur = apiMemoCache.get(key);
+		if (cur && cur.promise === promise) apiMemoCache.delete(key);
+		throw err;
+	});
+	apiMemoCache.set(key, {
+		promise,
+		expiresAt: now + ttlMs
+	});
+	return promise;
+}
 var api = {
 	async getHealth() {
 		return (await fetch("/api/health")).json();
 	},
-	async getExplore() {
-		const res = await fetch("/api/music/explore");
-		if (!res.ok) throw new Error("Failed to fetch explore");
-		return res.json();
+	getExplore() {
+		return withApiMemo("explore", PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch("/api/music/explore");
+			if (!res.ok) throw new Error("Failed to fetch explore");
+			return res.json();
+		}, { persist: true });
 	},
-	async getOriconRanking(type = "streaming") {
-		try {
-			const res = await fetch(`/api/music/oricon?type=${type}`);
-			if (!res.ok) return [];
-			return (await res.json()).items || [];
-		} catch {
-			return [];
-		}
+	getOriconRanking(type = "streaming") {
+		return withApiMemo(`oricon:${type}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/oricon?type=${type}`);
+				if (!res.ok) return [];
+				return (await res.json()).items || [];
+			} catch {
+				return [];
+			}
+		}, {
+			persist: true,
+			shouldPersist: (items) => Array.isArray(items) && items.length > 0
+		});
 	},
 	async getSuggestions(query) {
-		if (!query) return [];
-		try {
-			const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(query)}`);
-			if (!res.ok) return [];
-			return (await res.json()).suggestions || [];
-		} catch {
-			return [];
-		}
+		const clean = query.trim();
+		if (!clean) return [];
+		return (await this.getSuggestionsWithConversions(clean)).suggestions || [];
 	},
-	async getSuggestionsWithConversions(query) {
-		if (!query) return {
+	getSuggestionsWithConversions(query) {
+		const clean = query.trim();
+		if (!clean) return Promise.resolve({
 			suggestions: [],
 			conversions: []
-		};
-		try {
-			const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(query)}`);
-			if (!res.ok) return {
-				suggestions: [],
-				conversions: []
-			};
-			const data = await res.json();
-			return {
-				suggestions: data.suggestions || [],
-				conversions: data.conversions || []
-			};
-		} catch {
-			return {
-				suggestions: [],
-				conversions: []
-			};
-		}
+		});
+		return withApiMemo(`suggest:${clean.toLowerCase()}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/suggestions?q=${encodeURIComponent(clean)}`);
+				if (!res.ok) return {
+					suggestions: [],
+					conversions: []
+				};
+				const data = await res.json();
+				return {
+					suggestions: data.suggestions || [],
+					conversions: data.conversions || []
+				};
+			} catch {
+				return {
+					suggestions: [],
+					conversions: []
+				};
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Array.isArray(d?.suggestions) && d.suggestions.length > 0 || Array.isArray(d?.conversions) && d.conversions.length > 0
+		});
 	},
-	async search(query, type = "all", raw = false) {
-		const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&type=${type}${raw ? "&raw=1" : ""}`);
-		if (!res.ok) throw new Error("Failed to execute search");
-		return res.json();
-	},
-	async getMvCanvas(videoId, title, artist) {
-		try {
-			const params = new URLSearchParams();
-			if (videoId) params.append("id", videoId);
-			if (title) params.append("title", title);
-			if (artist) params.append("artist", artist);
-			const res = await fetch(`/api/music/mv-canvas?${params.toString()}`);
-			if (!res.ok) throw new Error("mv-canvas unavailable");
-			return {
-				...await res.json(),
-				fromServer: true
-			};
-		} catch {
-			return {
-				hasMv: false,
-				videoId: null,
-				fromServer: false
-			};
-		}
-	},
-	async searchSpotify(query, raw = false) {
-		try {
-			const res = await fetch(`/api/music/spotify/search?q=${encodeURIComponent(query)}${raw ? "&raw=1" : ""}`);
-			if (!res.ok) return {
-				tracks: [],
-				query
-			};
+	search(query, type = "all", raw = false) {
+		const rawQs = raw ? "&raw=1" : "";
+		const normQ = query.trim().toLowerCase();
+		return withApiMemo(`search:${type}:${raw ? "1" : "0"}:${normQ}`, PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}`);
+			if (!res.ok) throw new Error("Failed to execute search");
 			return res.json();
-		} catch {
-			return {
-				tracks: [],
-				query
-			};
-		}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Boolean(d && (Array.isArray(d.results) && d.results.length > 0 || Array.isArray(d.songs) && d.songs.length > 0 || Array.isArray(d.artists) && d.artists.length > 0 || Array.isArray(d.albums) && d.albums.length > 0 || Array.isArray(d.playlists) && d.playlists.length > 0))
+		});
 	},
-	async getMoodRecommendation(mood, artist, forceRefresh = false) {
-		const params = new URLSearchParams();
-		if (mood) params.append("mood", mood);
-		if (artist && artist !== "指定なし" && artist !== "all") params.append("artist", artist);
-		if (forceRefresh) params.append("refresh", "1");
-		const res = await fetch(`/api/music/mood-recommend?${params.toString()}`);
-		if (!res.ok) throw new Error("Failed to fetch mood recommendation");
-		return res.json();
+	getMvCanvas(videoId, title, artist) {
+		return withApiMemo(`mv-canvas-v3:${videoId}:${(title || "").toLowerCase()}:${(artist || "").toLowerCase()}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const params = new URLSearchParams();
+				if (videoId) params.append("id", videoId);
+				if (title) params.append("title", title);
+				if (artist) params.append("artist", artist);
+				const res = await fetch(`/api/music/mv-canvas?${params.toString()}`);
+				if (!res.ok) throw new Error("mv-canvas unavailable");
+				return {
+					...await res.json(),
+					fromServer: true
+				};
+			} catch {
+				return {
+					hasMv: false,
+					videoId: null,
+					fromServer: false
+				};
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Boolean(d?.fromServer)
+		});
+	},
+	searchSpotify(query, raw = false) {
+		const normQ = query.trim().toLowerCase();
+		if (!normQ) return Promise.resolve({
+			tracks: [],
+			query
+		});
+		const rawQs = raw ? "&raw=1" : "";
+		return withApiMemo(`spotify-search:${raw ? "1" : "0"}:${normQ}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}`);
+				if (!res.ok) return {
+					tracks: [],
+					query
+				};
+				return res.json();
+			} catch {
+				return {
+					tracks: [],
+					query
+				};
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0
+		});
+	},
+	getMoodRecommendation(mood, artist, forceRefresh = false) {
+		const cleanArtist = artist && artist !== "指定なし" && artist !== "all" ? artist : "";
+		return withApiMemo(`mood-rec:${mood}:${cleanArtist.toLowerCase()}`, PERSIST_CACHE_TTL_MS, async () => {
+			const params = new URLSearchParams();
+			if (mood) params.append("mood", mood);
+			if (cleanArtist) params.append("artist", cleanArtist);
+			if (forceRefresh) params.append("refresh", "1");
+			const res = await fetch(`/api/music/mood-recommend?${params.toString()}`);
+			if (!res.ok) throw new Error("Failed to fetch mood recommendation");
+			return res.json();
+		}, {
+			bypass: forceRefresh,
+			persist: true,
+			shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0
+		});
 	},
 	async getTrackCommentEmotions(videoId, title, artist) {
 		const params = new URLSearchParams();
@@ -24286,15 +24703,20 @@ var api = {
 		if (!res.ok) throw new Error("Failed to analyze YouTube comments");
 		return res.json();
 	},
-	async getTrackTimestamps(videoId, title, artist, duration) {
-		const params = new URLSearchParams();
-		if (title) params.append("title", title);
-		if (artist) params.append("artist", artist);
-		if (duration && duration > 0) params.append("duration", String(Math.floor(duration)));
-		const qs = params.toString() ? `?${params.toString()}` : "";
-		const res = await fetch(`/api/music/timestamps/${encodeURIComponent(videoId)}${qs}`);
-		if (!res.ok) throw new Error("Failed to fetch track timestamps");
-		return res.json();
+	getTrackTimestamps(videoId, title, artist, duration) {
+		return withApiMemo(`timestamps:${videoId}`, PERSIST_CACHE_TTL_MS, async () => {
+			const params = new URLSearchParams();
+			if (title) params.append("title", title);
+			if (artist) params.append("artist", artist);
+			if (duration && duration > 0) params.append("duration", String(Math.floor(duration)));
+			const qs = params.toString() ? `?${params.toString()}` : "";
+			const res = await fetch(`/api/music/timestamps/${encodeURIComponent(videoId)}${qs}`);
+			if (!res.ok) throw new Error("Failed to fetch track timestamps");
+			return res.json();
+		}, {
+			persist: true,
+			shouldPersist: (d) => Boolean(d?.success)
+		});
 	},
 	async getArtistSetlists(artistName) {
 		try {
@@ -24313,79 +24735,107 @@ var api = {
 			};
 		}
 	},
-	async getSpotifyCurated() {
-		try {
-			const res = await fetch("/api/music/spotify/curated");
-			if (!res.ok) return { playlists: [] };
+	getSpotifyCurated() {
+		return withApiMemo("spotify-curated", 3e5, async () => {
+			try {
+				const res = await fetch("/api/music/spotify/curated");
+				if (!res.ok) return { playlists: [] };
+				return res.json();
+			} catch {
+				return { playlists: [] };
+			}
+		});
+	},
+	getSpotifyCuratedPlaylist(id) {
+		return withApiMemo(`spotify-curated:${id}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/spotify/curated/${id}`);
+				if (!res.ok) return null;
+				return res.json();
+			} catch {
+				return null;
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Boolean(d && Array.isArray(d.tracks) && d.tracks.length > 0)
+		});
+	},
+	getLyrics(videoId, title, artist, duration) {
+		return withApiMemo(`lyrics:${videoId}:${duration || ""}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const params = new URLSearchParams();
+				if (title) params.append("title", title);
+				if (artist) params.append("artist", artist);
+				if (duration) params.append("duration", String(duration));
+				const queryStr = params.toString() ? `?${params.toString()}` : "";
+				const res = await fetch(`/api/music/lyrics/${videoId}${queryStr}`);
+				if (!res.ok) return {
+					available: false,
+					isSynced: false,
+					lyrics: ""
+				};
+				return res.json();
+			} catch (err) {
+				return {
+					available: false,
+					isSynced: false,
+					lyrics: "",
+					error: err.message
+				};
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => !d?.error
+		});
+	},
+	getRelated(videoId) {
+		return withApiMemo(`related:${videoId}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/related/${videoId}`);
+				if (!res.ok) return [];
+				return (await res.json()).related || [];
+			} catch {
+				return [];
+			}
+		}, {
+			persist: true,
+			shouldPersist: (arr) => Array.isArray(arr) && arr.length > 0
+		});
+	},
+	getArtist(artistId) {
+		return withApiMemo(`artist:${artistId}`, PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch(`/api/music/artist/${artistId}`);
+			if (!res.ok) throw new Error("Failed to fetch artist");
 			return res.json();
-		} catch {
-			return { playlists: [] };
-		}
+		}, { persist: true });
 	},
-	async getSpotifyCuratedPlaylist(id) {
-		try {
-			const res = await fetch(`/api/music/spotify/curated/${id}`);
-			if (!res.ok) return null;
+	getAlbum(albumId) {
+		return withApiMemo(`album:${albumId}`, PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch(`/api/music/album/${albumId}`);
+			if (!res.ok) throw new Error("Failed to fetch album");
 			return res.json();
-		} catch {
-			return null;
-		}
+		}, { persist: true });
 	},
-	async getLyrics(videoId, title, artist, duration) {
-		try {
-			const params = new URLSearchParams();
-			if (title) params.append("title", title);
-			if (artist) params.append("artist", artist);
-			if (duration) params.append("duration", String(duration));
-			const queryStr = params.toString() ? `?${params.toString()}` : "";
-			const res = await fetch(`/api/music/lyrics/${videoId}${queryStr}`);
-			if (!res.ok) return {
-				available: false,
-				isSynced: false,
-				lyrics: ""
-			};
+	getPlaylist(playlistId) {
+		return withApiMemo(`playlist:${playlistId}`, PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch(`/api/music/playlist/${playlistId}`);
+			if (!res.ok) throw new Error("Failed to fetch playlist");
 			return res.json();
-		} catch (err) {
-			return {
-				available: false,
-				isSynced: false,
-				lyrics: "",
-				error: err.message
-			};
-		}
+		}, { persist: true });
 	},
-	async getRelated(videoId) {
-		try {
-			const res = await fetch(`/api/music/related/${videoId}`);
-			if (!res.ok) return [];
-			return (await res.json()).related || [];
-		} catch {
-			return [];
-		}
-	},
-	async getArtist(artistId) {
-		const res = await fetch(`/api/music/artist/${artistId}`);
-		if (!res.ok) throw new Error("Failed to fetch artist");
-		return res.json();
-	},
-	async getAlbum(albumId) {
-		const res = await fetch(`/api/music/album/${albumId}`);
-		if (!res.ok) throw new Error("Failed to fetch album");
-		return res.json();
-	},
-	async getPlaylist(playlistId) {
-		const res = await fetch(`/api/music/playlist/${playlistId}`);
-		if (!res.ok) throw new Error("Failed to fetch playlist");
-		return res.json();
-	},
-	async getTrackDetails(videoId) {
-		try {
-			const res = await fetch(`/api/music/track/${encodeURIComponent(videoId)}?rich=1`);
-			if (!res.ok) return null;
-			return res.json();
-		} catch {
-			return null;
-		}
+	getTrackDetails(videoId) {
+		return withApiMemo(`track-details:${videoId}`, PERSIST_CACHE_TTL_MS, async () => {
+			try {
+				const res = await fetch(`/api/music/track/${encodeURIComponent(videoId)}?rich=1`);
+				if (!res.ok) return null;
+				return res.json();
+			} catch {
+				return null;
+			}
+		}, {
+			persist: true,
+			shouldPersist: (d) => Boolean(d)
+		});
 	},
 	async getInnerTubeLogs() {
 		const res = await fetch("/api/innertube/logs");
@@ -24399,10 +24849,110 @@ var api = {
 			body: JSON.stringify(body)
 		})).json();
 	},
-	async getHigedanSpotlight() {
-		const res = await fetch("/api/music/featured/higedan");
-		if (!res.ok) throw new Error("Failed to fetch Higedan spotlight");
-		return res.json();
+	getHigedanSpotlight() {
+		return withApiMemo("higedan-spotlight", PERSIST_CACHE_TTL_MS, async () => {
+			const res = await fetch("/api/music/featured/higedan");
+			if (!res.ok) throw new Error("Failed to fetch Higedan spotlight");
+			return res.json();
+		}, { persist: true });
+	},
+	/**
+	* Prefetch core Home data, mixes, artist metadata, and YouTube IFrame script
+	* while the user is choosing between Mobile and PC mode.
+	*/
+	prefetchBootData(options) {
+		if (bootPrefetchTriggered) return;
+		bootPrefetchTriggered = true;
+		if (typeof document !== "undefined" && !window.YT?.Player) {
+			if (!document.getElementById("yt-iframe-api-script")) {
+				const tag = document.createElement("script");
+				tag.id = "yt-iframe-api-script";
+				tag.src = "https://www.youtube.com/iframe_api";
+				document.head.appendChild(tag);
+			}
+		}
+		this.getExplore().then((res) => saveOfflineMeta("cached_explore", res).catch(() => {})).catch(() => {});
+		this.getHigedanSpotlight().then((res) => saveOfflineMeta("cached_higedan", res).catch(() => {})).catch(() => {});
+		this.getArtist("UC84Rm0a3gimYXPtqp5O_JRw").catch(() => {});
+		this.getSpotifyCurated().catch(() => {});
+		this.getMoodRecommendation("energy").catch(() => {});
+		const hour = (/* @__PURE__ */ new Date()).getHours();
+		const daylistMoodId = hour >= 5 && hour < 11 ? "happy" : hour >= 11 && hour < 17 ? "focus" : hour >= 17 && hour < 23 ? "emo" : "chill";
+		const artistSeeds = [];
+		const pushSeed = (name) => {
+			const clean = name?.trim();
+			if (!clean) return;
+			if (!artistSeeds.some((a) => a.toLowerCase() === clean.toLowerCase())) artistSeeds.push(clean);
+		};
+		(options?.topArtists || []).forEach(pushSeed);
+		pushSeed("Official髭男dism");
+		pushSeed("Mrs. GREEN APPLE");
+		pushSeed("Vaundy");
+		const artist1 = artistSeeds[0] || "Official髭男dism";
+		const artist2 = artistSeeds[1] || "Vaundy";
+		const radarArtists = artistSeeds.slice(0, 3);
+		this.getMoodRecommendation(daylistMoodId, artist1).catch(() => {});
+		this.search(`${artist1} 人気曲`, "song").catch(() => {});
+		this.search(`${artist2} 人気曲`, "song").catch(() => {});
+		radarArtists.forEach((name) => {
+			this.search(`${name} 新曲`, "song").catch(() => {});
+		});
+		try {
+			const ARTIST_CACHE_KEY = "yt_music_home_artists_v1";
+			let cachedMap = {};
+			const raw = localStorage.getItem(ARTIST_CACHE_KEY);
+			if (raw) {
+				const parsed = JSON.parse(raw);
+				if (parsed?.data && parsed?.ts && Date.now() - parsed.ts < 432e5) cachedMap = parsed.data;
+			}
+			const missingChips = [
+				"Mrs. GREEN APPLE",
+				"Vaundy",
+				"YOASOBI",
+				"King Gnu",
+				"RADWIMPS",
+				"back number"
+			].filter((name) => !cachedMap[name]?.thumbnail);
+			if (missingChips.length > 0) Promise.all(missingChips.map(async (name) => {
+				try {
+					const [artistRes, songRes] = await Promise.all([this.search(name, "artist").catch(() => null), this.search(name, "song").catch(() => null)]);
+					const firstArtist = artistRes?.results?.[0] || artistRes?.artists?.[0];
+					const firstSong = songRes?.results?.[0] || songRes?.songs?.[0];
+					const thumb = firstArtist?.thumbnail || firstSong?.thumbnail;
+					const channelId = firstArtist?.id?.startsWith("UC") ? firstArtist.id : firstSong?.artistId;
+					if (!thumb && !firstSong) return null;
+					return [name, {
+						id: channelId,
+						thumbnail: thumb,
+						track: firstSong
+					}];
+				} catch {
+					return null;
+				}
+			})).then((entries) => {
+				let changed = false;
+				const nextMap = { ...cachedMap };
+				entries.forEach((entry) => {
+					if (entry) {
+						nextMap[entry[0]] = entry[1];
+						changed = true;
+					}
+				});
+				if (changed) try {
+					localStorage.setItem(ARTIST_CACHE_KEY, JSON.stringify({
+						ts: Date.now(),
+						data: nextMap
+					}));
+				} catch {}
+			});
+		} catch {}
+		const track = options?.currentTrack;
+		if (track && track.id && !track.isLocal) {
+			this.getLyrics(track.id, track.title, track.artist, track.durationSeconds).catch(() => {});
+			this.getTrackTimestamps(track.id, track.title, track.artist, track.durationSeconds).catch(() => {});
+			this.getRelated(track.id).catch(() => {});
+			this.getMvCanvas(track.id, track.title, track.artist).catch(() => {});
+		}
 	},
 	async importPlaylist(url) {
 		const res = await fetch("/api/music/playlist/import", {
@@ -25501,278 +26051,6 @@ var SocialSocketService = class {
 	}
 };
 var socialSocket = new SocialSocketService();
-// src/services/offlineStorage.ts
-var DB_NAME = "ZeroMusicOfflineDB";
-var DB_VERSION = 1;
-var STORE_TRACKS = "offline_tracks";
-var STORE_META = "cached_meta";
-var activeBlobUrls = /* @__PURE__ */ new Map();
-var dbPromise = null;
-function openOfflineDB() {
-	if (dbPromise) return dbPromise;
-	dbPromise = new Promise((resolve, reject) => {
-		if (typeof window === "undefined" || !window.indexedDB) {
-			reject(/* @__PURE__ */ new Error("IndexedDB not supported in this environment"));
-			return;
-		}
-		const request = window.indexedDB.open(DB_NAME, DB_VERSION);
-		request.onupgradeneeded = (event) => {
-			const db = event.target.result;
-			if (!db.objectStoreNames.contains(STORE_TRACKS)) db.createObjectStore(STORE_TRACKS, { keyPath: "id" });
-			if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: "key" });
-		};
-		request.onsuccess = () => {
-			resolve(request.result);
-		};
-		request.onerror = () => {
-			reject(request.error);
-		};
-	});
-	return dbPromise;
-}
-/**
-* Save an audio file (File or Blob) to IndexedDB for offline playback
-*/
-async function saveOfflineTrack(file, title, artist = "ローカル音源", album = "オフライン保存", durationSeconds = 180, durationText = "3:00") {
-	const db = await openOfflineDB();
-	const id = `offline_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-	const fileType = file.type || "audio/mpeg";
-	const stored = {
-		id,
-		title,
-		artist,
-		album,
-		duration: durationText,
-		durationSeconds,
-		thumbnail: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces",
-		blob: file,
-		fileName: file instanceof File ? file.name : `${title}.mp3`,
-		fileType,
-		addedAt: Date.now()
-	};
-	return new Promise((resolve, reject) => {
-		const req = db.transaction([STORE_TRACKS], "readwrite").objectStore(STORE_TRACKS).put(stored);
-		req.onsuccess = () => {
-			const audioUrl = URL.createObjectURL(file);
-			activeBlobUrls.set(id, audioUrl);
-			resolve({
-				id: stored.id,
-				title: stored.title,
-				artist: stored.artist,
-				album: stored.album,
-				duration: stored.duration,
-				durationSeconds: stored.durationSeconds,
-				thumbnail: stored.thumbnail,
-				isLocal: true,
-				audioUrl
-			});
-		};
-		req.onerror = () => reject(req.error);
-	});
-}
-/**
-* Retrieve all offline tracks stored in IndexedDB
-*/
-async function getAllOfflineTracks() {
-	try {
-		const db = await openOfflineDB();
-		return new Promise((resolve, reject) => {
-			const req = db.transaction([STORE_TRACKS], "readonly").objectStore(STORE_TRACKS).getAll();
-			req.onsuccess = () => {
-				resolve((req.result || []).map((s) => {
-					let audioUrl = activeBlobUrls.get(s.id);
-					if (!audioUrl) try {
-						audioUrl = URL.createObjectURL(s.blob);
-						activeBlobUrls.set(s.id, audioUrl);
-					} catch {
-						audioUrl = "";
-					}
-					return {
-						id: s.id,
-						title: s.title,
-						artist: s.artist,
-						album: s.album,
-						duration: s.duration,
-						durationSeconds: s.durationSeconds,
-						thumbnail: s.thumbnail,
-						isLocal: true,
-						audioUrl
-					};
-				}));
-			};
-			req.onerror = () => reject(req.error);
-		});
-	} catch (err) {
-		console.warn("[OfflineDB] Error fetching offline tracks:", err);
-		return [];
-	}
-}
-/**
-* Prepare an offline track for active playback, ensuring an active blob URL exists
-*/
-async function getPlayableOfflineTrack(track) {
-	if (!track.isLocal) return track;
-	if (track.audioUrl && activeBlobUrls.has(track.id)) return track;
-	try {
-		const db = await openOfflineDB();
-		return new Promise((resolve) => {
-			const req = db.transaction([STORE_TRACKS], "readonly").objectStore(STORE_TRACKS).get(track.id);
-			req.onsuccess = () => {
-				const item = req.result;
-				if (item && item.blob) {
-					const url = URL.createObjectURL(item.blob);
-					activeBlobUrls.set(track.id, url);
-					resolve({
-						...track,
-						audioUrl: url
-					});
-				} else resolve(track);
-			};
-			req.onerror = () => resolve(track);
-		});
-	} catch {
-		return track;
-	}
-}
-/**
-* Delete a track from IndexedDB offline storage
-*/
-async function deleteOfflineTrack(id) {
-	const db = await openOfflineDB();
-	if (activeBlobUrls.has(id)) {
-		try {
-			URL.revokeObjectURL(activeBlobUrls.get(id));
-		} catch {}
-		activeBlobUrls.delete(id);
-	}
-	return new Promise((resolve, reject) => {
-		const req = db.transaction([STORE_TRACKS], "readwrite").objectStore(STORE_TRACKS).delete(id);
-		req.onsuccess = () => resolve();
-		req.onerror = () => reject(req.error);
-	});
-}
-/**
-* Persistent metadata cache in IndexedDB (for explore feeds, chart backups, lyrics)
-*/
-async function saveOfflineMeta(key, data) {
-	try {
-		(await openOfflineDB()).transaction([STORE_META], "readwrite").objectStore(STORE_META).put({
-			key,
-			data,
-			updatedAt: Date.now()
-		});
-	} catch (err) {
-		console.warn("[OfflineDB] Failed to save meta:", key, err);
-	}
-}
-async function getOfflineMeta(key) {
-	try {
-		const db = await openOfflineDB();
-		return new Promise((resolve) => {
-			const req = db.transaction([STORE_META], "readonly").objectStore(STORE_META).get(key);
-			req.onsuccess = () => {
-				if (req.result && req.result.data) resolve(req.result.data);
-				else resolve(null);
-			};
-			req.onerror = () => resolve(null);
-		});
-	} catch {
-		return null;
-	}
-}
-/**
-* Generate a clean, synthesized 16-bit 44.1kHz stereo Lofi Chill Loop in pure WAV format
-* Allows instant offline testing without needing external audio files.
-*/
-function generateLofiWavBlob() {
-	const sampleRate = 44100;
-	const durationSec = 14;
-	const numChannels = 2;
-	const numSamples = sampleRate * durationSec;
-	const blockAlign = 4;
-	const byteRate = sampleRate * blockAlign;
-	const dataSize = numSamples * blockAlign;
-	const buffer = /* @__PURE__ */ new ArrayBuffer(2469644);
-	const view = new DataView(buffer);
-	const writeString = (offset, str) => {
-		for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-	};
-	writeString(0, "RIFF");
-	view.setUint32(4, 2469636, true);
-	writeString(8, "WAVE");
-	writeString(12, "fmt ");
-	view.setUint32(16, 16, true);
-	view.setUint16(20, 1, true);
-	view.setUint16(22, numChannels, true);
-	view.setUint32(24, sampleRate, true);
-	view.setUint32(28, byteRate, true);
-	view.setUint16(32, blockAlign, true);
-	view.setUint16(34, 16, true);
-	writeString(36, "data");
-	view.setUint32(40, dataSize, true);
-	const chordFreqs = [
-		[
-			146.83,
-			220,
-			261.63,
-			329.63
-		],
-		[
-			196,
-			246.94,
-			329.63,
-			392
-		],
-		[
-			130.81,
-			196,
-			246.94,
-			329.63
-		],
-		[
-			220,
-			261.63,
-			329.63,
-			392
-		]
-	];
-	let offset = 44;
-	const chordDuration = durationSec / 4;
-	for (let i = 0; i < numSamples; i++) {
-		const t = i / sampleRate;
-		const currentChord = chordFreqs[Math.floor(t / chordDuration) % chordFreqs.length];
-		const chordTime = t % chordDuration;
-		const env = Math.sin(chordTime / chordDuration * Math.PI) * .45;
-		let sampleL = 0;
-		let sampleR = 0;
-		for (let c = 0; c < currentChord.length; c++) {
-			const freq = currentChord[c];
-			const tone = Math.sin(2 * Math.PI * freq * t) * .35 + Math.sin(4 * Math.PI * freq * t) * .12;
-			const pan = c / (currentChord.length - 1) * .4 - .2;
-			sampleL += tone * env * (.5 - pan);
-			sampleR += tone * env * (.5 + pan);
-		}
-		const bassFreq = currentChord[0] / 2;
-		const bass = Math.sin(2 * Math.PI * bassFreq * t) * .35 * env;
-		sampleL += bass;
-		sampleR += bass;
-		const crackle = (Math.random() * 2 - 1) * .008;
-		sampleL += crackle;
-		sampleR += crackle;
-		const intSampleL = Math.max(-1, Math.min(1, sampleL)) * 32767;
-		const intSampleR = Math.max(-1, Math.min(1, sampleR)) * 32767;
-		view.setInt16(offset, intSampleL, true);
-		view.setInt16(offset + 2, intSampleR, true);
-		offset += 4;
-	}
-	return new Blob([buffer], { type: "audio/wav" });
-}
-/**
-* Seed a demo offline track so users can test offline playback immediately
-*/
-async function seedDemoOfflineTrack() {
-	return saveOfflineTrack(generateLofiWavBlob(), "Midnight Tokyo (オフライン試聴デモ)", "Zero Music Audio Lab", "オフライン・パック Vol.1", 14, "0:14");
-}
 // src/utils/artistNames.ts
 var ROMANIZED_ARTIST_MAP = {
 	"official hige dandism": "Official髭男dism",
@@ -48145,6 +48423,33 @@ var mvCanvasCache = /* @__PURE__ */ new Map();
 function normalizeTitleCore(raw) {
 	return (raw || "").toLowerCase().replace(/[\(\[【（].*?[\)\]】）]/g, " ").replace(/\b(official|music|video|mv|m\/v|pv|audio|lyric|lyrics|full|ver\.?)\b/gi, " ").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
+function normalizeLyricForChorus(raw) {
+	return (raw || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+/**
+* Detect the 1st chorus (サビ) timestamp from synced lyrics by finding the earliest
+* repeating lyric phrase/block in the 18%-48% window that recurs >=28s later.
+*/
+function detectSyncedLyricsChorusSec(syncedLines, totalDur = 0) {
+	if (!syncedLines || syncedLines.length < 6) return null;
+	const maxTime = totalDur > 30 ? totalDur : syncedLines[syncedLines.length - 1]?.time || 220;
+	const minWindow = Math.max(22, maxTime * .18);
+	const maxWindow = maxTime * .48;
+	const normLines = syncedLines.map((l) => normalizeLyricForChorus(l.text));
+	for (let i = 0; i < syncedLines.length - 1; i++) {
+		const t = syncedLines[i].time;
+		if (t < minWindow || t > maxWindow) continue;
+		const cur = normLines[i];
+		const next = normLines[i + 1];
+		if (cur.length < 5) continue;
+		for (let j = i + 2; j < syncedLines.length - 1; j++) {
+			if (syncedLines[j].time - t < 28) continue;
+			if (normLines[j] === cur && (next.length < 4 || normLines[j + 1] === next)) return Math.floor(t);
+			if (cur.length >= 9 && (normLines[j].includes(cur) || cur.includes(normLines[j]))) return Math.floor(t);
+		}
+	}
+	return null;
+}
 function formatSeconds(secs) {
 	if (isNaN(secs) || secs < 0) return "0:00";
 	const total = Math.floor(secs);
@@ -48160,6 +48465,8 @@ var FullScreenPlayerModal = () => {
 	const [timestampsExpanded, setTimestampsExpanded] = (0, import_react.useState)(false);
 	const lyricsSheetRef = (0, import_react.useRef)(null);
 	const [canvasVideoId, setCanvasVideoId] = (0, import_react.useState)(null);
+	const [canvasChorusSec, setCanvasChorusSec] = (0, import_react.useState)(void 0);
+	const [canvasMvDurationSec, setCanvasMvDurationSec] = (0, import_react.useState)(void 0);
 	const [canvasReady, setCanvasReady] = (0, import_react.useState)(false);
 	const [canvasHudClear, setCanvasHudClear] = (0, import_react.useState)(false);
 	const [canvasActivated, setCanvasActivated] = (0, import_react.useState)(false);
@@ -48205,11 +48512,14 @@ var FullScreenPlayerModal = () => {
 	(0, import_react.useEffect)(() => {
 		if (isCanvasVisualActive) setCanvasActivated(true);
 	}, [isCanvasVisualActive]);
-	const clipStartSec = trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec > 8 ? Math.floor(trackTimestamps.highlightStartSec) : duration > 60 ? 28 : 6;
+	const lyricsChorusSec = (0, import_react.useMemo)(() => detectSyncedLyricsChorusSec(currentLyrics?.syncedLyrics, duration), [currentLyrics?.syncedLyrics, duration]);
+	const mvIntroOffset = canvasMvDurationSec && duration > 45 && canvasMvDurationSec > duration + 6 && canvasMvDurationSec < duration + 90 ? Math.round((canvasMvDurationSec - duration) * .7) : 0;
+	const effectiveDur = canvasMvDurationSec || duration || 220;
+	const clipStartSec = canvasChorusSec && canvasChorusSec > 18 ? Math.floor(canvasChorusSec) : lyricsChorusSec && lyricsChorusSec > 18 ? Math.floor(lyricsChorusSec + mvIntroOffset) : trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec >= Math.max(25, effectiveDur * .16) ? Math.floor(trackTimestamps.highlightStartSec + mvIntroOffset) : effectiveDur > 60 ? Math.round(effectiveDur * .3) : 12;
 	const clipStartSecRef = (0, import_react.useRef)(clipStartSec);
 	clipStartSecRef.current = clipStartSec;
 	const getPreloadStart = (startSec) => startSec > 4 ? startSec - 4 : startSec;
-	const [canvasMountStart, setCanvasMountStart] = (0, import_react.useState)(24);
+	const [canvasMountStart, setCanvasMountStart] = (0, import_react.useState)(60);
 	const lastHighlightSeekTrackRef = (0, import_react.useRef)(null);
 	(0, import_react.useEffect)(() => {
 		setCanvasMountStart(getPreloadStart(clipStartSec));
@@ -48219,6 +48529,8 @@ var FullScreenPlayerModal = () => {
 		clearCanvasTimers();
 		if (!fullScreenPlayerOpen || !canvasEnabled || !currentTrack?.id || currentTrack.isLocal) {
 			setCanvasVideoId(null);
+			setCanvasChorusSec(void 0);
+			setCanvasMvDurationSec(void 0);
 			setCanvasReady(false);
 			setCanvasHudClear(false);
 			setCanvasActivated(false);
@@ -48231,17 +48543,23 @@ var FullScreenPlayerModal = () => {
 		setCanvasActivated(false);
 		setCanvasPlayerPaused(false);
 		if (mvCanvasCache.has(currentTrack.id)) {
-			const cached = mvCanvasCache.get(currentTrack.id) ?? null;
-			setCanvasVideoId(cached);
+			const cached = mvCanvasCache.get(currentTrack.id);
+			setCanvasVideoId(cached?.videoId ?? null);
+			setCanvasChorusSec(cached?.chorusStartSec);
+			setCanvasMvDurationSec(cached?.mvDurationSec);
 			setCheckingMv(false);
 			return;
 		}
 		setCanvasVideoId(null);
+		setCanvasChorusSec(void 0);
+		setCanvasMvDurationSec(void 0);
 		setCheckingMv(true);
 		const resolveMv = async () => {
 			try {
 				const mvRes = await api.getMvCanvas(currentTrack.id, currentTrack.title, currentTrack.artist);
 				let chosenId = mvRes?.hasMv && mvRes.videoId ? mvRes.videoId : null;
+				const serverChorus = mvRes?.chorusStartSec;
+				const serverMvDur = mvRes?.mvDurationSec;
 				if (!chosenId && !mvRes?.fromServer) {
 					const origCore = normalizeTitleCore(currentTrack.title);
 					const origLower = currentTrack.title.toLowerCase();
@@ -48269,15 +48587,24 @@ var FullScreenPlayerModal = () => {
 						if (cleanMatch?.id) chosenId = cleanMatch.id;
 					}
 				}
-				mvCanvasCache.set(currentTrack.id, chosenId);
+				const meta = {
+					videoId: chosenId,
+					chorusStartSec: serverChorus,
+					mvDurationSec: serverMvDur
+				};
+				mvCanvasCache.set(currentTrack.id, meta);
 				if (!cancelled) {
 					setCanvasVideoId(chosenId);
+					setCanvasChorusSec(serverChorus);
+					setCanvasMvDurationSec(serverMvDur);
 					setCheckingMv(false);
 				}
 			} catch {
-				mvCanvasCache.set(currentTrack.id, null);
+				mvCanvasCache.set(currentTrack.id, { videoId: null });
 				if (!cancelled) {
 					setCanvasVideoId(null);
+					setCanvasChorusSec(void 0);
+					setCanvasMvDurationSec(void 0);
 					setCheckingMv(false);
 				}
 			}
@@ -48314,7 +48641,7 @@ var FullScreenPlayerModal = () => {
 				const data = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
 				if (data?.event === "onError") {
 					clearHudRevealTimer();
-					mvCanvasCache.set(currentTrack.id, null);
+					mvCanvasCache.set(currentTrack.id, { videoId: null });
 					setCanvasVideoId(null);
 					setCanvasReady(false);
 					setCanvasHudClear(false);
@@ -48380,12 +48707,11 @@ var FullScreenPlayerModal = () => {
 	]);
 	(0, import_react.useEffect)(() => {
 		if (!showMvCanvas || !canvasReady || !currentTrack?.id || canvasHudClearRef.current) return;
-		if (!trackTimestamps?.highlightStartSec || trackTimestamps.highlightStartSec <= 8) return;
-		const seekKey = `${currentTrack.id}:${canvasVideoId}`;
+		const seekKey = `${currentTrack.id}:${canvasVideoId}:${clipStartSec}`;
 		if (lastHighlightSeekTrackRef.current === seekKey) return;
-		lastHighlightSeekTrackRef.current = seekKey;
-		const preloadTarget = getPreloadStart(Math.floor(trackTimestamps.highlightStartSec));
+		const preloadTarget = getPreloadStart(clipStartSec);
 		if (Math.abs(preloadTarget - canvasMountStart) > 4) {
+			lastHighlightSeekTrackRef.current = seekKey;
 			setCanvasHudClear(false);
 			sendCanvasCommand("mute");
 			sendCanvasCommand("seekTo", [preloadTarget, true]);
@@ -48397,7 +48723,7 @@ var FullScreenPlayerModal = () => {
 		canvasReady,
 		currentTrack?.id,
 		canvasVideoId,
-		trackTimestamps?.highlightStartSec,
+		clipStartSec,
 		canvasMountStart,
 		sendCanvasCommand,
 		scheduleHudReveal
@@ -49411,7 +49737,23 @@ var ListeningWrappedModal = () => {
 };
 // src/components/DeviceModeSelector.tsx
 var DeviceModeSelector = () => {
-	const { setDeviceMode } = usePlayer();
+	const { setDeviceMode, currentTrack, listeningStats, followedArtists, likedTracks, recentTracks } = usePlayer();
+	(0, import_react.useEffect)(() => {
+		const topArtists = [];
+		const pushArtist = (name) => {
+			const clean = name?.trim();
+			if (!clean) return;
+			if (!topArtists.some((a) => a.toLowerCase() === clean.toLowerCase())) topArtists.push(clean);
+		};
+		listeningStats.topArtists.forEach((a) => pushArtist(a.artist));
+		followedArtists.forEach((a) => pushArtist(a.name));
+		likedTracks.forEach((t) => pushArtist(t.artist));
+		recentTracks.forEach((t) => pushArtist(t.artist));
+		api.prefetchBootData({
+			currentTrack,
+			topArtists
+		});
+	}, []);
 	const recommendedMode = (0, import_react.useMemo)(() => {
 		if (typeof window !== "undefined" && window.innerWidth < 768) return "mobile";
 		return "pc";

@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 98,
+  "totalAccessCount": 103,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -293,8 +293,8 @@
   ],
   "bannedUsers": [],
   "analytics": {
-    "totalPlaybackSeconds": 4224,
-    "totalTracksPlayed": 17,
+    "totalPlaybackSeconds": 4412,
+    "totalTracksPlayed": 19,
     "trackPlays": {
       "dQw4w9WgXcQ": {
         "videoId": "dQw4w9WgXcQ",
@@ -415,6 +415,22 @@
         "thumbnail": "https://yt3.googleusercontent.com/H1ZIqxKiFEWcbSg5x_5pDXmyyJiEhBw4qEUmiUkIA9_wZ_wdAjni5Y6fDXbFOsNxeoIR6SxIipiFDhu2=w544-h544-l90-rj",
         "playCount": 1,
         "lastPlayed": "2026-11-14T12:14:38.615Z"
+      },
+      "pVs0H08el-U": {
+        "videoId": "pVs0H08el-U",
+        "title": "スパークル (movie ver.)",
+        "artist": "RADWIMPS",
+        "thumbnail": "https://yt3.googleusercontent.com/hNgkDiPjFEpbOYcdXR8EKim47hEug8d4fbmFA2YfZJ--jLYpnHl7PWlMalZyjSNldiZ3beORNY9-Uk84=w120-h120-l90-rj",
+        "playCount": 1,
+        "lastPlayed": "2026-11-19T11:44:27.697Z"
+      },
+      "9ExdDjjJfCc": {
+        "videoId": "9ExdDjjJfCc",
+        "title": "ROOFTOPS feat. 藤原聡（feat. 藤原 聡）",
+        "artist": "KERENMI",
+        "thumbnail": "https://yt3.googleusercontent.com/p06_HUS6IxDhAOTqJ93BxwyVOnXvFiPq-3gISdVh6-jyw2qRN1fvVOtZsQX7DdlB1kM3eZJ-NBc8wjM=w120-h120-l90-rj",
+        "playCount": 1,
+        "lastPlayed": "2026-11-19T11:45:51.363Z"
       }
     },
     "searchQueries": {
@@ -432,30 +448,35 @@
         "query": "髭男",
         "count": 1,
         "lastSearched": "2026-11-14T12:15:13.496Z"
+      },
+      "藤原聡　feat": {
+        "query": "藤原聡　feat",
+        "count": 1,
+        "lastSearched": "2026-11-19T11:45:48.482Z"
       }
     },
     "hourlyVisits": {
       "8": 6,
       "9": 46,
-      "11": 20,
+      "11": 25,
       "12": 2
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 73,
+      "mobile": 78,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 73,
+      "Safari": 78,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 73,
+      "macOS": 78,
       "Other": 1
     },
     "lyricsStats": {
-      "views": 15,
-      "syncedHits": 14,
+      "views": 16,
+      "syncedHits": 15,
       "plainHits": 0,
       "notFound": 1
     },

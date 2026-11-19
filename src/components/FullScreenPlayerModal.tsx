@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
 import { SafeImage } from './SafeImage';
@@ -45,7 +45,13 @@ import {
   Film,
 } from 'lucide-react';
 
-const mvCanvasCache = new Map<string, string | null>();
+interface MvCanvasMeta {
+  videoId: string | null;
+  chorusStartSec?: number;
+  mvDurationSec?: number;
+}
+
+const mvCanvasCache = new Map<string, MvCanvasMeta>();
 
 function normalizeTitleCore(raw: string): string {
   return (raw || '')
@@ -54,6 +60,43 @@ function normalizeTitleCore(raw: string): string {
     .replace(/\b(official|music|video|mv|m\/v|pv|audio|lyric|lyrics|full|ver\.?)\b/gi, ' ')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
+}
+
+function normalizeLyricForChorus(raw: string): string {
+  return (raw || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, '');
+}
+
+/**
+ * Detect the 1st chorus (サビ) timestamp from synced lyrics by finding the earliest
+ * repeating lyric phrase/block in the 18%-48% window that recurs >=28s later.
+ */
+function detectSyncedLyricsChorusSec(syncedLines?: SyncedLine[], totalDur = 0): number | null {
+  if (!syncedLines || syncedLines.length < 6) return null;
+  const maxTime = totalDur > 30 ? totalDur : syncedLines[syncedLines.length - 1]?.time || 220;
+  const minWindow = Math.max(22, maxTime * 0.18);
+  const maxWindow = maxTime * 0.48;
+  const normLines = syncedLines.map((l) => normalizeLyricForChorus(l.text));
+
+  for (let i = 0; i < syncedLines.length - 1; i++) {
+    const t = syncedLines[i].time;
+    if (t < minWindow || t > maxWindow) continue;
+    const cur = normLines[i];
+    const next = normLines[i + 1];
+    if (cur.length < 5) continue;
+
+    for (let j = i + 2; j < syncedLines.length - 1; j++) {
+      if (syncedLines[j].time - t < 28) continue;
+      if (normLines[j] === cur && (next.length < 4 || normLines[j + 1] === next)) {
+        return Math.floor(t);
+      }
+      if (cur.length >= 9 && (normLines[j].includes(cur) || cur.includes(normLines[j]))) {
+        return Math.floor(t);
+      }
+    }
+  }
+  return null;
 }
 
 function formatSeconds(secs: number): string {
@@ -128,6 +171,8 @@ export const FullScreenPlayerModal: React.FC = () => {
 
   // Canvas MV background state (null = no MV found -> show jacket image)
   const [canvasVideoId, setCanvasVideoId] = useState<string | null>(null);
+  const [canvasChorusSec, setCanvasChorusSec] = useState<number | undefined>(undefined);
+  const [canvasMvDurationSec, setCanvasMvDurationSec] = useState<number | undefined>(undefined);
   const [canvasReady, setCanvasReady] = useState(false);
   const [canvasHudClear, setCanvasHudClear] = useState(false);
   const [canvasActivated, setCanvasActivated] = useState(false);
@@ -191,18 +236,35 @@ export const FullScreenPlayerModal: React.FC = () => {
     }
   }, [isCanvasVisualActive]);
 
+  const lyricsChorusSec = useMemo(
+    () => detectSyncedLyricsChorusSec(currentLyrics?.syncedLyrics, duration),
+    [currentLyrics?.syncedLyrics, duration]
+  );
+
+  // Align audio-based chorus estimate to MV timeline if MV has a cinematic intro
+  const mvIntroOffset =
+    canvasMvDurationSec && duration > 45 && canvasMvDurationSec > duration + 6 && canvasMvDurationSec < duration + 90
+      ? Math.round((canvasMvDurationSec - duration) * 0.7)
+      : 0;
+
+  const effectiveDur = canvasMvDurationSec || duration || 220;
   const clipStartSec =
-    trackTimestamps?.highlightStartSec && trackTimestamps.highlightStartSec > 8
-      ? Math.floor(trackTimestamps.highlightStartSec)
-      : duration > 60
-      ? 28
-      : 6;
+    canvasChorusSec && canvasChorusSec > 18
+      ? Math.floor(canvasChorusSec)
+      : lyricsChorusSec && lyricsChorusSec > 18
+      ? Math.floor(lyricsChorusSec + mvIntroOffset)
+      : trackTimestamps?.highlightStartSec &&
+        trackTimestamps.highlightStartSec >= Math.max(25, effectiveDur * 0.16)
+      ? Math.floor(trackTimestamps.highlightStartSec + mvIntroOffset)
+      : effectiveDur > 60
+      ? Math.round(effectiveDur * 0.30)
+      : 12;
   const clipStartSecRef = useRef(clipStartSec);
   clipStartSecRef.current = clipStartSec;
   const getPreloadStart = (startSec: number) => (startSec > 4 ? startSec - 4 : startSec);
 
   // Keep the iframe mount start time fixed per video ID so async duration/highlight updates seek instead of remounting
-  const [canvasMountStart, setCanvasMountStart] = useState<number>(24);
+  const [canvasMountStart, setCanvasMountStart] = useState<number>(60);
   const lastHighlightSeekTrackRef = useRef<string | null>(null);
   useEffect(() => {
     setCanvasMountStart(getPreloadStart(clipStartSec));
@@ -215,6 +277,8 @@ export const FullScreenPlayerModal: React.FC = () => {
     clearCanvasTimers();
     if (!fullScreenPlayerOpen || !canvasEnabled || !currentTrack?.id || currentTrack.isLocal) {
       setCanvasVideoId(null);
+      setCanvasChorusSec(undefined);
+      setCanvasMvDurationSec(undefined);
       setCanvasReady(false);
       setCanvasHudClear(false);
       setCanvasActivated(false);
@@ -229,13 +293,17 @@ export const FullScreenPlayerModal: React.FC = () => {
     setCanvasPlayerPaused(false);
 
     if (mvCanvasCache.has(currentTrack.id)) {
-      const cached = mvCanvasCache.get(currentTrack.id) ?? null;
-      setCanvasVideoId(cached);
+      const cached = mvCanvasCache.get(currentTrack.id);
+      setCanvasVideoId(cached?.videoId ?? null);
+      setCanvasChorusSec(cached?.chorusStartSec);
+      setCanvasMvDurationSec(cached?.mvDurationSec);
       setCheckingMv(false);
       return;
     }
 
     setCanvasVideoId(null);
+    setCanvasChorusSec(undefined);
+    setCanvasMvDurationSec(undefined);
     setCheckingMv(true);
 
     const resolveMv = async () => {
@@ -247,6 +315,8 @@ export const FullScreenPlayerModal: React.FC = () => {
         );
         let chosenId: string | null =
           mvRes?.hasMv && mvRes.videoId ? mvRes.videoId : null;
+        const serverChorus = mvRes?.chorusStartSec;
+        const serverMvDur = mvRes?.mvDurationSec;
 
         // Fallback for static/GAS mode if mv-canvas endpoint isn't available
         if (!chosenId && !mvRes?.fromServer) {
@@ -303,15 +373,24 @@ export const FullScreenPlayerModal: React.FC = () => {
           }
         }
 
-        mvCanvasCache.set(currentTrack.id, chosenId);
+        const meta: MvCanvasMeta = {
+          videoId: chosenId,
+          chorusStartSec: serverChorus,
+          mvDurationSec: serverMvDur,
+        };
+        mvCanvasCache.set(currentTrack.id, meta);
         if (!cancelled) {
           setCanvasVideoId(chosenId);
+          setCanvasChorusSec(serverChorus);
+          setCanvasMvDurationSec(serverMvDur);
           setCheckingMv(false);
         }
       } catch {
-        mvCanvasCache.set(currentTrack.id, null);
+        mvCanvasCache.set(currentTrack.id, { videoId: null });
         if (!cancelled) {
           setCanvasVideoId(null);
+          setCanvasChorusSec(undefined);
+          setCanvasMvDurationSec(undefined);
           setCheckingMv(false);
         }
       }
@@ -350,7 +429,7 @@ export const FullScreenPlayerModal: React.FC = () => {
         const data = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
         if (data?.event === 'onError') {
           clearHudRevealTimer();
-          mvCanvasCache.set(currentTrack.id, null);
+          mvCanvasCache.set(currentTrack.id, { videoId: null });
           setCanvasVideoId(null);
           setCanvasReady(false);
           setCanvasHudClear(false);
@@ -420,15 +499,14 @@ export const FullScreenPlayerModal: React.FC = () => {
     };
   }, [isCanvasVisualActive, sendCanvasCommand, scheduleHudReveal]);
 
-  // Seek smoothly ONLY while still hidden behind opacity-0 if highlightStartSec arrives right after mount
+  // Seek smoothly ONLY while still hidden behind opacity-0 if better chorus timestamp arrives right after mount
   useEffect(() => {
     if (!showMvCanvas || !canvasReady || !currentTrack?.id || canvasHudClearRef.current) return;
-    if (!trackTimestamps?.highlightStartSec || trackTimestamps.highlightStartSec <= 8) return;
-    const seekKey = `${currentTrack.id}:${canvasVideoId}`;
+    const seekKey = `${currentTrack.id}:${canvasVideoId}:${clipStartSec}`;
     if (lastHighlightSeekTrackRef.current === seekKey) return;
-    lastHighlightSeekTrackRef.current = seekKey;
-    const preloadTarget = getPreloadStart(Math.floor(trackTimestamps.highlightStartSec));
+    const preloadTarget = getPreloadStart(clipStartSec);
     if (Math.abs(preloadTarget - canvasMountStart) > 4) {
+      lastHighlightSeekTrackRef.current = seekKey;
       setCanvasHudClear(false);
       sendCanvasCommand('mute');
       sendCanvasCommand('seekTo', [preloadTarget, true]);
@@ -440,7 +518,7 @@ export const FullScreenPlayerModal: React.FC = () => {
     canvasReady,
     currentTrack?.id,
     canvasVideoId,
-    trackTimestamps?.highlightStartSec,
+    clipStartSec,
     canvasMountStart,
     sendCanvasCommand,
     scheduleHudReveal,
