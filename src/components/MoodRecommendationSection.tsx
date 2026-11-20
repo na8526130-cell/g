@@ -23,6 +23,7 @@ import {
   ThumbsUp,
   Loader2,
   ListStart,
+  Download,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { CommentEmotionData, Track } from '../types/music';
@@ -65,7 +66,7 @@ const POPULAR_ARTISTS = [
 ];
 
 export const MoodRecommendationSection: React.FC = () => {
-  const { playTrack, addToQueue, playNext, showToast, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying } =
+  const { playTrack, addToQueue, playNext, showToast, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying, openFreemakeModal } =
     usePlayer();
 
   const [selectedMood, setSelectedMood] = useState<string>('energy');
@@ -676,6 +677,19 @@ export const MoodRecommendationSection: React.FC = () => {
                         aria-label="キューの最後に追加"
                       >
                         <Plus className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openFreemakeModal(track);
+                        }}
+                        className="p-1.5 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                        title="ダウンロード・保存"
+                        aria-label="ダウンロード・保存"
+                      >
+                        <Download className="w-4 h-4" />
                       </button>
 
                       {track.duration && (

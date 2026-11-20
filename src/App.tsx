@@ -39,6 +39,8 @@ import { DeviceModeSelector } from './components/DeviceModeSelector';
 import { TrackDetailModal } from './components/TrackDetailModal';
 import { ConnectDeviceModal } from './components/ConnectDeviceModal';
 import { ZeroCodeModal } from './components/ZeroCodeModal';
+import { FreemakeModal } from './components/FreemakeModal';
+import { SettingsModal } from './components/SettingsModal';
 
 const MainLayout: React.FC = () => {
   const {
@@ -228,9 +230,11 @@ const MainLayout: React.FC = () => {
       {/* Track Detail & Credits Modal */}
       <TrackDetailModal />
 
-      {/* Connect Device & ZeroCode Modals */}
+      {/* Connect Device & ZeroCode & Freemake Modals */}
       <ConnectDeviceModal />
       <ZeroCodeModal />
+      <FreemakeModal />
+      <SettingsModal />
 
       {/* In-App PWA Install Promotion Banner */}
       <PWAInstallBanner />

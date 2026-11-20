@@ -4,6 +4,10 @@ export type EqFrequency = typeof EQ_FREQUENCIES[number];
 
 export type EqPresetKey =
   | 'flat'
+  | 'freemake_studio'
+  | 'freemake_bass'
+  | 'freemake_clear'
+  | 'freemake_live'
   | 'bass_boost'
   | 'vocal'
   | 'acoustic'
@@ -19,6 +23,7 @@ export interface EqPreset {
   description: string;
   gains: number[]; // 10 values in dB (-12 to +12)
   bassBoost: number; // 0 to 12 dB
+  isFreemake?: boolean;
 }
 
 export const EQ_PRESETS: Record<EqPresetKey, EqPreset> = {
@@ -28,6 +33,38 @@ export const EQ_PRESETS: Record<EqPresetKey, EqPreset> = {
     description: '補正なしの原音のままの周波数バランス',
     gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     bassBoost: 0,
+  },
+  freemake_studio: {
+    id: 'freemake_studio',
+    label: 'Freemake スタジオ (Studio)',
+    description: 'Freemake Audio Engine推奨の温かみのあるワイド・マスタリングカーブ',
+    gains: [4, 3, 1, -1, 0, 2, 3, 4, 4, 3],
+    bassBoost: 3,
+    isFreemake: true,
+  },
+  freemake_bass: {
+    id: 'freemake_bass',
+    label: 'Freemake 重低音 (Deep Bass)',
+    description: 'Freemake重低音アルゴリズムによるタイトなサブベース＆パンチ強化',
+    gains: [10, 8, 5, 2, 0, 0, 1, 2, 3, 2],
+    bassBoost: 9,
+    isFreemake: true,
+  },
+  freemake_clear: {
+    id: 'freemake_clear',
+    label: 'Freemake 高精細 (Hi-Res)',
+    description: '圧縮音源の高音域倍音を補完し透明感のあるボーカルを再現',
+    gains: [1, 1, 0, 1, 2, 4, 5, 6, 7, 6],
+    bassBoost: 1,
+    isFreemake: true,
+  },
+  freemake_live: {
+    id: 'freemake_live',
+    label: 'Freemake ライブ (Live)',
+    description: 'コンサートホールの臨場感と音の広がりを演出するダイナミック特性',
+    gains: [5, 4, 2, 0, 1, 2, 4, 5, 6, 5],
+    bassBoost: 4,
+    isFreemake: true,
   },
   bass_boost: {
     id: 'bass_boost',
@@ -92,6 +129,7 @@ export interface EqualizerSettings {
   preset: EqPresetKey;
   gains: number[]; // 10 values
   bassBoost: number; // 0 to 12 dB
+  freemakeNormalize?: boolean; // Freemake loudness normalization
 }
 
 const STORAGE_KEY = 'yt_music_equalizer_v1';
@@ -126,6 +164,7 @@ class EqualizerService {
             preset: parsed.preset || 'flat',
             gains: parsed.gains.map((g: any) => Math.max(-12, Math.min(12, Number(g) || 0))),
             bassBoost: Math.max(0, Math.min(12, Number(parsed.bassBoost) || 0)),
+            freemakeNormalize: Boolean(parsed.freemakeNormalize),
           };
         }
       }
@@ -138,6 +177,7 @@ class EqualizerService {
       preset: 'flat',
       gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       bassBoost: 0,
+      freemakeNormalize: false,
     };
   }
 
@@ -382,6 +422,11 @@ class EqualizerService {
     this.settings.bassBoost = clamped;
     this.settings.preset = 'custom';
     this.applyToAudioNodes();
+    this.saveSettings();
+  }
+
+  public setFreemakeNormalize(enabled: boolean) {
+    this.settings.freemakeNormalize = enabled;
     this.saveSettings();
   }
 

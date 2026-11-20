@@ -20,6 +20,7 @@ import {
   Disc,
   Radio,
   FastForward,
+  Download,
 } from 'lucide-react';
 
 interface EqualizerModalProps {
@@ -33,6 +34,8 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
     setCrossfadeDuration,
     endlessRadioActive,
     toggleEndlessRadio,
+    currentTrack,
+    openFreemakeModal,
   } = usePlayer();
   const [settings, setSettings] = useState<EqualizerSettings>(equalizer.getSettings());
 
@@ -108,23 +111,53 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
               <Sliders className="w-5 h-5 text-white" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-base font-bold text-white tracking-wide">
-                  イコライザー & 音質調整
+                  Freemake イコライザー & 音質調整
                 </h3>
+                <span className="px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/30 text-sky-300 text-[10px] font-bold">
+                  Freemake DSP
+                </span>
               </div>
               <p className="text-xs text-neutral-400 mt-0.5">
-                周波数帯域の微調整と低音ブースト
+                周波数帯域の微調整・低音ブースト・ダウンロード音源へのEQ焼き込みに対応
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Freemake Export / Download button */}
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                openFreemakeModal(currentTrack);
+              }}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 text-xs font-bold transition-all cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Freemake保存</span>
+            </button>
+
+            {/* Freemake Normalize Toggle */}
+            <button
+              type="button"
+              onClick={() => equalizer.setFreemakeNormalize(!settings.freemakeNormalize)}
+              title="Freemakeラウドネス正規化（書き出し時の音量均一化）"
+              className={`hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition-all cursor-pointer ${
+                settings.freemakeNormalize
+                  ? 'bg-sky-600/25 border-sky-400 text-sky-200'
+                  : 'bg-neutral-900 border-white/10 text-neutral-400 hover:text-white'
+              }`}
+            >
+              <span>正規化 {settings.freemakeNormalize ? 'ON' : 'OFF'}</span>
+            </button>
+
             {/* Master EQ Toggle */}
             <button
               type="button"
               onClick={() => equalizer.setEnabled(!settings.enabled)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                 settings.enabled
                   ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
                   : 'bg-neutral-800 text-neutral-400 hover:text-white'
@@ -479,18 +512,31 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({ isOpen, onClose 
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3.5 bg-[#14151c] border-t border-white/5 flex items-center justify-between text-xs text-neutral-400">
+        <div className="px-6 py-3.5 bg-[#14151c] border-t border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400">
           <div className="flex items-center gap-2">
             <Disc className="w-4 h-4 text-red-500 animate-spin" style={{ animationDuration: '8s' }} />
-            <span>イヤホン・スピーカーどちらでも最適な音響にリアルタイム補正されます</span>
+            <span>イヤホン・ローカル再生・Freemakeダウンロード書き出し時にEQが適用されます</span>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors"
-          >
-            完了
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                openFreemakeModal(currentTrack);
+              }}
+              className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>このEQでダウンロード</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors cursor-pointer"
+            >
+              完了
+            </button>
+          </div>
         </div>
       </div>
     </div>

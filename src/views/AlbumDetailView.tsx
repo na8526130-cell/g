@@ -16,6 +16,7 @@ import {
   ListPlus,
   ListStart,
   Info,
+  Download,
 } from 'lucide-react';
 
 export const AlbumDetailView: React.FC = () => {
@@ -38,6 +39,7 @@ export const AlbumDetailView: React.FC = () => {
     setVideoLayout,
     openShareModal,
     openTrackDetailModal,
+    openFreemakeModal,
     isTrackBlocked,
     showToast,
   } = usePlayer();
@@ -381,6 +383,19 @@ export const AlbumDetailView: React.FC = () => {
                   aria-label="キューの最後に追加"
                 >
                   <Plus className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openFreemakeModal(track);
+                  }}
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                  title="ダウンロード・保存"
+                  aria-label="ダウンロード・保存"
+                >
+                  <Download className="w-4 h-4" />
                 </button>
 
                 <button

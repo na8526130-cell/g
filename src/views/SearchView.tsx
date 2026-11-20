@@ -27,6 +27,7 @@ import {
   ListStart,
   Info,
   RefreshCw,
+  Download,
 } from 'lucide-react';
 import {
   getSearchConversions,
@@ -129,6 +130,7 @@ export const SearchView: React.FC = () => {
     currentTrack,
     openAddToPlaylistModal,
     openTrackDetailModal,
+    openFreemakeModal,
     isTrackBlocked,
     showToast,
   } = usePlayer();
@@ -734,6 +736,18 @@ export const SearchView: React.FC = () => {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              openFreemakeModal(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 cursor-pointer"
+                            title="ダウンロード・保存"
+                            aria-label="ダウンロード・保存"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               openTrackDetailModal(track);
                             }}
                             className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
@@ -893,6 +907,18 @@ export const SearchView: React.FC = () => {
                                 aria-label="キューの最後に追加"
                               >
                                 <Plus className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openFreemakeModal(track);
+                                }}
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 cursor-pointer"
+                                title="ダウンロード・保存"
+                                aria-label="ダウンロード・保存"
+                              >
+                                <Download className="w-4 h-4" />
                               </button>
                               <button
                                 type="button"
@@ -1067,6 +1093,18 @@ export const SearchView: React.FC = () => {
                             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                               <Play className="w-7 h-7 fill-white text-white" />
                             </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openFreemakeModal(vid);
+                              }}
+                              className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/70 hover:bg-sky-600 text-white backdrop-blur-md flex items-center justify-center opacity-95 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer shadow"
+                              title="ダウンロード・保存"
+                              aria-label="ダウンロード・保存"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
                           </div>
                           <div className="min-w-0">
                             <h4 className="text-xs font-bold text-white truncate">{vid.title}</h4>
@@ -1153,6 +1191,18 @@ export const SearchView: React.FC = () => {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              openFreemakeModal(track);
+                            }}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 cursor-pointer"
+                            title="ダウンロード・保存"
+                            aria-label="ダウンロード・保存"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               openTrackDetailModal(track);
                             }}
                             className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white cursor-pointer"
@@ -1214,7 +1264,7 @@ export const SearchView: React.FC = () => {
                             useBase64
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                           />
-                          {(isAlbum || isPl) && (
+                          {(isAlbum || isPl) ? (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1231,7 +1281,20 @@ export const SearchView: React.FC = () => {
                             >
                               <Heart className={`w-4 h-4 ${isLikedCard ? 'fill-red-500 text-red-500' : ''}`} />
                             </button>
-                          )}
+                          ) : filter === 'video' ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openFreemakeModal(item);
+                              }}
+                              className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/70 hover:bg-sky-600 text-white backdrop-blur-md flex items-center justify-center opacity-95 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer shadow"
+                              title="ダウンロード・保存"
+                              aria-label="ダウンロード・保存"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                          ) : null}
                         </div>
                         <div className="min-w-0">
                           <h4 className="text-xs sm:text-sm font-bold text-white truncate">{item.title}</h4>

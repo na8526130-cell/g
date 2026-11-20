@@ -24,6 +24,8 @@ import {
   Plus,
   Music,
   Disc3,
+  MessageSquare,
+  EyeOff,
 } from 'lucide-react';
 import { Track } from '../types/music';
 
@@ -53,6 +55,8 @@ export const AccountModal: React.FC = () => {
     lastCloudSyncAt,
     isSyncingCloud,
     syncAccountNow,
+    dmUiVisible,
+    toggleDmUiVisible,
   } = usePlayer();
 
   const [authMode, setAuthMode] = useState<'register' | 'login' | 'admin'>('register');
@@ -936,6 +940,36 @@ export const AccountModal: React.FC = () => {
               )}
             </div>
           )}
+
+          {/* UI Display Settings (Visible for both Guest and Logged-in Users) */}
+          <div className="p-4 rounded-2xl bg-neutral-900/60 border border-neutral-800 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                dmUiVisible ? 'bg-cyan-500/15 text-cyan-400' : 'bg-neutral-800 text-neutral-500'
+              }`}>
+                {dmUiVisible ? <MessageSquare className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-white">DM（ダイレクトメッセージ）UI表示</p>
+                <p className="text-[11px] text-neutral-400">
+                  {dmUiVisible
+                    ? 'ヘッダー・ナビバーにDMボタンを表示中'
+                    : 'DMボタンとDMチャットUIを非表示にしています'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={toggleDmUiVisible}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shrink-0 cursor-pointer ${
+                dmUiVisible
+                  ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700'
+                  : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow'
+              }`}
+            >
+              {dmUiVisible ? 'UIを消す' : 'UIを表示する'}
+            </button>
+          </div>
         </div>
 
         {/* Footer */}

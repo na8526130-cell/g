@@ -21,6 +21,7 @@ export interface SyncedAccountLibrary {
     floatingLyricsOverlay?: boolean;
     canvasEnabled?: boolean;
     backgroundPlaybackEnabled?: boolean;
+    dmUiVisible?: boolean;
   };
 }
 

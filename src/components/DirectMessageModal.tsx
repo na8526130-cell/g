@@ -20,6 +20,7 @@ import {
   Sparkles,
   User,
   Plus,
+  EyeOff,
 } from 'lucide-react';
 
 const REACTION_EMOJIS = ['❤️', '👍', '🔥', '😂', '😭', '🎸'];
@@ -35,6 +36,8 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
     userPlaylists,
     createUserPlaylist,
     addToUserPlaylist,
+    setDmUiVisible,
+    showToast,
   } = usePlayer();
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -249,13 +252,28 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
               </div>
               <h2 className="font-bold text-white text-base">ダイレクトメッセージ</h2>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="md:hidden p-1.5 text-neutral-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setDmUiVisible(false);
+                  onClose();
+                  showToast('DMのUIを非表示にしました（アカウント設定から再表示できます）', 'info', 3000);
+                }}
+                title="DMのUIを消す（アカウント設定で再表示可能）"
+                className="px-2 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+                <span>UIを消す</span>
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="md:hidden p-1.5 text-neutral-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
           {/* User Search filter */}

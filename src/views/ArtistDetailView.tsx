@@ -31,6 +31,7 @@ import {
   UserMinus,
   UserPlus,
   Sparkles,
+  Download,
 } from 'lucide-react';
 
 const RELATED_FALLBACK_NAMES = [
@@ -66,6 +67,7 @@ export const ArtistDetailView: React.FC = () => {
     openZeroCodeModal,
     setSearchQuery,
     openTrackDetailModal,
+    openFreemakeModal,
     blockArtist,
     unblockArtist,
     isArtistBlocked,
@@ -746,6 +748,18 @@ export const ArtistDetailView: React.FC = () => {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
+                            openFreemakeModal(track);
+                          }}
+                          className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                          title="ダウンロード・保存"
+                          aria-label="ダウンロード・保存"
+                        >
+                          <Download className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
                             openTrackDetailModal(track);
                           }}
                           className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
@@ -1200,15 +1214,25 @@ export const ArtistDetailView: React.FC = () => {
                         {setlist.tracks.map((tr, tIdx) => {
                           const active = currentTrack?.id === tr.id;
                           return (
-                            <button
+                            <div
                               key={`${tr.id}-${tIdx}`}
-                              type="button"
+                              role="button"
+                              tabIndex={0}
                               onClick={() =>
                                 playTrack(tr, setlist.tracks, {
                                   source: 'セットリストから再生中',
                                   subtitle: setlist.title,
                                 })
                               }
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  playTrack(tr, setlist.tracks, {
+                                    source: 'セットリストから再生中',
+                                    subtitle: setlist.title,
+                                  });
+                                }
+                              }}
                               className={`w-full px-4 py-2.5 flex items-center justify-between gap-3 text-left hover:bg-white/5 transition-colors cursor-pointer ${
                                 active ? 'bg-white/5' : ''
                               }`}
@@ -1225,12 +1249,26 @@ export const ArtistDetailView: React.FC = () => {
                                   {tr.title}
                                 </span>
                               </div>
-                              {tr.duration && (
-                                <span className="text-[11px] font-mono text-neutral-500 shrink-0 tabular-nums">
-                                  {tr.duration}
-                                </span>
-                              )}
-                            </button>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openFreemakeModal(tr);
+                                  }}
+                                  className="p-1 text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                                  title="ダウンロード・保存"
+                                  aria-label="ダウンロード・保存"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </button>
+                                {tr.duration && (
+                                  <span className="text-[11px] font-mono text-neutral-500 shrink-0 tabular-nums">
+                                    {tr.duration}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           );
                         })}
                       </div>

@@ -43,6 +43,7 @@ import {
   QrCode,
   Link2,
   Film,
+  Download,
 } from 'lucide-react';
 
 interface MvCanvasMeta {
@@ -161,6 +162,7 @@ export const FullScreenPlayerModal: React.FC = () => {
     blockArtist,
     isTrackBlocked,
     showToast,
+    openFreemakeModal,
   } = usePlayer();
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -909,7 +911,19 @@ export const FullScreenPlayerModal: React.FC = () => {
                   className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <Sliders className="w-4 h-4 text-neutral-400" />
-                  <span>イコライザー調整</span>
+                  <span>Freemake イコライザー調整</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openFreemakeModal(currentTrack);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-sky-300 hover:text-sky-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Download className="w-4 h-4 text-sky-400" />
+                  <span>Freemake ダウンロード / 形式変換</span>
                 </button>
 
                 <button
@@ -1217,6 +1231,14 @@ export const FullScreenPlayerModal: React.FC = () => {
             </button>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openFreemakeModal(currentTrack)}
+                className="p-2 text-sky-300 hover:text-white rounded-lg hover:bg-sky-500/20 transition-colors cursor-pointer"
+                title="Freemakeでダウンロード・変換"
+              >
+                <Download className="w-5 h-5" />
+              </button>
               <button
                 type="button"
                 onClick={() => openVisualShareCard({ type: 'track', track: currentTrack })}

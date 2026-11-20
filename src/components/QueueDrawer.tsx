@@ -18,6 +18,7 @@ import {
   Loader2,
   Info,
   EyeOff,
+  Download,
 } from 'lucide-react';
 import { SafeImage } from './SafeImage';
 
@@ -41,6 +42,7 @@ export const QueueDrawer: React.FC = () => {
     isAutoSelectingQueue,
     replenishQueueNow,
     openTrackDetailModal,
+    openFreemakeModal,
     hideTrack,
     isTrackBlocked,
     showToast,
@@ -130,6 +132,15 @@ export const QueueDrawer: React.FC = () => {
                 <p className="text-sm font-semibold text-white truncate">{currentTrack.title}</p>
                 <p className="text-xs text-neutral-300 truncate">{currentTrack.artist}</p>
               </div>
+              <button
+                type="button"
+                onClick={() => openFreemakeModal(currentTrack)}
+                className="p-1.5 text-neutral-400 hover:text-sky-400 rounded-lg hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                title="ダウンロード・保存"
+                aria-label="ダウンロード・保存"
+              >
+                <Download className="w-4 h-4" />
+              </button>
               <button
                 type="button"
                 onClick={() => openTrackDetailModal(currentTrack)}
@@ -303,6 +314,15 @@ export const QueueDrawer: React.FC = () => {
                       )}
                       <button
                         type="button"
+                        onClick={() => openFreemakeModal(track)}
+                        className="p-1.5 text-neutral-400 hover:text-sky-400 rounded hover:bg-neutral-700 cursor-pointer"
+                        title="ダウンロード・保存"
+                        aria-label="ダウンロード・保存"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => playTrack(track, queue)}
                         className="p-1.5 text-neutral-300 hover:text-white rounded hover:bg-neutral-700 cursor-pointer"
                         title="今すぐ再生"
@@ -384,6 +404,15 @@ export const QueueDrawer: React.FC = () => {
                       aria-label="キューの最後に追加"
                     >
                       <Plus className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openFreemakeModal(rel)}
+                      className="p-1.5 text-neutral-500 hover:text-sky-400 rounded-md hover:bg-neutral-800 transition-colors cursor-pointer"
+                      title="ダウンロード・保存"
+                      aria-label="ダウンロード・保存"
+                    >
+                      <Download className="w-3.5 h-3.5" />
                     </button>
                     <button
                       type="button"

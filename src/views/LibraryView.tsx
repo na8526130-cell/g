@@ -43,6 +43,12 @@ import {
   Search,
   Disc3,
   QrCode,
+  Download,
+  Globe,
+  WifiOff,
+  CheckCircle2,
+  Cloud,
+  HardDrive,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { parseLocalAudioFile } from '../services/localTracks';
@@ -50,7 +56,18 @@ import {
   getAllOfflineTracks,
   deleteOfflineTrack,
   seedDemoOfflineTrack,
+  OFFLINE_TRACKS_CHANGED_EVENT,
+  SHARED_OFFLINE_CHANGED_EVENT,
 } from '../services/offlineStorage';
+import {
+  loadSharedOfflineTracks,
+  uploadSharedOfflineFile,
+  publishOfflineTrackToShared,
+  syncSharedTracksForOffline,
+  copySharedTrackToMyOffline,
+  deleteSharedOfflineTrack,
+} from '../services/sharedOffline';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Track } from '../types/music';
 import { SafeImage } from '../components/SafeImage';
 
@@ -104,7 +121,13 @@ export const LibraryView: React.FC = () => {
     libraryTab: activeTab,
     setLibraryTab: setActiveTab,
     libraryResetSeq,
+    openFreemakeModal,
+    freemakeModalOpen,
+    currentUser,
+    isAdmin,
   } = usePlayer();
+
+  const isOnline = useOnlineStatus();
 
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
@@ -156,26 +179,89 @@ export const LibraryView: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isAddingDemo, setIsAddingDemo] = useState(false);
+  const [publishingTrackId, setPublishingTrackId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load persistently stored tracks from IndexedDB on mount
-  useEffect(() => {
-    let isMounted = true;
+  // Shared Offline (共有オフライン) state
+  const [sharedTracks, setSharedTracks] = useState<Track[]>([]);
+  const [sharedFromOfflineCache, setSharedFromOfflineCache] = useState(false);
+  const [loadingShared, setLoadingShared] = useState(false);
+  const [syncingShared, setSyncingShared] = useState(false);
+  const [sharedSyncProgress, setSharedSyncProgress] = useState<{ cached: number; total: number } | null>(null);
+  const [isDraggingShared, setIsDraggingShared] = useState(false);
+  const [isUploadingShared, setIsUploadingShared] = useState(false);
+  const [sharedUploadProgress, setSharedUploadProgress] = useState<number | null>(null);
+  const [sharedUploadError, setSharedUploadError] = useState<string | null>(null);
+  const [sharedMetaOpen, setSharedMetaOpen] = useState(false);
+  const [sharedPickedFile, setSharedPickedFile] = useState<File | null>(null);
+  const [sharedUploadTitle, setSharedUploadTitle] = useState('');
+  const [sharedUploadArtist, setSharedUploadArtist] = useState('');
+  const [sharedUploadBy, setSharedUploadBy] = useState('');
+  const sharedFileInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshLocalTracks = () => {
     getAllOfflineTracks()
-      .then((stored) => {
-        if (isMounted) {
-          setLocalTracks(stored);
-        }
-      })
+      .then((stored) => setLocalTracks(stored))
       .catch((err) => console.warn('[LibraryView] Could not load offline tracks:', err));
+  };
+
+  const refreshSharedTracks = async (autoSync = true) => {
+    setLoadingShared(true);
+    try {
+      const res = await loadSharedOfflineTracks();
+      setSharedTracks(res.tracks);
+      setSharedFromOfflineCache(res.fromOfflineCache);
+      if (autoSync && navigator.onLine && res.tracks.some((t) => !t.isCachedOffline)) {
+        setSyncingShared(true);
+        syncSharedTracksForOffline(res.tracks, (cached, total) => {
+          setSharedSyncProgress({ cached, total });
+        })
+          .then(async () => {
+            const updated = await loadSharedOfflineTracks();
+            setSharedTracks(updated.tracks);
+            setSharedFromOfflineCache(updated.fromOfflineCache);
+          })
+          .finally(() => setSyncingShared(false));
+      }
+    } finally {
+      setLoadingShared(false);
+    }
+  };
+
+  // Load persistently stored tracks from IndexedDB on mount and whenever updated
+  useEffect(() => {
+    refreshLocalTracks();
+    const onOfflineChange = () => refreshLocalTracks();
+    window.addEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
     return () => {
-      isMounted = false;
+      window.removeEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
     };
-  }, []);
+  }, [freemakeModalOpen]);
+
+  // Load Shared Offline catalog & keep synced with changes
+  useEffect(() => {
+    refreshSharedTracks(activeTab === 'shared_offline');
+    const onSharedChange = () => {
+      loadSharedOfflineTracks().then((res) => {
+        setSharedTracks(res.tracks);
+        setSharedFromOfflineCache(res.fromOfflineCache);
+      });
+    };
+    window.addEventListener(SHARED_OFFLINE_CHANGED_EVENT, onSharedChange);
+    return () => {
+      window.removeEventListener(SHARED_OFFLINE_CHANGED_EVENT, onSharedChange);
+    };
+  }, [activeTab, isOnline]);
+
+  useEffect(() => {
+    if (currentUser?.username && !sharedUploadBy) {
+      setSharedUploadBy(currentUser.username);
+    }
+  }, [currentUser?.username]);
 
   const handleAudioFiles = async (files: FileList | File[]) => {
     const audioFiles = Array.from(files).filter(
-      (f) => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i.test(f.name)
+      (f) => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|aac|ogg|opus|mp4|webm)$/i.test(f.name)
     );
     if (audioFiles.length === 0) return;
 
@@ -191,6 +277,126 @@ export const LibraryView: React.FC = () => {
     }
     setLocalTracks((prev) => [...parsed, ...prev]);
     setIsProcessingFiles(false);
+  };
+
+  const handleSharedFilesUpload = async (files: FileList | File[]) => {
+    const pickedList = Array.from(files);
+    const validFiles = pickedList.filter(
+      (f) =>
+        f.type.startsWith('audio/') ||
+        f.type.startsWith('video/') ||
+        f.type === 'application/octet-stream' ||
+        f.type === '' ||
+        /\.(mp3|wav|flac|m4a|m4b|m4r|aac|ogg|oga|opus|webm|mp4|m4v|mov|mkv|avi|3gp|wma|aif|aiff|caf|amr|mpeg|mpga|ts)$/i.test(
+          f.name
+        )
+    );
+    if (validFiles.length === 0) {
+      const msg = '音声・動画ファイル（MP3 / WAV / FLAC / M4A / OGG / MP4 / MOV 等）を選択してください';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
+    if (!navigator.onLine) {
+      const msg = 'オフライン中は共有サーバーへアップロードできません（オンライン接続時に実行してください）';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
+
+    // Snapshot file payloads synchronously so input element resets cannot invalidate handles
+    const snapshots = validFiles.map((f) => ({
+      blob: f.slice(0, f.size, f.type || 'audio/mpeg'),
+      name: f.name,
+    }));
+
+    setSharedUploadError(null);
+    setSharedUploadProgress(0);
+    setIsUploadingShared(true);
+    let successCount = 0;
+    try {
+      for (let i = 0; i < snapshots.length; i++) {
+        const snap = snapshots[i];
+        const useCustomMeta = snapshots.length === 1 && sharedMetaOpen;
+        const uploaded = await uploadSharedOfflineFile(snap.blob, {
+          filename: snap.name,
+          title: useCustomMeta && sharedUploadTitle.trim() ? sharedUploadTitle.trim() : undefined,
+          artist: useCustomMeta && sharedUploadArtist.trim() ? sharedUploadArtist.trim() : undefined,
+          uploadedBy: sharedUploadBy.trim() || currentUser?.username || 'ゲスト',
+          onProgress: (pct) => {
+            const overall = Math.round(((i + pct / 100) / snapshots.length) * 100);
+            setSharedUploadProgress(overall);
+          },
+        });
+        setSharedTracks((prev) => [uploaded, ...prev.filter((t) => t.id !== uploaded.id)]);
+        successCount++;
+      }
+      setSharedPickedFile(null);
+      setSharedUploadTitle('');
+      setSharedUploadArtist('');
+      showToast(
+        `${successCount}曲を「共有オフライン」に公開＆オフライン再生用に保存しました`,
+        'success',
+        3800
+      );
+    } catch (err: any) {
+      const errMsg = err?.message || '共有オフラインへのアップロードに失敗しました';
+      setSharedUploadError(errMsg);
+      showToast(errMsg, 'warning', 4500);
+    } finally {
+      setIsUploadingShared(false);
+      setSharedUploadProgress(null);
+      if (sharedFileInputRef.current) {
+        sharedFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handlePublishLocalToShared = async (track: Track) => {
+    if (!navigator.onLine) {
+      showToast('オフライン中は共有公開できません', 'warning');
+      return;
+    }
+    setPublishingTrackId(track.id);
+    try {
+      const uploaded = await publishOfflineTrackToShared(
+        track,
+        currentUser?.username || sharedUploadBy.trim() || 'ゲスト'
+      );
+      setSharedTracks((prev) => [uploaded, ...prev.filter((t) => t.id !== uploaded.id)]);
+      showToast(`「${track.title}」を共有オフラインに公開しました`, 'success', 3400, {
+        label: '共有オフラインを開く',
+        onClick: () => setActiveTab('shared_offline'),
+      });
+    } catch (err: any) {
+      showToast(err?.message || '共有公開に失敗しました', 'warning');
+    } finally {
+      setPublishingTrackId(null);
+    }
+  };
+
+  const handleManualSyncShared = async () => {
+    if (!navigator.onLine) {
+      showToast('現在オフラインのため同期できません', 'warning');
+      return;
+    }
+    setSyncingShared(true);
+    try {
+      const fresh = await loadSharedOfflineTracks();
+      setSharedTracks(fresh.tracks);
+      const res = await syncSharedTracksForOffline(fresh.tracks, (cached, total) => {
+        setSharedSyncProgress({ cached, total });
+      });
+      const after = await loadSharedOfflineTracks();
+      setSharedTracks(after.tracks);
+      showToast(
+        `共有オフライン同期完了（${res.cached} / ${res.total}曲がオフライン再生可能）`,
+        'success',
+        3200
+      );
+    } finally {
+      setSyncingShared(false);
+    }
   };
 
   const handleSeedDemo = async () => {
@@ -210,6 +416,14 @@ export const LibraryView: React.FC = () => {
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleAudioFiles(e.dataTransfer.files);
+    }
+  };
+
+  const handleSharedDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingShared(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleSharedFilesUpload(e.dataTransfer.files);
     }
   };
 
@@ -593,7 +807,24 @@ export const LibraryView: React.FC = () => {
             }`}
           >
             <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
-            <span>ローカル音源 ({localTracks.length})</span>
+            <span>オフライン ({localTracks.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('shared_offline');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'shared_offline' && subCategory === 'none'
+                ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5 text-emerald-400" />
+            <span>共有オフライン ({sharedTracks.length})</span>
           </button>
         </div>
       </div>
@@ -1368,6 +1599,15 @@ export const LibraryView: React.FC = () => {
                       </button>
                       <button
                         type="button"
+                        onClick={() => openFreemakeModal(track)}
+                        className="p-1.5 text-neutral-400 hover:text-sky-400 cursor-pointer"
+                        title="ダウンロード・保存"
+                        aria-label="ダウンロード・保存"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => openTrackDetailModal(track)}
                         className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
                         title="楽曲の詳細"
@@ -1455,6 +1695,15 @@ export const LibraryView: React.FC = () => {
                       title="プレイリストに追加"
                     >
                       <ListPlus className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openFreemakeModal(track)}
+                      className="p-1.5 text-neutral-400 hover:text-sky-400 cursor-pointer"
+                      title="ダウンロード・保存"
+                      aria-label="ダウンロード・保存"
+                    >
+                      <Download className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
@@ -2406,6 +2655,15 @@ export const LibraryView: React.FC = () => {
                           </button>
                           <button
                             type="button"
+                            onClick={() => openFreemakeModal(track)}
+                            className="p-1.5 text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                            title="ダウンロード・保存"
+                            aria-label="ダウンロード・保存"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => openTrackDetailModal(track)}
                             className="p-1.5 text-neutral-400 hover:text-white transition-colors cursor-pointer"
                             title="楽曲の詳細"
@@ -2513,6 +2771,15 @@ export const LibraryView: React.FC = () => {
                           <div className="flex items-center gap-1.5 shrink-0">
                             <button
                               type="button"
+                              onClick={() => openFreemakeModal(track)}
+                              className="p-1.5 text-neutral-400 hover:text-sky-400 cursor-pointer"
+                              title="ダウンロード・保存"
+                              aria-label="ダウンロード・保存"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => openTrackDetailModal(track)}
                               className="p-1.5 text-neutral-400 hover:text-white cursor-pointer"
                               title="楽曲の詳細"
@@ -2550,18 +2817,18 @@ export const LibraryView: React.FC = () => {
         </div>
       )}
 
-      {/* Local Tracks View */}
+      {/* Offline & Local Tracks View */}
       {subCategory === 'none' && activeTab === 'local' && (
         <div className="space-y-6">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-6 bg-gradient-to-r from-cyan-950/40 via-neutral-900 to-blue-950/40 border border-cyan-500/20 rounded-2xl shadow-xl">
             <div className="flex items-center gap-4">
               <div className="w-16 h-16 rounded-xl bg-cyan-600 flex items-center justify-center text-white shadow-xl shadow-cyan-600/30 shrink-0">
-                <FolderDown className="w-8 h-8" />
+                <HardDrive className="w-8 h-8" />
               </div>
               <div>
-                <h2 className="text-xl font-bold text-white">ローカル音源</h2>
-                <p className="text-xs text-neutral-400 mt-0.5">
-                  {localTracks.length}曲
+                <h2 className="text-xl font-bold text-white">オフライン音源</h2>
+                <p className="text-xs text-neutral-300 mt-0.5">
+                  {localTracks.length}曲 • ダウンロードした曲は自動でここに追加され、オフラインでも再生できます
                 </p>
               </div>
             </div>
@@ -2570,7 +2837,7 @@ export const LibraryView: React.FC = () => {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus"
+                accept="audio/*,video/*,.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.mp4,.webm"
                 multiple
                 onChange={(e) => e.target.files && handleAudioFiles(e.target.files)}
                 className="hidden"
@@ -2585,7 +2852,17 @@ export const LibraryView: React.FC = () => {
                 title="音源ファイルが手元にない場合でも、ブラウザ内で直接Lo-Fiサウンドを自動合成してオフライン再生を即座に試せます"
               >
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>{isAddingDemo ? '生成中...' : '🎵 サンプル音源を追加'}</span>
+                <span>{isAddingDemo ? '生成中...' : 'サンプル音源を追加'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => openFreemakeModal(currentTrack)}
+                className="px-3.5 py-2.5 bg-sky-600/20 hover:bg-sky-600/35 text-sky-300 border border-sky-500/40 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer"
+                title="Freemakeでダウンロード・変換した曲は自動でここに追加されます"
+              >
+                <Download className="w-3.5 h-3.5 text-sky-400" />
+                <span>Freemake ダウンロード</span>
               </button>
 
               <button
@@ -2595,14 +2872,14 @@ export const LibraryView: React.FC = () => {
                 className="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-lg shadow-cyan-600/20 transition-transform active:scale-95 cursor-pointer"
               >
                 <UploadCloud className="w-4 h-4" />
-                <span>{isProcessingFiles ? '保存中...' : 'ファイルを選択'}</span>
+                <span>{isProcessingFiles ? '保存中...' : 'ファイルを追加'}</span>
               </button>
 
               {localTracks.length > 0 && (
                 <button
                   type="button"
                   onClick={() => playTrack(localTracks[0], localTracks)}
-                  className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2"
+                  className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 cursor-pointer"
                 >
                   <Play className="w-4 h-4 fill-current" />
                   <span>すべて再生</span>
@@ -2620,26 +2897,26 @@ export const LibraryView: React.FC = () => {
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-8 sm:p-10 text-center transition-all cursor-pointer ${
+            className={`border-2 border-dashed rounded-2xl p-7 sm:p-9 text-center transition-all cursor-pointer ${
               isDragging
                 ? 'border-cyan-400 bg-cyan-950/30 scale-[1.01]'
                 : 'border-neutral-700/60 hover:border-neutral-600 bg-neutral-900/30'
             }`}
           >
-            <div className="max-w-md mx-auto space-y-3">
-              <div className="w-14 h-14 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400 shadow-inner">
-                <FileAudio className="w-7 h-7" />
+            <div className="max-w-md mx-auto space-y-2.5">
+              <div className="w-12 h-12 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400 shadow-inner">
+                <FileAudio className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-white">
-                  ここに音声ファイルをドラッグ＆ドロップ
+                <h3 className="text-sm sm:text-base font-bold text-white">
+                  ここに音声ファイルをドラッグ＆ドロップして自分専用オフラインへ保存
                 </h3>
                 <p className="text-xs text-neutral-400 mt-1">
-                  またはクリックしてパソコン・スマホ内のMP3、WAV、FLAC、M4Aファイルを選択
+                  みんなに共有したい曲は「共有オフライン」タブか、下の公開ボタンから公開できます
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                {['.MP3', '.WAV', '.FLAC', '.M4A', '.AAC'].map((ext) => (
+                {['.MP3', '.WAV', '.FLAC', '.M4A', '.AAC', '.OGG'].map((ext) => (
                   <span
                     key={ext}
                     className="text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-800 text-neutral-400 border border-neutral-700/50"
@@ -2657,52 +2934,438 @@ export const LibraryView: React.FC = () => {
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Music className="w-4 h-4 text-cyan-400" />
-                  <span>読み込み済みのローカル曲 ({localTracks.length})</span>
+                  <span>保存済みのオフライン曲 ({localTracks.length})</span>
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => setLocalTracks([])}
-                  className="text-xs text-neutral-500 hover:text-red-400 transition-colors"
-                >
-                  すべてクリア
-                </button>
               </div>
 
               <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
-                {localTracks.map((track, idx) => {
+                {localTracks
+                  .filter((t) => matchesQuery(t.title) || matchesQuery(t.artist))
+                  .map((track) => {
+                    const isCurrent = currentTrack?.id === track.id;
+                    const isPublishing = publishingTrackId === track.id;
+                    return (
+                      <div
+                        key={track.id}
+                        className={`flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/50 group transition-colors ${
+                          isCurrent ? 'bg-cyan-950/20' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => playTrack(track, localTracks)}
+                          className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-cyan-400 hover:bg-neutral-700 transition-colors shrink-0 cursor-pointer"
+                        >
+                          <Play className="w-4 h-4 fill-current ml-0.5" />
+                        </button>
+
+                        <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
+                          <FileAudio className="w-5 h-5" />
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <p
+                            onClick={() => playTrack(track, localTracks)}
+                            className={`text-sm font-semibold truncate cursor-pointer hover:underline ${
+                              isCurrent ? 'text-cyan-400 font-bold' : 'text-white'
+                            }`}
+                          >
+                            {track.title}
+                          </p>
+                          <p className="text-xs text-neutral-400 truncate">
+                            {track.artist} • {track.album || 'オフライン保存'}
+                          </p>
+                        </div>
+
+                        <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300 text-[10px] font-semibold shrink-0">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>オフラインOK</span>
+                        </span>
+
+                        <span className="text-xs font-mono text-neutral-400 shrink-0">
+                          {track.duration}
+                        </span>
+
+                        <button
+                          type="button"
+                          disabled={isPublishing}
+                          onClick={() => handlePublishLocalToShared(track)}
+                          title="この曲を「共有オフライン」に公開して全員で聴けるようにする"
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50"
+                        >
+                          {isPublishing ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Globe className="w-3.5 h-3.5" />
+                          )}
+                          <span className="hidden md:inline">共有に公開</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => playNext(track)}
+                          title="次に再生"
+                          aria-label="次に再生"
+                          className="p-2 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <ListStart className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openAddToPlaylistModal(track)}
+                          title="プレイリストに追加"
+                          className="p-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                        >
+                          <ListPlus className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => removeLocalTrack(track.id)}
+                          title="削除"
+                          className="p-2 text-neutral-500 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Shared Offline Library (誰でもアップロードしてオフラインでも全員が聴ける) */}
+      {subCategory === 'none' && activeTab === 'shared_offline' && (
+        <div className="space-y-6">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-6 bg-gradient-to-r from-emerald-950/45 via-neutral-900 to-teal-950/45 border border-emerald-500/25 rounded-2xl shadow-xl">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-xl shadow-emerald-600/30 shrink-0">
+                <Globe className="w-8 h-8" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-xl font-bold text-white">共有オフライン</h2>
+                  {(!isOnline || sharedFromOfflineCache) && (
+                    <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold flex items-center gap-1">
+                      <WifiOff className="w-3 h-3" />
+                      オフライン再生モード
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-neutral-300">
+                  誰でもファイルをアップロードして共有でき、自動キャッシュ後はオフラインの状況下でも誰が出した曲でも再生できます
+                </p>
+                <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px]">
+                  <span className="px-2 py-0.5 rounded bg-neutral-800/90 text-neutral-300 font-mono">
+                    共有曲数: {sharedTracks.length}曲
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/35 text-emerald-300 font-mono">
+                    オフライン再生可能: {sharedTracks.filter((t) => t.isCachedOffline).length} / {sharedTracks.length}曲
+                  </span>
+                  {syncingShared && sharedSyncProgress && (
+                    <span className="px-2 py-0.5 rounded bg-sky-950/80 border border-sky-500/35 text-sky-300 flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      自動同期中 ({sharedSyncProgress.cached}/{sharedSyncProgress.total})
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <input
+                ref={sharedFileInputRef}
+                type="file"
+                accept="audio/*,video/*,.mp3,.wav,.flac,.m4a,.m4b,.m4r,.aac,.ogg,.oga,.opus,.webm,.mp4,.m4v,.mov,.mkv,.avi,.3gp,.wma,.aif,.aiff,.caf,.amr"
+                multiple
+                onChange={(e) => {
+                  const files = e.target.files ? Array.from(e.target.files) : [];
+                  if (files.length > 0) {
+                    if (sharedMetaOpen && files.length === 1) {
+                      const f = files[0];
+                      setSharedPickedFile(f);
+                      setSharedUploadError(null);
+                      const base = f.name.replace(/\.[^/.]+$/, '');
+                      if (base.includes(' - ')) {
+                        const parts = base.split(' - ');
+                        setSharedUploadArtist(parts[0].trim());
+                        setSharedUploadTitle(parts.slice(1).join(' - ').trim());
+                      } else {
+                        setSharedUploadTitle(base);
+                      }
+                    } else {
+                      handleSharedFilesUpload(files);
+                    }
+                  }
+                }}
+                className="hidden"
+              />
+
+              <button
+                type="button"
+                disabled={!isOnline || syncingShared}
+                onClick={handleManualSyncShared}
+                className="px-3.5 py-2.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-45 text-emerald-300 border border-emerald-500/30 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                title="みんながアップロードした曲を端末のオフライン領域へすべて同期します"
+              >
+                {syncingShared ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>オフライン同期</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isUploadingShared}
+                onClick={() => {
+                  if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
+                  sharedFileInputRef.current?.click();
+                }}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-45 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-emerald-600/25 transition-all active:scale-95 cursor-pointer"
+              >
+                {isUploadingShared ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <UploadCloud className="w-4 h-4" />
+                )}
+                <span>
+                  {isUploadingShared
+                    ? `アップロード中${sharedUploadProgress !== null ? ` (${sharedUploadProgress}%)` : '...'}`
+                    : 'ファイルをアップロードして共有'}
+                </span>
+              </button>
+
+              {sharedTracks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => playTrack(sharedTracks[0], sharedTracks)}
+                  className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 cursor-pointer"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>すべて再生</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Public Shared Offline Dropzone & Optional Metadata Form */}
+          <div className="space-y-3">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDraggingShared(true);
+              }}
+              onDragLeave={() => setIsDraggingShared(false)}
+              onDrop={handleSharedDrop}
+              onClick={() => {
+                if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
+                sharedFileInputRef.current?.click();
+              }}
+              className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer ${
+                isDraggingShared
+                  ? 'border-emerald-400 bg-emerald-950/30 scale-[1.01]'
+                  : 'border-emerald-700/40 hover:border-emerald-500/70 bg-neutral-900/35'
+              }`}
+            >
+              <div className="max-w-lg mx-auto space-y-2.5">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-950/70 border border-emerald-500/35 flex items-center justify-center mx-auto text-emerald-400">
+                  {isUploadingShared ? (
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                  ) : (
+                    <Cloud className="w-6 h-6" />
+                  )}
+                </div>
+                <h3 className="text-sm sm:text-base font-bold text-white">
+                  {isUploadingShared
+                    ? `共有オフラインへアップロード中${sharedUploadProgress !== null ? ` (${sharedUploadProgress}%)` : '...'}`
+                    : 'ここにファイルをドロップして「共有オフライン」に公開'}
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  ログイン不要で誰でもアップロード可能（最大150MB・分割送信対応）。公開した曲は他ユーザーの端末にも自動キャッシュされ、オフライン環境でも再生できます。
+                </p>
+                {isUploadingShared && sharedUploadProgress !== null && (
+                  <div className="max-w-xs mx-auto pt-1">
+                    <div className="h-1.5 w-full rounded-full bg-neutral-800 overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-200"
+                        style={{ width: `${sharedUploadProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {sharedUploadError && (
+              <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-red-950/60 border border-red-500/40 text-xs text-red-200">
+                <span>エラー: {sharedUploadError}</span>
+                <button
+                  type="button"
+                  onClick={() => setSharedUploadError(null)}
+                  className="text-red-300 hover:text-white cursor-pointer"
+                  aria-label="閉じる"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between px-1">
+              <button
+                type="button"
+                onClick={() => setSharedMetaOpen((v) => !v)}
+                className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>{sharedMetaOpen ? '詳細入力フォームを閉じる' : '曲名・投稿者名を指定してアップロードする'}</span>
+              </button>
+            </div>
+
+            {sharedMetaOpen && (
+              <div className="p-4 rounded-2xl bg-neutral-900/80 border border-emerald-500/25 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                      曲名 (任意)
+                    </label>
+                    <input
+                      type="text"
+                      value={sharedUploadTitle}
+                      onChange={(e) => setSharedUploadTitle(e.target.value)}
+                      placeholder="空欄ならファイル名から自動設定"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                      アーティスト名 (任意)
+                    </label>
+                    <input
+                      type="text"
+                      value={sharedUploadArtist}
+                      onChange={(e) => setSharedUploadArtist(e.target.value)}
+                      placeholder="アーティスト名"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                      投稿者名 (ニックネーム)
+                    </label>
+                    <input
+                      type="text"
+                      value={sharedUploadBy}
+                      onChange={(e) => setSharedUploadBy(e.target.value)}
+                      placeholder="ゲスト"
+                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => sharedFileInputRef.current?.click()}
+                    className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 font-semibold cursor-pointer"
+                  >
+                    {sharedPickedFile ? `選択中: ${sharedPickedFile.name}` : 'ファイルを選択...'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!sharedPickedFile || isUploadingShared || !isOnline}
+                    onClick={() => {
+                      if (sharedPickedFile) handleSharedFilesUpload([sharedPickedFile]);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {isUploadingShared ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
+                    <span>アップロードして共有</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Shared Offline Tracks List */}
+          {loadingShared && sharedTracks.length === 0 ? (
+            <div className="py-16 text-center text-xs text-neutral-400 flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+              <span>共有オフライン楽曲を読み込み中...</span>
+            </div>
+          ) : sharedTracks.length === 0 ? (
+            <div className="py-16 text-center space-y-2 text-neutral-400 bg-neutral-900/30 border border-neutral-800/70 rounded-2xl">
+              <Globe className="w-10 h-10 mx-auto text-neutral-600" />
+              <p className="text-sm font-semibold text-neutral-300">
+                まだ共有オフラインに曲がありません
+              </p>
+              <p className="text-xs text-neutral-500">
+                上のエリアから音声ファイルをアップロードすると、誰でもオンライン・オフラインの両方で聴けるようになります。
+              </p>
+            </div>
+          ) : (
+            <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
+              {sharedTracks
+                .filter(
+                  (t) =>
+                    matchesQuery(t.title) ||
+                    matchesQuery(t.artist) ||
+                    matchesQuery(t.uploadedBy)
+                )
+                .map((track) => {
                   const isCurrent = currentTrack?.id === track.id;
+                  const canPlayNow = Boolean(track.isCachedOffline || isOnline);
+                  const sizeMb = track.fileSize
+                    ? `${(track.fileSize / (1024 * 1024)).toFixed(1)}MB`
+                    : '';
                   return (
                     <div
                       key={track.id}
-                      className={`flex items-center gap-3.5 px-4 py-3 hover:bg-neutral-800/50 group transition-colors ${
-                        isCurrent ? 'bg-cyan-950/20' : ''
-                      }`}
+                      className={`flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/50 group transition-colors ${
+                        isCurrent ? 'bg-emerald-950/25' : ''
+                      } ${!canPlayNow ? 'opacity-60' : ''}`}
                     >
                       <button
                         type="button"
-                        onClick={() => playTrack(track, localTracks)}
-                        className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-cyan-400 hover:bg-neutral-700 transition-colors shrink-0"
+                        disabled={!canPlayNow}
+                        onClick={() => playTrack(track, sharedTracks)}
+                        className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-300 hover:text-emerald-400 hover:bg-neutral-700 disabled:opacity-40 transition-colors shrink-0 cursor-pointer"
                       >
                         <Play className="w-4 h-4 fill-current ml-0.5" />
                       </button>
 
-                      <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
+                      <div className="w-10 h-10 rounded-lg bg-emerald-950/80 border border-emerald-500/25 flex items-center justify-center text-emerald-400 shrink-0">
                         <FileAudio className="w-5 h-5" />
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <p
-                          onClick={() => playTrack(track, localTracks)}
+                          onClick={() => canPlayNow && playTrack(track, sharedTracks)}
                           className={`text-sm font-semibold truncate cursor-pointer hover:underline ${
-                            isCurrent ? 'text-cyan-400 font-bold' : 'text-white'
+                            isCurrent ? 'text-emerald-400 font-bold' : 'text-white'
                           }`}
                         >
                           {track.title}
                         </p>
                         <p className="text-xs text-neutral-400 truncate">
-                          {track.artist} • ローカル音源
+                          {track.artist} • 投稿: {track.uploadedBy || 'ゲスト'}
+                          {sizeMb ? ` • ${sizeMb}` : ''}
                         </p>
                       </div>
+
+                      {track.isCachedOffline ? (
+                        <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/35 text-emerald-300 text-[10px] font-bold shrink-0">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>オフライン再生OK</span>
+                        </span>
+                      ) : (
+                        <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-neutral-800 text-neutral-400 text-[10px] shrink-0">
+                          {isOnline ? 'オンライン/要同期' : '未キャッシュ'}
+                        </span>
+                      )}
 
                       <span className="text-xs font-mono text-neutral-400 shrink-0">
                         {track.duration}
@@ -2720,25 +3383,44 @@ export const LibraryView: React.FC = () => {
 
                       <button
                         type="button"
-                        onClick={() => openAddToPlaylistModal(track)}
-                        title="プレイリストに追加"
-                        className="p-2 text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                        onClick={async () => {
+                          try {
+                            await copySharedTrackToMyOffline(track);
+                            showToast(`「${track.title}」をマイ・オフラインにも保存しました`, 'success');
+                          } catch {
+                            showToast('マイ・オフラインへの保存に失敗しました', 'warning');
+                          }
+                        }}
+                        title="マイ・オフラインにも複製保存"
+                        className="p-2 text-neutral-400 hover:text-cyan-400 transition-colors cursor-pointer"
                       >
-                        <ListPlus className="w-4 h-4" />
+                        <FolderDown className="w-4 h-4" />
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => removeLocalTrack(track.id)}
-                        title="削除"
-                        className="p-2 text-neutral-500 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {(isAdmin ||
+                        !track.uploadedBy ||
+                        track.uploadedBy === 'ゲスト' ||
+                        track.uploadedBy === currentUser?.username) && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await deleteSharedOfflineTrack(track.id);
+                              setSharedTracks((prev) => prev.filter((x) => x.id !== track.id));
+                              showToast(`「${track.title}」を削除しました`, 'info');
+                            } catch {
+                              showToast('削除に失敗しました', 'warning');
+                            }
+                          }}
+                          title="共有オフラインから削除"
+                          className="p-2 text-neutral-500 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
-              </div>
             </div>
           )}
         </div>

@@ -143,6 +143,13 @@
     --color-cyan-500: oklch(71.5% .143 215.221);
     --color-cyan-600: oklch(60.9% .126 221.723);
     --color-cyan-950: oklch(30.2% .056 229.695);
+    --color-sky-200: oklch(90.1% .058 230.902);
+    --color-sky-300: oklch(82.8% .111 230.318);
+    --color-sky-400: oklch(74.6% .16 232.661);
+    --color-sky-500: oklch(68.5% .169 237.323);
+    --color-sky-600: oklch(58.8% .158 241.966);
+    --color-sky-900: oklch(39.1% .09 240.876);
+    --color-sky-950: oklch(29.3% .066 243.157);
     --color-blue-300: oklch(80.9% .105 251.813);
     --color-blue-400: oklch(70.7% .165 254.624);
     --color-blue-500: oklch(62.3% .214 259.815);
@@ -166,6 +173,7 @@
     --color-pink-500: oklch(65.6% .241 354.308);
     --color-pink-600: oklch(59.2% .249 .584);
     --color-pink-950: oklch(28.4% .109 3.907);
+    --color-rose-200: oklch(89.2% .058 10.001);
     --color-rose-300: oklch(81% .117 11.638);
     --color-rose-400: oklch(71.2% .194 13.428);
     --color-rose-500: oklch(64.5% .246 16.439);
@@ -834,6 +842,10 @@
     z-index: 60;
   }
 
+  .z-\[65\] {
+    z-index: 65;
+  }
+
   .z-\[70\] {
     z-index: 70;
   }
@@ -1247,6 +1259,10 @@
 
   .h-32 {
     height: calc(var(--spacing) * 32);
+  }
+
+  .h-36 {
+    height: calc(var(--spacing) * 36);
   }
 
   .h-40 {
@@ -2533,6 +2549,16 @@
     }
   }
 
+  .border-cyan-500\/35 {
+    border-color: #00b7d759;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-cyan-500\/35 {
+      border-color: color-mix(in oklab, var(--color-cyan-500) 35%, transparent);
+    }
+  }
+
   .border-cyan-500\/40 {
     border-color: #00b7d766;
   }
@@ -2541,6 +2567,10 @@
     .border-cyan-500\/40 {
       border-color: color-mix(in oklab, var(--color-cyan-500) 40%, transparent);
     }
+  }
+
+  .border-emerald-400 {
+    border-color: var(--color-emerald-400);
   }
 
   .border-emerald-500 {
@@ -2579,6 +2609,16 @@
 
   .border-emerald-600 {
     border-color: var(--color-emerald-600);
+  }
+
+  .border-emerald-600\/30 {
+    border-color: #0097674d;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-emerald-600\/30 {
+      border-color: color-mix(in oklab, var(--color-emerald-600) 30%, transparent);
+    }
   }
 
   .border-emerald-600\/60 {
@@ -3043,6 +3083,60 @@
     border-color: var(--color-rose-800);
   }
 
+  .border-sky-400 {
+    border-color: var(--color-sky-400);
+  }
+
+  .border-sky-400\/30 {
+    border-color: #00bcfe4d;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-sky-400\/30 {
+      border-color: color-mix(in oklab, var(--color-sky-400) 30%, transparent);
+    }
+  }
+
+  .border-sky-500\/25 {
+    border-color: #00a5ef40;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-sky-500\/25 {
+      border-color: color-mix(in oklab, var(--color-sky-500) 25%, transparent);
+    }
+  }
+
+  .border-sky-500\/30 {
+    border-color: #00a5ef4d;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-sky-500\/30 {
+      border-color: color-mix(in oklab, var(--color-sky-500) 30%, transparent);
+    }
+  }
+
+  .border-sky-500\/35 {
+    border-color: #00a5ef59;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-sky-500\/35 {
+      border-color: color-mix(in oklab, var(--color-sky-500) 35%, transparent);
+    }
+  }
+
+  .border-sky-500\/40 {
+    border-color: #00a5ef66;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .border-sky-500\/40 {
+      border-color: color-mix(in oklab, var(--color-sky-500) 40%, transparent);
+    }
+  }
+
   .border-transparent {
     border-color: #0000;
   }
@@ -3157,6 +3251,10 @@
     background-color: #0d0e12;
   }
 
+  .bg-\[\#0d0f14\] {
+    background-color: #0d0f14;
+  }
+
   .bg-\[\#0e0e12\] {
     background-color: #0e0e12;
   }
@@ -3187,6 +3285,10 @@
 
   .bg-\[\#73d2b0\] {
     background-color: #73d2b0;
+  }
+
+  .bg-\[\#090b0f\] {
+    background-color: #090b0f;
   }
 
   .bg-\[\#006450\] {
@@ -3271,6 +3373,10 @@
 
   .bg-\[\#101014\]\/95 {
     background-color: oklab(17.4911% .00219619 -.00790821 / .95);
+  }
+
+  .bg-\[\#101219\] {
+    background-color: #101219;
   }
 
   .bg-\[\#111114\] {
@@ -3693,6 +3799,16 @@
     }
   }
 
+  .bg-cyan-500\/15 {
+    background-color: #00b7d726;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-cyan-500\/15 {
+      background-color: color-mix(in oklab, var(--color-cyan-500) 15%, transparent);
+    }
+  }
+
   .bg-cyan-500\/20 {
     background-color: #00b7d733;
   }
@@ -3814,6 +3930,16 @@
   @supports (color: color-mix(in lab, red, red)) {
     .bg-emerald-950\/50 {
       background-color: color-mix(in oklab, var(--color-emerald-950) 50%, transparent);
+    }
+  }
+
+  .bg-emerald-950\/60 {
+    background-color: #002c2299;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-emerald-950\/60 {
+      background-color: color-mix(in oklab, var(--color-emerald-950) 60%, transparent);
     }
   }
 
@@ -4353,6 +4479,16 @@
     background-color: var(--color-rose-950);
   }
 
+  .bg-rose-950\/50 {
+    background-color: #4d021880;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-rose-950\/50 {
+      background-color: color-mix(in oklab, var(--color-rose-950) 50%, transparent);
+    }
+  }
+
   .bg-rose-950\/60 {
     background-color: #4d021899;
   }
@@ -4360,6 +4496,70 @@
   @supports (color: color-mix(in lab, red, red)) {
     .bg-rose-950\/60 {
       background-color: color-mix(in oklab, var(--color-rose-950) 60%, transparent);
+    }
+  }
+
+  .bg-sky-500\/20 {
+    background-color: #00a5ef33;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-500\/20 {
+      background-color: color-mix(in oklab, var(--color-sky-500) 20%, transparent);
+    }
+  }
+
+  .bg-sky-600 {
+    background-color: var(--color-sky-600);
+  }
+
+  .bg-sky-600\/15 {
+    background-color: #0084cc26;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-600\/15 {
+      background-color: color-mix(in oklab, var(--color-sky-600) 15%, transparent);
+    }
+  }
+
+  .bg-sky-600\/20 {
+    background-color: #0084cc33;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-600\/20 {
+      background-color: color-mix(in oklab, var(--color-sky-600) 20%, transparent);
+    }
+  }
+
+  .bg-sky-600\/25 {
+    background-color: #0084cc40;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-600\/25 {
+      background-color: color-mix(in oklab, var(--color-sky-600) 25%, transparent);
+    }
+  }
+
+  .bg-sky-950\/50 {
+    background-color: #052f4a80;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-950\/50 {
+      background-color: color-mix(in oklab, var(--color-sky-950) 50%, transparent);
+    }
+  }
+
+  .bg-sky-950\/60 {
+    background-color: #052f4a99;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-sky-950\/60 {
+      background-color: color-mix(in oklab, var(--color-sky-950) 60%, transparent);
     }
   }
 
@@ -4472,6 +4672,11 @@
 
   .from-\[\#0a0a0f\] {
     --tw-gradient-from: #0a0a0f;
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .from-\[\#0e1522\] {
+    --tw-gradient-from: #0e1522;
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
   }
 
@@ -4812,6 +5017,20 @@
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
   }
 
+  .from-red-950\/30 {
+    --tw-gradient-from: #4608094d;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .from-red-950\/30 {
+      --tw-gradient-from: color-mix(in oklab, var(--color-red-950) 30%, transparent);
+    }
+  }
+
+  .from-red-950\/30 {
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
   .from-red-950\/35 {
     --tw-gradient-from: #46080959;
   }
@@ -4873,6 +5092,30 @@
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
   }
 
+  .from-sky-500 {
+    --tw-gradient-from: var(--color-sky-500);
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .from-sky-600 {
+    --tw-gradient-from: var(--color-sky-600);
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .from-sky-600\/80 {
+    --tw-gradient-from: #0084cccc;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .from-sky-600\/80 {
+      --tw-gradient-from: color-mix(in oklab, var(--color-sky-600) 80%, transparent);
+    }
+  }
+
+  .from-sky-600\/80 {
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
   .via-\[\#1c3d6e\] {
     --tw-gradient-via: #1c3d6e;
     --tw-gradient-via-stops: var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-via) var(--tw-gradient-via-position), var(--tw-gradient-to) var(--tw-gradient-to-position);
@@ -4917,6 +5160,12 @@
 
   .via-\[\#110103\] {
     --tw-gradient-via: #110103;
+    --tw-gradient-via-stops: var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-via) var(--tw-gradient-via-position), var(--tw-gradient-to) var(--tw-gradient-to-position);
+    --tw-gradient-stops: var(--tw-gradient-via-stops);
+  }
+
+  .via-\[\#111520\] {
+    --tw-gradient-via: #111520;
     --tw-gradient-via-stops: var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-via) var(--tw-gradient-via-position), var(--tw-gradient-to) var(--tw-gradient-to-position);
     --tw-gradient-stops: var(--tw-gradient-via-stops);
   }
@@ -5197,6 +5446,11 @@
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
   }
 
+  .to-\[\#17111a\] {
+    --tw-gradient-to: #17111a;
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
   .to-\[\#040001\] {
     --tw-gradient-to: #040001;
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
@@ -5319,6 +5573,30 @@
   }
 
   .to-black\/90 {
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .to-blue-600 {
+    --tw-gradient-to: var(--color-blue-600);
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .to-blue-700 {
+    --tw-gradient-to: var(--color-blue-700);
+    --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+  }
+
+  .to-blue-700\/80 {
+    --tw-gradient-to: #1447e6cc;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .to-blue-700\/80 {
+      --tw-gradient-to: color-mix(in oklab, var(--color-blue-700) 80%, transparent);
+    }
+  }
+
+  .to-blue-700\/80 {
     --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
   }
 
@@ -6020,6 +6298,10 @@
     overflow-wrap: break-word;
   }
 
+  .break-all {
+    word-break: break-all;
+  }
+
   .whitespace-nowrap {
     white-space: nowrap;
   }
@@ -6236,12 +6518,28 @@
     }
   }
 
+  .text-rose-200 {
+    color: var(--color-rose-200);
+  }
+
   .text-rose-300 {
     color: var(--color-rose-300);
   }
 
   .text-rose-400 {
     color: var(--color-rose-400);
+  }
+
+  .text-sky-200 {
+    color: var(--color-sky-200);
+  }
+
+  .text-sky-300 {
+    color: var(--color-sky-300);
+  }
+
+  .text-sky-400 {
+    color: var(--color-sky-400);
   }
 
   .text-transparent {
@@ -6345,6 +6643,10 @@
 
   .accent-red-600 {
     accent-color: var(--color-red-600);
+  }
+
+  .accent-sky-500 {
+    accent-color: var(--color-sky-500);
   }
 
   .opacity-0 {
@@ -6663,6 +6965,16 @@
     }
   }
 
+  .shadow-emerald-900\/40 {
+    --tw-shadow-color: #004e3b66;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .shadow-emerald-900\/40 {
+      --tw-shadow-color: color-mix(in oklab, color-mix(in oklab, var(--color-emerald-900) 40%, transparent) var(--tw-shadow-alpha), transparent);
+    }
+  }
+
   .shadow-emerald-950 {
     --tw-shadow-color: oklch(26.2% .051 172.552);
   }
@@ -6880,6 +7192,26 @@
   @supports (color: color-mix(in lab, red, red)) {
     .shadow-rose-950\/60 {
       --tw-shadow-color: color-mix(in oklab, color-mix(in oklab, var(--color-rose-950) 60%, transparent) var(--tw-shadow-alpha), transparent);
+    }
+  }
+
+  .shadow-sky-900\/40 {
+    --tw-shadow-color: #024a7066;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .shadow-sky-900\/40 {
+      --tw-shadow-color: color-mix(in oklab, color-mix(in oklab, var(--color-sky-900) 40%, transparent) var(--tw-shadow-alpha), transparent);
+    }
+  }
+
+  .shadow-sky-950\/40 {
+    --tw-shadow-color: #052f4a66;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .shadow-sky-950\/40 {
+      --tw-shadow-color: color-mix(in oklab, color-mix(in oklab, var(--color-sky-950) 40%, transparent) var(--tw-shadow-alpha), transparent);
     }
   }
 
@@ -7353,6 +7685,10 @@
       }
     }
 
+    .hover\:border-emerald-400:hover {
+      border-color: var(--color-emerald-400);
+    }
+
     .hover\:border-emerald-400\/70:hover {
       border-color: #00d294b3;
     }
@@ -7559,6 +7895,10 @@
 
     .hover\:bg-cyan-500:hover {
       background-color: var(--color-cyan-500);
+    }
+
+    .hover\:bg-emerald-500:hover {
+      background-color: var(--color-emerald-500);
     }
 
     .hover\:bg-emerald-500\/20:hover {
@@ -7845,6 +8185,50 @@
       }
     }
 
+    .hover\:bg-sky-500:hover {
+      background-color: var(--color-sky-500);
+    }
+
+    .hover\:bg-sky-500\/20:hover {
+      background-color: #00a5ef33;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-sky-500\/20:hover {
+        background-color: color-mix(in oklab, var(--color-sky-500) 20%, transparent);
+      }
+    }
+
+    .hover\:bg-sky-600\/25:hover {
+      background-color: #0084cc40;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-sky-600\/25:hover {
+        background-color: color-mix(in oklab, var(--color-sky-600) 25%, transparent);
+      }
+    }
+
+    .hover\:bg-sky-600\/30:hover {
+      background-color: #0084cc4d;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-sky-600\/30:hover {
+        background-color: color-mix(in oklab, var(--color-sky-600) 30%, transparent);
+      }
+    }
+
+    .hover\:bg-sky-600\/35:hover {
+      background-color: #0084cc59;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-sky-600\/35:hover {
+        background-color: color-mix(in oklab, var(--color-sky-600) 35%, transparent);
+      }
+    }
+
     .hover\:bg-white\/5:hover {
       background-color: #ffffff0d;
     }
@@ -7924,8 +8308,18 @@
       --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
     }
 
+    .hover\:from-sky-500:hover {
+      --tw-gradient-from: var(--color-sky-500);
+      --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+    }
+
     .hover\:to-\[\#b91c1c\]:hover {
       --tw-gradient-to: #b91c1c;
+      --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
+    }
+
+    .hover\:to-blue-500:hover {
+      --tw-gradient-to: var(--color-blue-500);
       --tw-gradient-stops: var(--tw-gradient-via-stops, var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position));
     }
 
@@ -8022,6 +8416,14 @@
       color: var(--color-red-500);
     }
 
+    .hover\:text-sky-200:hover {
+      color: var(--color-sky-200);
+    }
+
+    .hover\:text-sky-400:hover {
+      color: var(--color-sky-400);
+    }
+
     .hover\:text-white:hover {
       color: var(--color-white);
     }
@@ -8078,6 +8480,10 @@
     .focus\:border-red-500\/80:focus {
       border-color: color-mix(in oklab, var(--color-red-500) 80%, transparent);
     }
+  }
+
+  .focus\:border-sky-500:focus {
+    border-color: var(--color-sky-500);
   }
 
   .focus\:ring-1:focus {
@@ -8412,6 +8818,10 @@
 
     .sm\:grid-cols-4 {
       grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .sm\:grid-cols-5 {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
     }
 
     .sm\:grid-cols-10 {
@@ -22184,6 +22594,38 @@ var Guitar = createLucideIcon("guitar", [
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var HardDriveDownload = createLucideIcon("hard-drive-download", [
+	["path", {
+		d: "M12 2v8",
+		key: "1q4o3n"
+	}],
+	["path", {
+		d: "m16 6-4 4-4-4",
+		key: "6wukr"
+	}],
+	["rect", {
+		width: "20",
+		height: "8",
+		x: "2",
+		y: "14",
+		rx: "2",
+		key: "w68u3i"
+	}],
+	["path", {
+		d: "M6 18h.01",
+		key: "uhywen"
+	}],
+	["path", {
+		d: "M10 18h.01",
+		key: "h775k"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var HardDrive = createLucideIcon("hard-drive", [
 	["line", {
 		x1: "22",
@@ -23254,6 +23696,34 @@ var Server = createLucideIcon("server", [
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var Settings2 = createLucideIcon("settings-2", [
+	["path", {
+		d: "M14 17H5",
+		key: "gfn3mx"
+	}],
+	["path", {
+		d: "M19 7h-9",
+		key: "6i9tg"
+	}],
+	["circle", {
+		cx: "17",
+		cy: "17",
+		r: "3",
+		key: "18b49y"
+	}],
+	["circle", {
+		cx: "7",
+		cy: "7",
+		r: "3",
+		key: "dfmy0x"
+	}]
+]);
+/**
+* @license lucide-react v0.546.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var Settings = createLucideIcon("settings", [["path", {
 	d: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",
 	key: "1i5ecw"
@@ -24212,7 +24682,7 @@ function openOfflineDB() {
 /**
 * Save an audio file (File or Blob) to IndexedDB for offline playback
 */
-async function saveOfflineTrack(file, title, artist = "ローカル音源", album = "オフライン保存", durationSeconds = 180, durationText = "3:00") {
+async function saveOfflineTrack(file, title, artist = "ローカル音源", album = "オフライン保存", durationSeconds = 180, durationText = "3:00", thumbnail, fileExt = "mp3") {
 	const db = await openOfflineDB();
 	const id = `offline_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 	const fileType = file.type || "audio/mpeg";
@@ -24223,9 +24693,9 @@ async function saveOfflineTrack(file, title, artist = "ローカル音源", albu
 		album,
 		duration: durationText,
 		durationSeconds,
-		thumbnail: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces",
+		thumbnail: thumbnail || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces",
 		blob: file,
-		fileName: file instanceof File ? file.name : `${title}.mp3`,
+		fileName: file instanceof File ? file.name : `${title}.${fileExt}`,
 		fileType,
 		addedAt: Date.now()
 	};
@@ -25575,6 +26045,82 @@ var EQ_PRESETS = {
 		],
 		bassBoost: 0
 	},
+	freemake_studio: {
+		id: "freemake_studio",
+		label: "Freemake スタジオ (Studio)",
+		description: "Freemake Audio Engine推奨の温かみのあるワイド・マスタリングカーブ",
+		gains: [
+			4,
+			3,
+			1,
+			-1,
+			0,
+			2,
+			3,
+			4,
+			4,
+			3
+		],
+		bassBoost: 3,
+		isFreemake: true
+	},
+	freemake_bass: {
+		id: "freemake_bass",
+		label: "Freemake 重低音 (Deep Bass)",
+		description: "Freemake重低音アルゴリズムによるタイトなサブベース＆パンチ強化",
+		gains: [
+			10,
+			8,
+			5,
+			2,
+			0,
+			0,
+			1,
+			2,
+			3,
+			2
+		],
+		bassBoost: 9,
+		isFreemake: true
+	},
+	freemake_clear: {
+		id: "freemake_clear",
+		label: "Freemake 高精細 (Hi-Res)",
+		description: "圧縮音源の高音域倍音を補完し透明感のあるボーカルを再現",
+		gains: [
+			1,
+			1,
+			0,
+			1,
+			2,
+			4,
+			5,
+			6,
+			7,
+			6
+		],
+		bassBoost: 1,
+		isFreemake: true
+	},
+	freemake_live: {
+		id: "freemake_live",
+		label: "Freemake ライブ (Live)",
+		description: "コンサートホールの臨場感と音の広がりを演出するダイナミック特性",
+		gains: [
+			5,
+			4,
+			2,
+			0,
+			1,
+			2,
+			4,
+			5,
+			6,
+			5
+		],
+		bassBoost: 4,
+		isFreemake: true
+	},
 	bass_boost: {
 		id: "bass_boost",
 		label: "重低音ブースト (Bass Boost)",
@@ -25746,7 +26292,8 @@ var EqualizerService = class {
 					enabled: parsed.enabled !== void 0 ? !!parsed.enabled : true,
 					preset: parsed.preset || "flat",
 					gains: parsed.gains.map((g) => Math.max(-12, Math.min(12, Number(g) || 0))),
-					bassBoost: Math.max(0, Math.min(12, Number(parsed.bassBoost) || 0))
+					bassBoost: Math.max(0, Math.min(12, Number(parsed.bassBoost) || 0)),
+					freemakeNormalize: Boolean(parsed.freemakeNormalize)
 				};
 			}
 		} catch (e) {
@@ -25767,7 +26314,8 @@ var EqualizerService = class {
 				0,
 				0
 			],
-			bassBoost: 0
+			bassBoost: 0,
+			freemakeNormalize: false
 		};
 	}
 	saveSettings() {
@@ -25948,6 +26496,10 @@ var EqualizerService = class {
 		this.settings.bassBoost = clamped;
 		this.settings.preset = "custom";
 		this.applyToAudioNodes();
+		this.saveSettings();
+	}
+	setFreemakeNormalize(enabled) {
+		this.settings.freemakeNormalize = enabled;
 		this.saveSettings();
 	}
 	resetToFlat() {
@@ -26941,7 +27493,54 @@ var PlayerProvider = ({ children }) => {
 	const [danmakuEnabled, setDanmakuEnabled] = (0, import_react.useState)(true);
 	const [commentsModalOpen, setCommentsModalOpen] = (0, import_react.useState)(false);
 	const [dmModalOpen, setDmModalOpen] = (0, import_react.useState)(false);
+	const [dmUiVisible, setDmUiVisible] = (0, import_react.useState)(() => {
+		try {
+			return localStorage.getItem("yt_music_dm_ui_visible_v1") === "false" ? false : true;
+		} catch {
+			return true;
+		}
+	});
 	const [dmTargetUser, setDmTargetUser] = (0, import_react.useState)(null);
+	const [freemakeModalOpen, setFreemakeModalOpen] = (0, import_react.useState)(false);
+	const [freemakeTargetTrack, setFreemakeTargetTrack] = (0, import_react.useState)(null);
+	(0, import_react.useEffect)(() => {
+		try {
+			localStorage.setItem("yt_music_dm_ui_visible_v1", String(dmUiVisible));
+		} catch {}
+		if (!dmUiVisible) setDmModalOpen(false);
+	}, [dmUiVisible]);
+	const [toastNotification, setToastNotification] = (0, import_react.useState)(null);
+	const toastTimerRef = (0, import_react.useRef)(null);
+	(0, import_react.useEffect)(() => {
+		return () => {
+			if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+		};
+	}, []);
+	const showToast = (0, import_react.useCallback)((message, type = "info", duration = 4e3, action) => {
+		if (toastTimerRef.current) {
+			clearTimeout(toastTimerRef.current);
+			toastTimerRef.current = null;
+		}
+		const payload = {
+			message,
+			type,
+			action
+		};
+		setToastNotification(payload);
+		toastTimerRef.current = setTimeout(() => {
+			setToastNotification((prev) => prev === payload ? null : prev);
+			toastTimerRef.current = null;
+		}, duration);
+	}, []);
+	const toggleDmUiVisible = (0, import_react.useCallback)(() => {
+		const next = !dmUiVisible;
+		setDmUiVisible(next);
+		showToast(next ? "DM（ダイレクトメッセージ）UIを表示しました" : "DM（ダイレクトメッセージ）UIを非表示にしました（アカウント設定からいつでも再表示できます）", "info", 3e3);
+	}, [dmUiVisible, showToast]);
+	const openFreemakeModal = (0, import_react.useCallback)((track) => {
+		setFreemakeTargetTrack(track || null);
+		setFreemakeModalOpen(true);
+	}, []);
 	const [notificationDrawerOpen, setNotificationDrawerOpen] = (0, import_react.useState)(false);
 	const [unreadNotificationCount, setUnreadNotificationCount] = (0, import_react.useState)(0);
 	const [termsModalOpen, setTermsModalOpen] = (0, import_react.useState)(false);
@@ -26963,9 +27562,13 @@ var PlayerProvider = ({ children }) => {
 	const [matchModalOpen, setMatchModalOpen] = (0, import_react.useState)(false);
 	const [collabModalOpen, setCollabModalOpen] = (0, import_react.useState)(false);
 	const openDmWithUser = (0, import_react.useCallback)((username) => {
+		if (!dmUiVisible) {
+			showToast("DMのUIは現在非表示です（アカウント設定から再表示できます）", "info", 2800);
+			return;
+		}
 		if (username) setDmTargetUser(username);
 		setDmModalOpen(true);
-	}, []);
+	}, [dmUiVisible, showToast]);
 	const refreshNotifications = (0, import_react.useCallback)(async () => {
 		if (!currentUser) {
 			setUnreadNotificationCount(0);
@@ -27093,7 +27696,8 @@ var PlayerProvider = ({ children }) => {
 				audioQuality,
 				floatingLyricsOverlay,
 				canvasEnabled,
-				backgroundPlaybackEnabled
+				backgroundPlaybackEnabled,
+				dmUiVisible
 			}
 		};
 	}, [
@@ -27112,7 +27716,8 @@ var PlayerProvider = ({ children }) => {
 		audioQuality,
 		floatingLyricsOverlay,
 		canvasEnabled,
-		backgroundPlaybackEnabled
+		backgroundPlaybackEnabled,
+		dmUiVisible
 	]);
 	const snapshotRef = (0, import_react.useRef)(buildLibrarySnapshot());
 	snapshotRef.current = buildLibrarySnapshot();
@@ -27166,6 +27771,7 @@ var PlayerProvider = ({ children }) => {
 			if (typeof lib.settings.floatingLyricsOverlay === "boolean") setFloatingLyricsOverlay(lib.settings.floatingLyricsOverlay);
 			if (typeof lib.settings.canvasEnabled === "boolean") setCanvasEnabled(lib.settings.canvasEnabled);
 			if (typeof lib.settings.backgroundPlaybackEnabled === "boolean") setBackgroundPlaybackEnabled(lib.settings.backgroundPlaybackEnabled);
+			if (typeof lib.settings.dmUiVisible === "boolean") setDmUiVisible(lib.settings.dmUiVisible);
 		}
 		setTimeout(() => {
 			applyingRemoteSyncRef.current = false;
@@ -28141,29 +28747,6 @@ var PlayerProvider = ({ children }) => {
 			}
 			return next;
 		});
-	}, []);
-	const [toastNotification, setToastNotification] = (0, import_react.useState)(null);
-	const toastTimerRef = (0, import_react.useRef)(null);
-	(0, import_react.useEffect)(() => {
-		return () => {
-			if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-		};
-	}, []);
-	const showToast = (0, import_react.useCallback)((message, type = "info", duration = 4e3, action) => {
-		if (toastTimerRef.current) {
-			clearTimeout(toastTimerRef.current);
-			toastTimerRef.current = null;
-		}
-		const payload = {
-			message,
-			type,
-			action
-		};
-		setToastNotification(payload);
-		toastTimerRef.current = setTimeout(() => {
-			setToastNotification((prev) => prev === payload ? null : prev);
-			toastTimerRef.current = null;
-		}, duration);
 	}, []);
 	const cycleShuffleMode = (0, import_react.useCallback)(async () => {
 		setShuffleMode((prev) => {
@@ -29156,8 +29739,15 @@ var PlayerProvider = ({ children }) => {
 			setCommentsModalOpen,
 			dmModalOpen,
 			setDmModalOpen,
+			dmUiVisible,
+			setDmUiVisible,
+			toggleDmUiVisible,
 			dmTargetUser,
 			openDmWithUser,
+			freemakeModalOpen,
+			setFreemakeModalOpen,
+			freemakeTargetTrack,
+			openFreemakeModal,
 			notificationDrawerOpen,
 			setNotificationDrawerOpen,
 			unreadNotificationCount,
@@ -29976,7 +30566,7 @@ function getSearchConversions(input) {
 }
 // src/components/TopNavbar.tsx
 var TopNavbar = () => {
-	const { activeView, navigateTo, searchQuery, setSearchQuery, addRecentSearch, setInspectorOpen, setImportModalOpen, currentUser, setAccountModalOpen, stats, onlineCount, isAdmin, setAdminModalOpen, setEqModalOpen, setDmModalOpen, setNotificationDrawerOpen, unreadNotificationCount, setTermsModalOpen, setQuizModalOpen, setMatchModalOpen, setCollabModalOpen, playerMode, setPlayerMode, setVideoLayout, currentTrack, queue, playTrack, setWrappedModalOpen, deviceMode, setDeviceMode } = usePlayer();
+	const { activeView, navigateTo, searchQuery, setSearchQuery, addRecentSearch, setInspectorOpen, setImportModalOpen, currentUser, setAccountModalOpen, stats, onlineCount, isAdmin, setAdminModalOpen, setEqModalOpen, setDmModalOpen, dmUiVisible, openFreemakeModal, setNotificationDrawerOpen, unreadNotificationCount, setTermsModalOpen, setQuizModalOpen, setMatchModalOpen, setCollabModalOpen, playerMode, setPlayerMode, setVideoLayout, currentTrack, queue, playTrack, setWrappedModalOpen, deviceMode, setDeviceMode } = usePlayer();
 	const isPC = deviceMode === "pc";
 	const isMobile = !isPC;
 	const [localInput, setLocalInput] = (0, import_react.useState)(searchQuery);
@@ -30183,7 +30773,7 @@ var TopNavbar = () => {
 							className: `transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${activeView === "party" ? "text-red-400 font-bold" : "text-neutral-400 hover:text-white"}`,
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "同時聴きラウンジ" })]
 						}),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						dmUiVisible && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: () => setDmModalOpen(true),
 							className: "text-neutral-400 hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer",
@@ -30336,7 +30926,7 @@ var TopNavbar = () => {
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Users, { className: "w-3.5 h-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "共同作成" })]
 							})
 						] }),
-						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+						dmUiVisible && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 							type: "button",
 							onClick: () => setDmModalOpen(true),
 							title: "ユーザー間DMチャット（曲やプレイリストのプライベート交換）",
@@ -30407,11 +30997,21 @@ var TopNavbar = () => {
 						isPC && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 							type: "button",
 							onClick: () => setEqModalOpen(true),
-							title: "イコライザー & 重低音ブースト",
+							title: "Freemake イコライザー & 重低音ブースト",
 							className: "flex px-2.5 sm:px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-amber-400 border border-neutral-800 rounded-lg text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-3.5 h-3.5 text-amber-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 								className: "hidden lg:inline",
 								children: "EQ"
+							})]
+						}),
+						isPC && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => openFreemakeModal(currentTrack),
+							title: "Freemake ダウンロード & 形式変換 (MP3/M4A/FLAC/WAV/MP4)",
+							className: "flex px-2.5 sm:px-3 py-2 bg-sky-600/15 hover:bg-sky-600/25 text-sky-300 hover:text-white border border-sky-500/35 rounded-lg text-xs font-semibold items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-3.5 h-3.5 text-sky-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "hidden lg:inline",
+								children: "Freemake"
 							})]
 						}),
 						isPC && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
@@ -30535,7 +31135,7 @@ function formatSeconds$5(secs) {
 	return `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
 }
 var PlayerBar = () => {
-	const { currentTrack, isPlaying, togglePlay, progress, duration, seekTo, nextTrack, prevTrack, volume, setVolume, isMuted, toggleMute, repeatMode, cycleRepeat, isShuffle, toggleShuffle, shuffleMode, cycleShuffleMode, playbackRate, setPlaybackRate, playerMode, setPlayerMode, setVideoLayout, lyricsOpen, setLyricsOpen, queueOpen, setQueueOpen, likedTrackIds, toggleLikeTrack, navigateTo, queue, queueIndex, backgroundPlaybackEnabled, toggleBackgroundPlayback, wakeLockActive, toggleWakeLock, setBgGuideOpen, crossfadeDuration, setCrossfadeDuration, endlessRadioActive, toggleEndlessRadio, emotionRadioMood, startRadioForTrack, digestMode, toggleDigestMode, digestRemainingSec, trackTimestamps, openAddToPlaylistModal, eqModalOpen, setEqModalOpen, openShareModal, floatingPlayerVisible, setFloatingPlayerVisible, setFloatingPlayerCollapsed, commentsModalOpen, setCommentsModalOpen, danmakuEnabled, setDanmakuEnabled, setStoryModalOpen, openVisualShareCard, setConnectModalOpen, fullScreenPlayerOpen, setFullScreenPlayerOpen, deviceMode, openTrackDetailModal } = usePlayer();
+	const { currentTrack, isPlaying, togglePlay, progress, duration, seekTo, nextTrack, prevTrack, volume, setVolume, isMuted, toggleMute, repeatMode, cycleRepeat, isShuffle, toggleShuffle, shuffleMode, cycleShuffleMode, playbackRate, setPlaybackRate, playerMode, setPlayerMode, setVideoLayout, lyricsOpen, setLyricsOpen, queueOpen, setQueueOpen, likedTrackIds, toggleLikeTrack, navigateTo, queue, queueIndex, backgroundPlaybackEnabled, toggleBackgroundPlayback, wakeLockActive, toggleWakeLock, setBgGuideOpen, crossfadeDuration, setCrossfadeDuration, endlessRadioActive, toggleEndlessRadio, emotionRadioMood, startRadioForTrack, digestMode, toggleDigestMode, digestRemainingSec, trackTimestamps, openAddToPlaylistModal, eqModalOpen, setEqModalOpen, openShareModal, floatingPlayerVisible, setFloatingPlayerVisible, setFloatingPlayerCollapsed, commentsModalOpen, setCommentsModalOpen, danmakuEnabled, setDanmakuEnabled, setStoryModalOpen, openVisualShareCard, setConnectModalOpen, fullScreenPlayerOpen, setFullScreenPlayerOpen, deviceMode, openTrackDetailModal, openFreemakeModal } = usePlayer();
 	const [crossfadeMenuOpen, setCrossfadeMenuOpen] = (0, import_react.useState)(false);
 	const [speedMenuOpen, setSpeedMenuOpen] = (0, import_react.useState)(false);
 	const [isHoveringProgress, setIsHoveringProgress] = (0, import_react.useState)(false);
@@ -31006,9 +31606,16 @@ var PlayerBar = () => {
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
 							onClick: () => setEqModalOpen((prev) => !prev),
-							title: "10バンド・オーディオイコライザー & 重低音ブースト",
+							title: "Freemake イコライザー & 重低音ブースト",
 							className: `p-2 rounded-lg transition-colors ${eqModalOpen ? "bg-red-600/20 text-red-400" : "text-neutral-400 hover:text-red-400"}`,
 							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-4 h-4 md:w-5 md:h-5" })
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: () => openFreemakeModal(currentTrack),
+							title: "Freemake ダウンロード & 変換 (MP3/M4A/FLAC/WAV/MP4)",
+							className: "p-2 rounded-lg text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer",
+							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4 md:w-5 md:h-5" })
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 							type: "button",
@@ -33870,7 +34477,7 @@ var AddToPlaylistModal = () => {
 };
 // src/components/AccountModal.tsx
 var AccountModal = () => {
-	const { currentUser, accountModalOpen, setAccountModalOpen, registerUserAccount, loginUserAccount, logoutAccount, userPlaylists, stats, onlineCount, refreshStats, isAdmin, setAdminModalOpen, adminLoginWithPassword, setTermsModalOpen, likedTracks, followedArtists, recentTracks, currentTrack, playTrack, pinnedBestTracks, setPinnedBestTracks, lastCloudSyncAt, isSyncingCloud, syncAccountNow } = usePlayer();
+	const { currentUser, accountModalOpen, setAccountModalOpen, registerUserAccount, loginUserAccount, logoutAccount, userPlaylists, stats, onlineCount, refreshStats, isAdmin, setAdminModalOpen, adminLoginWithPassword, setTermsModalOpen, likedTracks, followedArtists, recentTracks, currentTrack, playTrack, pinnedBestTracks, setPinnedBestTracks, lastCloudSyncAt, isSyncingCloud, syncAccountNow, dmUiVisible, toggleDmUiVisible } = usePlayer();
 	const [authMode, setAuthMode] = (0, import_react.useState)("register");
 	const [username, setUsername] = (0, import_react.useState)("");
 	const [password, setPassword] = (0, import_react.useState)("");
@@ -34057,665 +34664,692 @@ var AccountModal = () => {
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "overflow-y-auto space-y-4 py-4 pr-1 text-neutral-200",
-					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "p-3.5 rounded-xl bg-gradient-to-r from-neutral-900 via-neutral-900 to-emerald-950/20 border border-neutral-800 shadow-md",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "flex items-center justify-between pb-2 mb-2 border-b border-neutral-800/60 text-xs",
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "p-3.5 rounded-xl bg-gradient-to-r from-neutral-900 via-neutral-900 to-emerald-950/20 border border-neutral-800 shadow-md",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex items-center gap-1.5 text-neutral-300 font-semibold",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-3.5 h-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "システム稼働実績テレメトリ（偽りなしの実測値）" })]
-							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-								type: "button",
-								onClick: refreshStats,
-								className: "text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer",
-								title: "数値を更新",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "更新" })]
-							})]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-							className: "grid grid-cols-1 sm:grid-cols-3 gap-3",
-							children: [
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "bg-neutral-950/70 border border-emerald-500/30 rounded-xl p-3 flex items-center gap-3",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "w-9 h-9 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center shrink-0 relative",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "animate-ping absolute inline-flex h-3 w-3 rounded-full bg-emerald-400 opacity-75" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "w-2.5 h-2.5 rounded-full bg-emerald-500" })]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "text-[10px] text-emerald-400/90 font-mono uppercase tracking-wider font-semibold",
-										children: "現在オンライン"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-										className: "text-lg font-black text-white font-mono leading-tight",
-										children: [onlineCount, /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "text-xs font-normal text-emerald-400 ml-1",
-											children: "人"
-										})]
-									})] })]
-								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "bg-neutral-950/70 border border-neutral-800/80 rounded-xl p-3 flex items-center gap-3",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-										className: "w-9 h-9 rounded-lg bg-red-600/20 text-red-400 flex items-center justify-center shrink-0",
-										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-4.5 h-4.5" })
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "text-[10px] text-neutral-400 font-mono uppercase tracking-wider",
-										children: "総アクセス回数"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-										className: "text-lg font-black text-white font-mono leading-tight",
-										children: [stats.totalAccessCount.toLocaleString(), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "text-xs font-normal text-neutral-400 ml-1",
-											children: "回"
-										})]
-									})] })]
-								}),
-								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "bg-neutral-950/70 border border-neutral-800/80 rounded-xl p-3 flex items-center gap-3",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-										className: "w-9 h-9 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center shrink-0",
-										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Users, { className: "w-4.5 h-4.5" })
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "text-[10px] text-neutral-400 font-mono uppercase tracking-wider",
-										children: "登録アカウント数"
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-										className: "text-lg font-black text-white font-mono leading-tight",
-										children: [stats.totalAccountsCount.toLocaleString(), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "text-xs font-normal text-neutral-400 ml-1",
-											children: "人"
-										})]
-									})] })]
-								})
-							]
-						})]
-					}), !currentUser ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "space-y-4",
-						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "flex items-center gap-1 p-1 bg-neutral-900 border border-neutral-800 rounded-xl",
+								className: "flex items-center justify-between pb-2 mb-2 border-b border-neutral-800/60 text-xs",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center gap-1.5 text-neutral-300 font-semibold",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-3.5 h-3.5 text-emerald-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "システム稼働実績テレメトリ（偽りなしの実測値）" })]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: refreshStats,
+									className: "text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer",
+									title: "数値を更新",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "更新" })]
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "grid grid-cols-1 sm:grid-cols-3 gap-3",
 								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-										type: "button",
-										onClick: () => setAuthMode("register"),
-										className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${authMode === "register" ? "bg-neutral-800 text-white shadow" : "text-neutral-400 hover:text-white"}`,
-										children: "新規アカウント登録"
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "bg-neutral-950/70 border border-emerald-500/30 rounded-xl p-3 flex items-center gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "w-9 h-9 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center shrink-0 relative",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "animate-ping absolute inline-flex h-3 w-3 rounded-full bg-emerald-400 opacity-75" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "w-2.5 h-2.5 rounded-full bg-emerald-500" })]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+											className: "text-[10px] text-emerald-400/90 font-mono uppercase tracking-wider font-semibold",
+											children: "現在オンライン"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "text-lg font-black text-white font-mono leading-tight",
+											children: [onlineCount, /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-xs font-normal text-emerald-400 ml-1",
+												children: "人"
+											})]
+										})] })]
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-										type: "button",
-										onClick: () => setAuthMode("login"),
-										className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${authMode === "login" ? "bg-neutral-800 text-white shadow" : "text-neutral-400 hover:text-white"}`,
-										children: "ログイン"
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "bg-neutral-950/70 border border-neutral-800/80 rounded-xl p-3 flex items-center gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "w-9 h-9 rounded-lg bg-red-600/20 text-red-400 flex items-center justify-center shrink-0",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-4.5 h-4.5" })
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+											className: "text-[10px] text-neutral-400 font-mono uppercase tracking-wider",
+											children: "総アクセス回数"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "text-lg font-black text-white font-mono leading-tight",
+											children: [stats.totalAccessCount.toLocaleString(), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-xs font-normal text-neutral-400 ml-1",
+												children: "回"
+											})]
+										})] })]
 									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "button",
-										onClick: () => setAuthMode("admin"),
-										className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 ${authMode === "admin" ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow" : "text-neutral-400 hover:text-amber-400"}`,
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "👑 管理者" })]
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "bg-neutral-950/70 border border-neutral-800/80 rounded-xl p-3 flex items-center gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "w-9 h-9 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center shrink-0",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Users, { className: "w-4.5 h-4.5" })
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+											className: "text-[10px] text-neutral-400 font-mono uppercase tracking-wider",
+											children: "登録アカウント数"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "text-lg font-black text-white font-mono leading-tight",
+											children: [stats.totalAccountsCount.toLocaleString(), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-xs font-normal text-neutral-400 ml-1",
+												children: "人"
+											})]
+										})] })]
 									})
 								]
-							}),
-							authMode === "register" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
-								onSubmit: handleRegister,
-								className: "space-y-3.5 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-										className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)(User, { className: "w-3.5 h-3.5 text-red-500" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ユーザー名" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "text-[10px] text-red-400 font-bold ml-1",
-												children: "必須"
-											})
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										type: "text",
-										value: username,
-										onChange: (e) => setUsername(e.target.value),
-										placeholder: "ユーザー名",
-										className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
-										required: true
-									})] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-										className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "パスワード" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "text-[10px] text-red-400 font-bold ml-1",
-												children: "必須"
-											})
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										type: "password",
-										value: password,
-										onChange: (e) => setPassword(e.target.value),
-										placeholder: "パスワード",
-										className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
-										required: true
-									})] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+							})]
+						}),
+						!currentUser ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "space-y-4",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center gap-1 p-1 bg-neutral-900 border border-neutral-800 rounded-xl",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => setAuthMode("register"),
+											className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${authMode === "register" ? "bg-neutral-800 text-white shadow" : "text-neutral-400 hover:text-white"}`,
+											children: "新規アカウント登録"
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => setAuthMode("login"),
+											className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${authMode === "login" ? "bg-neutral-800 text-white shadow" : "text-neutral-400 hover:text-white"}`,
+											children: "ログイン"
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											onClick: () => setAuthMode("admin"),
+											className: `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 ${authMode === "admin" ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow" : "text-neutral-400 hover:text-amber-400"}`,
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "👑 管理者" })]
+										})
+									]
+								}),
+								authMode === "register" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
+									onSubmit: handleRegister,
+									className: "space-y-3.5 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
 											className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
 											children: [
-												/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Mail, { className: "w-3.5 h-3.5 text-cyan-500" }),
-												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "任意のメールアドレス" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)(User, { className: "w-3.5 h-3.5 text-red-500" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ユーザー名" }),
 												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-													className: "text-[10px] text-neutral-400 ml-1",
-													children: "任意・通知用"
+													className: "text-[10px] text-red-400 font-bold ml-1",
+													children: "必須"
+												})
+											]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "text",
+											value: username,
+											onChange: (e) => setUsername(e.target.value),
+											placeholder: "ユーザー名",
+											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
+											required: true
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+											className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "パスワード" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "text-[10px] text-red-400 font-bold ml-1",
+													children: "必須"
+												})
+											]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "password",
+											value: password,
+											onChange: (e) => setPassword(e.target.value),
+											placeholder: "パスワード",
+											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
+											required: true
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+												className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
+												children: [
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Mail, { className: "w-3.5 h-3.5 text-cyan-500" }),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "任意のメールアドレス" }),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "text-[10px] text-neutral-400 ml-1",
+														children: "任意・通知用"
+													})
+												]
+											}),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+												type: "email",
+												value: email,
+												onChange: (e) => setEmail(e.target.value),
+												placeholder: "メールアドレス",
+												className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors"
+											}),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+												className: "text-[11px] text-neutral-400 mt-1",
+												children: "メールアドレスを入力すると、新着楽曲やバックアップの通知を受け取ることができます。"
+											})
+										] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "submit",
+											disabled: loading || !username.trim() || !password.trim(),
+											className: "w-full py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/20 transition-all cursor-pointer mt-2",
+											children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "アカウントを作成して登録" })]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "text-[11px] text-neutral-400 text-center leading-relaxed pt-1",
+											children: [
+												"アカウントを作成することで、",
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+													type: "button",
+													onClick: () => setTermsModalOpen(true),
+													className: "text-red-400 hover:underline font-semibold mx-1 cursor-pointer",
+													children: "利用規約・DM監査規程・プライバシーポリシー"
+												}),
+												"に同意したものとみなされます。"
+											]
+										})
+									]
+								}) : authMode === "login" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
+									onSubmit: handleLogin,
+									className: "space-y-3.5 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+											className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(User, { className: "w-3.5 h-3.5 text-red-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ユーザー名またはメールアドレス" })]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "text",
+											value: username,
+											onChange: (e) => setUsername(e.target.value),
+											placeholder: "ユーザー名またはメールアドレス",
+											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
+											required: true
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+											className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "パスワード" })]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "password",
+											value: password,
+											onChange: (e) => setPassword(e.target.value),
+											placeholder: "パスワード",
+											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
+											required: true
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "submit",
+											disabled: loading || !username.trim() || !password.trim(),
+											className: "w-full py-2.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 border border-neutral-700 transition-all cursor-pointer mt-2",
+											children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ログイン" })]
+										})
+									]
+								}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
+									onSubmit: handleAdminLogin,
+									className: "space-y-3.5 p-5 rounded-2xl bg-gradient-to-b from-amber-950/20 to-neutral-900/60 border border-amber-500/30",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center gap-2 text-xs text-amber-300 font-bold mb-1",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者マスター認証" })]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+											className: "text-[11px] text-neutral-400",
+											children: "管理者パスワードを入力してログインすると、システム全体統括・ユーザー管理・全体アナウンス配信が可能です。"
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+											className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者パスワード" }),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "text-[10px] text-amber-400 font-bold ml-1",
+													children: "必須"
+												})
+											]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "password",
+											value: adminPassword,
+											onChange: (e) => setAdminPassword(e.target.value),
+											placeholder: "管理者パスワード",
+											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-amber-500 transition-colors font-mono tracking-wider",
+											required: true
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "submit",
+											disabled: loading || !adminPassword.trim(),
+											className: "w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20 transition-all cursor-pointer mt-2",
+											children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者として認証してコンソールを開く" })]
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-3.5 rounded-xl bg-neutral-900/40 border border-neutral-800/70 text-xs text-neutral-400 flex items-center gap-2.5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "w-4 h-4 text-red-400 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ゲストのままでも全機能を利用できます。登録・ログインすると、お気に入り・プレイリスト・再生履歴・フォロー中アーティストがスマホとPC間で自動同期されます。" })]
+								})
+							]
+						}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "space-y-4",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-neutral-900/80 border border-neutral-800 space-y-3",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center gap-3",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+													className: "w-10 h-10 rounded-xl bg-gradient-to-tr from-red-600 to-rose-400 flex items-center justify-center text-white font-bold text-sm shadow-md",
+													children: currentUser.username.charAt(0).toUpperCase()
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "min-w-0",
+													children: [
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															className: "text-xs text-neutral-400",
+															children: "ログイン中のユーザー"
+														}),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															className: "text-sm font-bold text-white font-mono truncate",
+															children: currentUser.username
+														}),
+														currentUser.email ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															className: "text-xs text-neutral-400 font-mono truncate",
+															children: currentUser.email
+														}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															className: "text-[11px] text-neutral-500",
+															children: "メールアドレス未設定"
+														})
+													]
+												})]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+												type: "button",
+												onClick: logoutAccount,
+												className: "px-3 py-1.5 text-xs text-neutral-300 hover:text-red-400 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-auto",
+												title: "ログアウトしてゲストに戻る",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LogOut, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ログアウト" })]
+											})]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "pt-2.5 border-t border-neutral-800/80 space-y-2 text-xs",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "flex flex-wrap items-center justify-between gap-2",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "flex items-center gap-2 text-emerald-400 font-semibold",
+														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Cloud, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "端末間クラウド同期 有効（スマホ・PC共通）" })]
+													}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+														type: "button",
+														disabled: isSyncingCloud,
+														onClick: async () => {
+															const ok = await syncAccountNow();
+															showToast(ok ? "クラウドと最新データを同期しました" : "同期に失敗しました");
+														},
+														className: "px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white border border-neutral-700 text-[11px] font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer",
+														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-3 h-3 ${isSyncingCloud ? "animate-spin text-emerald-400" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isSyncingCloud ? "同期中..." : "今すぐ同期" })]
+													})]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "grid grid-cols-2 gap-1.5 text-[11px] text-neutral-300",
+													children: [
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+															"お気に入り: ",
+															likedTracks.length,
+															"曲"
+														] }),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+															"プレイリスト: ",
+															userPlaylists.length,
+															"件"
+														] }),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+															"フォロー中: ",
+															followedArtists.length,
+															"組"
+														] }),
+														/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+															"履歴: ",
+															recentTracks.length,
+															"曲"
+														] })
+													]
+												}),
+												lastCloudSyncAt && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+													className: "text-[10px] text-neutral-500 font-mono",
+													children: ["最終同期: ", new Date(lastCloudSyncAt).toLocaleString("ja-JP")]
 												})
 											]
 										}),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-											type: "email",
-											value: email,
-											onChange: (e) => setEmail(e.target.value),
-											placeholder: "メールアドレス",
-											className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors"
-										}),
-										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-											className: "text-[11px] text-neutral-400 mt-1",
-											children: "メールアドレスを入力すると、新着楽曲やバックアップの通知を受け取ることができます。"
-										})
-									] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "submit",
-										disabled: loading || !username.trim() || !password.trim(),
-										className: "w-full py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/20 transition-all cursor-pointer mt-2",
-										children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "アカウントを作成して登録" })]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-										className: "text-[11px] text-neutral-400 text-center leading-relaxed pt-1",
-										children: [
-											"アカウントを作成することで、",
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										isAdmin && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "p-3.5 rounded-xl bg-gradient-to-r from-amber-950/40 via-neutral-900 to-amber-950/30 border border-amber-500/40 flex items-center justify-between gap-3 shadow-lg shadow-amber-500/10 mt-2",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center gap-2.5",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-5 h-5 text-amber-400 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+													className: "text-xs font-bold text-white flex items-center gap-1.5",
+													children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "👑 管理者マスター権限" })
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+													className: "text-[11px] text-neutral-400",
+													children: "ユーザー管理・全体アナウンス・オフセット補正"
+												})] })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 												type: "button",
-												onClick: () => setTermsModalOpen(true),
-												className: "text-red-400 hover:underline font-semibold mx-1 cursor-pointer",
-												children: "利用規約・DM監査規程・プライバシーポリシー"
-											}),
-											"に同意したものとみなされます。"
-										]
-									})
-								]
-							}) : authMode === "login" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
-								onSubmit: handleLogin,
-								className: "space-y-3.5 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-										className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(User, { className: "w-3.5 h-3.5 text-red-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ユーザー名またはメールアドレス" })]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										type: "text",
-										value: username,
-										onChange: (e) => setUsername(e.target.value),
-										placeholder: "ユーザー名またはメールアドレス",
-										className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
-										required: true
-									})] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-										className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "パスワード" })]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										type: "password",
-										value: password,
-										onChange: (e) => setPassword(e.target.value),
-										placeholder: "パスワード",
-										className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors",
-										required: true
-									})] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "submit",
-										disabled: loading || !username.trim() || !password.trim(),
-										className: "w-full py-2.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 border border-neutral-700 transition-all cursor-pointer mt-2",
-										children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ログイン" })]
-									})
-								]
-							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", {
-								onSubmit: handleAdminLogin,
-								className: "space-y-3.5 p-5 rounded-2xl bg-gradient-to-b from-amber-950/20 to-neutral-900/60 border border-amber-500/30",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center gap-2 text-xs text-amber-300 font-bold mb-1",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者マスター認証" })]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-										className: "text-[11px] text-neutral-400",
-										children: "管理者パスワードを入力してログインすると、システム全体統括・ユーザー管理・全体アナウンス配信が可能です。"
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-										className: "block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)(KeyRound, { className: "w-3.5 h-3.5 text-amber-500" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者パスワード" }),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "text-[10px] text-amber-400 font-bold ml-1",
-												children: "必須"
-											})
-										]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-										type: "password",
-										value: adminPassword,
-										onChange: (e) => setAdminPassword(e.target.value),
-										placeholder: "管理者パスワード",
-										className: "w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-amber-500 transition-colors font-mono tracking-wider",
-										required: true
-									})] }),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "submit",
-										disabled: loading || !adminPassword.trim(),
-										className: "w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20 transition-all cursor-pointer mt-2",
-										children: [loading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "管理者として認証してコンソールを開く" })]
-									})
-								]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "p-3.5 rounded-xl bg-neutral-900/40 border border-neutral-800/70 text-xs text-neutral-400 flex items-center gap-2.5",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "w-4 h-4 text-red-400 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ゲストのままでも全機能を利用できます。登録・ログインすると、お気に入り・プレイリスト・再生履歴・フォロー中アーティストがスマホとPC間で自動同期されます。" })]
-							})
-						]
-					}) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "space-y-4",
-						children: [
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "p-4 rounded-2xl bg-neutral-900/80 border border-neutral-800 space-y-3",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex flex-col sm:flex-row sm:items-center justify-between gap-3",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center gap-3",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "w-10 h-10 rounded-xl bg-gradient-to-tr from-red-600 to-rose-400 flex items-center justify-center text-white font-bold text-sm shadow-md",
-												children: currentUser.username.charAt(0).toUpperCase()
+												onClick: () => {
+													setAccountModalOpen(false);
+													setAdminModalOpen(true);
+												},
+												className: "px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-lg cursor-pointer transition-all shadow-md shadow-amber-500/20 shrink-0",
+												children: "コンソールを開く"
+											})]
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-gradient-to-br from-neutral-900/90 to-neutral-950 border border-neutral-800 space-y-3",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center justify-between",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center gap-2",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+													className: "w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center",
+													children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Pin, { className: "w-3.5 h-3.5" })
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
+													className: "text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "マイ・オールタイム・ベスト4曲（神曲4選）" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+														className: "text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono",
+														children: [pinnedBestTracks.length, "/4"]
+													})]
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+													className: "text-[11px] text-neutral-400",
+													children: "プロフィールに飾る人生で最も好きな4曲"
+												})] })]
 											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "min-w-0",
+												className: "flex items-center gap-2",
+												children: [pinnedBestTracks.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+													type: "button",
+													onClick: () => playTrack(pinnedBestTracks[0], pinnedBestTracks),
+													className: "px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-lg flex items-center gap-1 cursor-pointer transition-transform active:scale-95",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Play, { className: "w-3 h-3 fill-current" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "連続再生" })]
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+													type: "button",
+													onClick: () => setPinPickerOpen((prev) => !prev),
+													className: "px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium rounded-lg border border-neutral-700 flex items-center gap-1 cursor-pointer",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: pinPickerOpen ? "閉じる" : "追加・編集" })]
+												})]
+											})]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1",
+											children: [
+												0,
+												1,
+												2,
+												3
+											].map((slotIdx) => {
+												const track = pinnedBestTracks[slotIdx];
+												if (track) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "relative group rounded-xl overflow-hidden bg-neutral-950 border border-neutral-800/90 hover:border-amber-500/50 transition-all p-2 flex flex-col justify-between",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "relative aspect-square rounded-lg overflow-hidden bg-neutral-900 mb-2",
+														children: [
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SafeImage, {
+																src: track.thumbnail,
+																alt: track.title,
+																className: "w-full h-full object-cover group-hover:scale-105 transition-transform"
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+																type: "button",
+																onClick: () => playTrack(track, pinnedBestTracks),
+																className: "absolute inset-0 bg-black/40 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity cursor-pointer",
+																children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+																	className: "w-8 h-8 rounded-full bg-amber-500 text-black flex items-center justify-center shadow-lg",
+																	children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Play, { className: "w-4 h-4 fill-current ml-0.5" })
+																})
+															}),
+															/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+																type: "button",
+																onClick: () => handleUnpinTrack(track.id),
+																title: "ピン留め解除",
+																className: "absolute top-1 right-1 p-1 rounded-md bg-black/70 hover:bg-red-600 text-neutral-300 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity",
+																children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-3 h-3" })
+															})
+														]
+													}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "min-w-0",
+														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															onClick: () => playTrack(track, pinnedBestTracks),
+															className: "text-xs font-bold text-white truncate cursor-pointer hover:underline",
+															children: track.title
+														}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+															className: "text-[10px] text-neutral-400 truncate",
+															children: track.artist
+														})]
+													})]
+												}, track.id);
+												return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+													type: "button",
+													onClick: () => setPinPickerOpen(true),
+													className: "h-32 sm:h-auto aspect-square rounded-xl border-2 border-dashed border-neutral-800 hover:border-neutral-700 bg-neutral-950/40 flex flex-col items-center justify-center gap-1.5 text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Disc3, { className: "w-6 h-6 stroke-1 text-neutral-600" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+														className: "text-[10px] font-mono",
+														children: ["枠 ", slotIdx + 1]
+													})]
+												}, slotIdx);
+											})
+										}),
+										pinPickerOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "p-3 bg-neutral-950 border border-neutral-800 rounded-xl space-y-2 animate-fade-in",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center justify-between text-xs",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "font-semibold text-neutral-300",
+													children: "ピン留めする曲を選択:"
+												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "text-[10px] text-neutral-500",
+													children: "お気に入り・再生中から選択"
+												})]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "max-h-40 overflow-y-auto space-y-1 pr-1",
 												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														className: "text-xs text-neutral-400",
-														children: "ログイン中のユーザー"
+													currentTrack && !pinnedBestTracks.some((t) => t.id === currentTrack.id) && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+														className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900 border border-amber-500/30",
+														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+															className: "min-w-0 flex items-center gap-2",
+															children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+																className: "text-[10px] px-1 bg-amber-500/20 text-amber-300 rounded",
+																children: "再生中"
+															}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+																className: "text-xs text-white truncate",
+																children: currentTrack.title
+															})]
+														}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+															type: "button",
+															onClick: () => handlePinTrack(currentTrack),
+															className: "px-2 py-1 bg-amber-500 hover:bg-amber-400 text-black text-[10px] font-bold rounded cursor-pointer",
+															children: "ピン留め"
+														})]
 													}),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														className: "text-sm font-bold text-white font-mono truncate",
-														children: currentUser.username
+													likedTracks.map((lt) => {
+														const isPinned = pinnedBestTracks.some((t) => t.id === lt.id);
+														return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+															className: "flex items-center justify-between p-1.5 rounded-lg hover:bg-neutral-900 transition-colors",
+															children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+																className: "min-w-0 flex items-center gap-2",
+																children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SafeImage, {
+																	src: lt.thumbnail,
+																	alt: lt.title,
+																	className: "w-7 h-7 rounded object-cover"
+																}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+																	className: "min-w-0",
+																	children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+																		className: "text-xs text-white truncate",
+																		children: lt.title
+																	}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+																		className: "text-[10px] text-neutral-400 truncate",
+																		children: lt.artist
+																	})]
+																})]
+															}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+																type: "button",
+																disabled: isPinned,
+																onClick: () => handlePinTrack(lt),
+																className: `px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${isPinned ? "bg-neutral-800 text-neutral-500" : "bg-neutral-800 hover:bg-neutral-700 text-white"}`,
+																children: isPinned ? "登録中" : "追加"
+															})]
+														}, lt.id);
 													}),
-													currentUser.email ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														className: "text-xs text-neutral-400 font-mono truncate",
-														children: currentUser.email
-													}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														className: "text-[11px] text-neutral-500",
-														children: "メールアドレス未設定"
+													likedTracks.length === 0 && !currentTrack && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+														className: "text-xs text-neutral-500 text-center py-3",
+														children: "お気に入りの曲を追加すると、ここに候補が表示されます。"
 													})
+												]
+											})]
+										})
+									]
+								}),
+								currentUser.email ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-neutral-900/50 border border-neutral-800 space-y-3",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center justify-between",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center gap-2",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "w-4 h-4 text-red-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
+													className: "text-xs font-bold text-white uppercase tracking-wider",
+													children: [
+														"メール通知設定 (",
+														currentUser.email,
+														")"
+													]
+												})]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-[11px] text-emerald-400 font-medium",
+												children: "受信有効"
+											})]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "space-y-2.5 text-xs",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+													className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "お気に入りアーティストの新着リリース・MV配信通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+														type: "checkbox",
+														checked: prefs.releases,
+														onChange: (e) => setPrefs({
+															...prefs,
+															releases: e.target.checked
+														}),
+														className: "accent-red-600 rounded cursor-pointer w-4 h-4"
+													})]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+													className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "プレイリスト更新・自動バックアップ完了通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+														type: "checkbox",
+														checked: prefs.playlists,
+														onChange: (e) => setPrefs({
+															...prefs,
+															playlists: e.target.checked
+														}),
+														className: "accent-red-600 rounded cursor-pointer w-4 h-4"
+													})]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
+													className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "高精度同期歌詞（LRC）新規対応通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+														type: "checkbox",
+														checked: prefs.lyrics,
+														onChange: (e) => setPrefs({
+															...prefs,
+															lyrics: e.target.checked
+														}),
+														className: "accent-red-600 rounded cursor-pointer w-4 h-4"
+													})]
+												})
+											]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "pt-2",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+												type: "button",
+												onClick: handleSendTestNotification,
+												disabled: sendingNotification,
+												className: "w-full py-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 hover:text-white border border-red-500/40 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow",
+												children: [sendingNotification ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-3.5 h-3.5 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Send, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "登録メールアドレスへテスト通知を送信" })]
+											})
+										})
+									]
+								}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "p-4 rounded-xl bg-neutral-900/40 border border-neutral-800 text-xs text-neutral-400",
+									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "メールアドレスが登録されていません。通知機能を利用するにはメールアドレスを登録してください。" })
+								}),
+								currentUser.email && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-neutral-900/40 border border-neutral-800 space-y-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center justify-between",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center gap-2",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellRing, { className: "w-4 h-4 text-neutral-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
+												className: "text-xs font-bold text-white uppercase tracking-wider",
+												children: [
+													"配信通知ログ (",
+													notifications.length,
+													"件)"
 												]
 											})]
 										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 											type: "button",
-											onClick: logoutAccount,
-											className: "px-3 py-1.5 text-xs text-neutral-300 hover:text-red-400 rounded-lg bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-auto",
-											title: "ログアウトしてゲストに戻る",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(LogOut, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ログアウト" })]
+											onClick: () => loadNotifications(currentUser.username),
+											className: "text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-3 h-3 ${loadingNotifs ? "animate-spin" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "更新" })]
 										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "pt-2.5 border-t border-neutral-800/80 space-y-2 text-xs",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex flex-wrap items-center justify-between gap-2",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "flex items-center gap-2 text-emerald-400 font-semibold",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Cloud, { className: "w-4 h-4 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "端末間クラウド同期 有効（スマホ・PC共通）" })]
-												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-													type: "button",
-													disabled: isSyncingCloud,
-													onClick: async () => {
-														const ok = await syncAccountNow();
-														showToast(ok ? "クラウドと最新データを同期しました" : "同期に失敗しました");
-													},
-													className: "px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white border border-neutral-700 text-[11px] font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-3 h-3 ${isSyncingCloud ? "animate-spin text-emerald-400" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: isSyncingCloud ? "同期中..." : "今すぐ同期" })]
-												})]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "grid grid-cols-2 gap-1.5 text-[11px] text-neutral-300",
-												children: [
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-														"お気に入り: ",
-														likedTracks.length,
-														"曲"
-													] }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-														"プレイリスト: ",
-														userPlaylists.length,
-														"件"
-													] }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-														"フォロー中: ",
-														followedArtists.length,
-														"組"
-													] }),
-													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-														"履歴: ",
-														recentTracks.length,
-														"曲"
-													] })
-												]
-											}),
-											lastCloudSyncAt && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
-												className: "text-[10px] text-neutral-500 font-mono",
-												children: ["最終同期: ", new Date(lastCloudSyncAt).toLocaleString("ja-JP")]
-											})
-										]
-									}),
-									isAdmin && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "p-3.5 rounded-xl bg-gradient-to-r from-amber-950/40 via-neutral-900 to-amber-950/30 border border-amber-500/40 flex items-center justify-between gap-3 shadow-lg shadow-amber-500/10 mt-2",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center gap-2.5",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ShieldCheck, { className: "w-5 h-5 text-amber-400 shrink-0" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-												className: "text-xs font-bold text-white flex items-center gap-1.5",
-												children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "👑 管理者マスター権限" })
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-												className: "text-[11px] text-neutral-400",
-												children: "ユーザー管理・全体アナウンス・オフセット補正"
-											})] })]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-											type: "button",
-											onClick: () => {
-												setAccountModalOpen(false);
-												setAdminModalOpen(true);
-											},
-											className: "px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-lg cursor-pointer transition-all shadow-md shadow-amber-500/20 shrink-0",
-											children: "コンソールを開く"
-										})]
-									})
-								]
-							}),
-							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "p-4 rounded-2xl bg-gradient-to-br from-neutral-900/90 to-neutral-950 border border-neutral-800 space-y-3",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center justify-between",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center gap-2",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-												className: "w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center",
-												children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Pin, { className: "w-3.5 h-3.5" })
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
-												className: "text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "マイ・オールタイム・ベスト4曲（神曲4選）" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-													className: "text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono",
-													children: [pinnedBestTracks.length, "/4"]
-												})]
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-												className: "text-[11px] text-neutral-400",
-												children: "プロフィールに飾る人生で最も好きな4曲"
-											})] })]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center gap-2",
-											children: [pinnedBestTracks.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-												type: "button",
-												onClick: () => playTrack(pinnedBestTracks[0], pinnedBestTracks),
-												className: "px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-lg flex items-center gap-1 cursor-pointer transition-transform active:scale-95",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Play, { className: "w-3 h-3 fill-current" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "連続再生" })]
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-												type: "button",
-												onClick: () => setPinPickerOpen((prev) => !prev),
-												className: "px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-medium rounded-lg border border-neutral-700 flex items-center gap-1 cursor-pointer",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: pinPickerOpen ? "閉じる" : "追加・編集" })]
-											})]
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-										className: "grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1",
-										children: [
-											0,
-											1,
-											2,
-											3
-										].map((slotIdx) => {
-											const track = pinnedBestTracks[slotIdx];
-											if (track) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "relative group rounded-xl overflow-hidden bg-neutral-950 border border-neutral-800/90 hover:border-amber-500/50 transition-all p-2 flex flex-col justify-between",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "relative aspect-square rounded-lg overflow-hidden bg-neutral-900 mb-2",
-													children: [
-														/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SafeImage, {
-															src: track.thumbnail,
-															alt: track.title,
-															className: "w-full h-full object-cover group-hover:scale-105 transition-transform"
-														}),
-														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-															type: "button",
-															onClick: () => playTrack(track, pinnedBestTracks),
-															className: "absolute inset-0 bg-black/40 backdrop-blur-[2px] opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity cursor-pointer",
-															children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-																className: "w-8 h-8 rounded-full bg-amber-500 text-black flex items-center justify-center shadow-lg",
-																children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Play, { className: "w-4 h-4 fill-current ml-0.5" })
-															})
-														}),
-														/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-															type: "button",
-															onClick: () => handleUnpinTrack(track.id),
-															title: "ピン留め解除",
-															className: "absolute top-1 right-1 p-1 rounded-md bg-black/70 hover:bg-red-600 text-neutral-300 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity",
-															children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-3 h-3" })
-														})
-													]
-												}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "min-w-0",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														onClick: () => playTrack(track, pinnedBestTracks),
-														className: "text-xs font-bold text-white truncate cursor-pointer hover:underline",
-														children: track.title
-													}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-														className: "text-[10px] text-neutral-400 truncate",
-														children: track.artist
-													})]
-												})]
-											}, track.id);
-											return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-												type: "button",
-												onClick: () => setPinPickerOpen(true),
-												className: "h-32 sm:h-auto aspect-square rounded-xl border-2 border-dashed border-neutral-800 hover:border-neutral-700 bg-neutral-950/40 flex flex-col items-center justify-center gap-1.5 text-neutral-500 hover:text-neutral-300 transition-colors cursor-pointer",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Disc3, { className: "w-6 h-6 stroke-1 text-neutral-600" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
-													className: "text-[10px] font-mono",
-													children: ["枠 ", slotIdx + 1]
-												})]
-											}, slotIdx);
-										})
-									}),
-									pinPickerOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "p-3 bg-neutral-950 border border-neutral-800 rounded-xl space-y-2 animate-fade-in",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center justify-between text-xs",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "font-semibold text-neutral-300",
-												children: "ピン留めする曲を選択:"
-											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-												className: "text-[10px] text-neutral-500",
-												children: "お気に入り・再生中から選択"
-											})]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "max-h-40 overflow-y-auto space-y-1 pr-1",
+									}), notifications.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+										className: "py-6 text-center text-xs text-neutral-500",
+										children: "まだ送信履歴がありません。"
+									}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+										className: "max-h-44 overflow-y-auto space-y-2 pr-1",
+										children: notifications.map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "p-2.5 rounded-lg bg-neutral-900/80 border border-neutral-800/80 text-xs space-y-1",
 											children: [
-												currentTrack && !pinnedBestTracks.some((t) => t.id === currentTrack.id) && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-													className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900 border border-amber-500/30",
-													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-														className: "min-w-0 flex items-center gap-2",
-														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-															className: "text-[10px] px-1 bg-amber-500/20 text-amber-300 rounded",
-															children: "再生中"
-														}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-															className: "text-xs text-white truncate",
-															children: currentTrack.title
-														})]
-													}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-														type: "button",
-														onClick: () => handlePinTrack(currentTrack),
-														className: "px-2 py-1 bg-amber-500 hover:bg-amber-400 text-black text-[10px] font-bold rounded cursor-pointer",
-														children: "ピン留め"
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "flex items-center justify-between gap-2",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "font-semibold text-white truncate",
+														children: n.subject
+													}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0",
+														children: "配信完了"
 													})]
 												}),
-												likedTracks.map((lt) => {
-													const isPinned = pinnedBestTracks.some((t) => t.id === lt.id);
-													return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-														className: "flex items-center justify-between p-1.5 rounded-lg hover:bg-neutral-900 transition-colors",
-														children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-															className: "min-w-0 flex items-center gap-2",
-															children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SafeImage, {
-																src: lt.thumbnail,
-																alt: lt.title,
-																className: "w-7 h-7 rounded object-cover"
-															}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-																className: "min-w-0",
-																children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-																	className: "text-xs text-white truncate",
-																	children: lt.title
-																}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-																	className: "text-[10px] text-neutral-400 truncate",
-																	children: lt.artist
-																})]
-															})]
-														}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-															type: "button",
-															disabled: isPinned,
-															onClick: () => handlePinTrack(lt),
-															className: `px-2 py-0.5 rounded text-[10px] font-semibold cursor-pointer ${isPinned ? "bg-neutral-800 text-neutral-500" : "bg-neutral-800 hover:bg-neutral-700 text-white"}`,
-															children: isPinned ? "登録中" : "追加"
-														})]
-													}, lt.id);
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+													className: "text-[11px] text-neutral-400 line-clamp-2",
+													children: n.body
 												}),
-												likedTracks.length === 0 && !currentTrack && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-													className: "text-xs text-neutral-500 text-center py-3",
-													children: "お気に入りの曲を追加すると、ここに候補が表示されます。"
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "flex items-center justify-between text-[10px] text-neutral-500 font-mono pt-1",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: new Date(n.timestamp).toLocaleString("ja-JP") }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: n.deliveryMessageId })]
 												})
 											]
-										})]
-									})
-								]
-							}),
-							currentUser.email ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "p-4 rounded-2xl bg-neutral-900/50 border border-neutral-800 space-y-3",
-								children: [
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center justify-between",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-											className: "flex items-center gap-2",
-											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Bell, { className: "w-4 h-4 text-red-500" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
-												className: "text-xs font-bold text-white uppercase tracking-wider",
-												children: [
-													"メール通知設定 (",
-													currentUser.email,
-													")"
-												]
-											})]
-										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-											className: "text-[11px] text-emerald-400 font-medium",
-											children: "受信有効"
-										})]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "space-y-2.5 text-xs",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-												className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "お気に入りアーティストの新着リリース・MV配信通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-													type: "checkbox",
-													checked: prefs.releases,
-													onChange: (e) => setPrefs({
-														...prefs,
-														releases: e.target.checked
-													}),
-													className: "accent-red-600 rounded cursor-pointer w-4 h-4"
-												})]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-												className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "プレイリスト更新・自動バックアップ完了通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-													type: "checkbox",
-													checked: prefs.playlists,
-													onChange: (e) => setPrefs({
-														...prefs,
-														playlists: e.target.checked
-													}),
-													className: "accent-red-600 rounded cursor-pointer w-4 h-4"
-												})]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", {
-												className: "flex items-center justify-between p-2 rounded-lg bg-neutral-900/80 hover:bg-neutral-800/60 cursor-pointer transition-colors",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "高精度同期歌詞（LRC）新規対応通知" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
-													type: "checkbox",
-													checked: prefs.lyrics,
-													onChange: (e) => setPrefs({
-														...prefs,
-														lyrics: e.target.checked
-													}),
-													className: "accent-red-600 rounded cursor-pointer w-4 h-4"
-												})]
-											})
-										]
-									}),
-									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-										className: "pt-2",
-										children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-											type: "button",
-											onClick: handleSendTestNotification,
-											disabled: sendingNotification,
-											className: "w-full py-2 bg-red-600/20 hover:bg-red-600/30 text-red-300 hover:text-white border border-red-500/40 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow",
-											children: [sendingNotification ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-3.5 h-3.5 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Send, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "登録メールアドレスへテスト通知を送信" })]
-										})
-									})
-								]
-							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-								className: "p-4 rounded-xl bg-neutral-900/40 border border-neutral-800 text-xs text-neutral-400",
-								children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "メールアドレスが登録されていません。通知機能を利用するにはメールアドレスを登録してください。" })
-							}),
-							currentUser.email && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-								className: "p-4 rounded-2xl bg-neutral-900/40 border border-neutral-800 space-y-3",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-									className: "flex items-center justify-between",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "flex items-center gap-2",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(BellRing, { className: "w-4 h-4 text-neutral-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
-											className: "text-xs font-bold text-white uppercase tracking-wider",
-											children: [
-												"配信通知ログ (",
-												notifications.length,
-												"件)"
-											]
-										})]
-									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-										type: "button",
-										onClick: () => loadNotifications(currentUser.username),
-										className: "text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer",
-										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCw, { className: `w-3 h-3 ${loadingNotifs ? "animate-spin" : ""}` }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "更新" })]
+										}, n.id))
 									})]
-								}), notifications.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-									className: "py-6 text-center text-xs text-neutral-500",
-									children: "まだ送信履歴がありません。"
-								}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-									className: "max-h-44 overflow-y-auto space-y-2 pr-1",
-									children: notifications.map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-										className: "p-2.5 rounded-lg bg-neutral-900/80 border border-neutral-800/80 text-xs space-y-1",
-										children: [
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex items-center justify-between gap-2",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-													className: "font-semibold text-white truncate",
-													children: n.subject
-												}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-													className: "px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0",
-													children: "配信完了"
-												})]
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
-												className: "text-[11px] text-neutral-400 line-clamp-2",
-												children: n.body
-											}),
-											/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-												className: "flex items-center justify-between text-[10px] text-neutral-500 font-mono pt-1",
-												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: new Date(n.timestamp).toLocaleString("ja-JP") }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: n.deliveryMessageId })]
-											})
-										]
-									}, n.id))
+								})
+							]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "p-4 rounded-2xl bg-neutral-900/60 border border-neutral-800 flex items-center justify-between gap-3",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center gap-3 min-w-0",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: `w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${dmUiVisible ? "bg-cyan-500/15 text-cyan-400" : "bg-neutral-800 text-neutral-500"}`,
+									children: dmUiVisible ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(MessageSquare, { className: "w-4 h-4" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(EyeOff, { className: "w-4 h-4" })
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "min-w-0",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-xs font-bold text-white",
+										children: "DM（ダイレクトメッセージ）UI表示"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-[11px] text-neutral-400",
+										children: dmUiVisible ? "ヘッダー・ナビバーにDMボタンを表示中" : "DMボタンとDMチャットUIを非表示にしています"
+									})]
 								})]
-							})
-						]
-					})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: toggleDmUiVisible,
+								className: `px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shrink-0 cursor-pointer ${dmUiVisible ? "bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700" : "bg-cyan-600 hover:bg-cyan-500 text-white shadow"}`,
+								children: dmUiVisible ? "UIを消す" : "UIを表示する"
+							})]
+						})
+					]
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 					className: "mt-4 pt-3 border-t border-neutral-800/80 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-neutral-400 shrink-0",
@@ -36930,7 +37564,7 @@ var SpectrumVisualizer = ({ className = "", height = 48, barCount = 32, showCont
 };
 // src/components/EqualizerModal.tsx
 var EqualizerModal = ({ isOpen, onClose }) => {
-	const { crossfadeDuration, setCrossfadeDuration, endlessRadioActive, toggleEndlessRadio } = usePlayer();
+	const { crossfadeDuration, setCrossfadeDuration, endlessRadioActive, toggleEndlessRadio, currentTrack, openFreemakeModal } = usePlayer();
 	const [settings, setSettings] = (0, import_react.useState)(equalizer.getSettings());
 	(0, import_react.useEffect)(() => {
 		return equalizer.subscribe((newSettings) => {
@@ -36984,29 +37618,51 @@ var EqualizerModal = ({ isOpen, onClose }) => {
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 							className: "w-10 h-10 rounded-xl bg-gradient-to-br from-red-600 to-amber-600 flex items-center justify-center shadow-lg shadow-red-900/30",
 							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-5 h-5 text-white" })
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-							className: "flex items-center gap-2",
-							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex items-center gap-2 flex-wrap",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
 								className: "text-base font-bold text-white tracking-wide",
-								children: "イコライザー & 音質調整"
-							})
+								children: "Freemake イコライザー & 音質調整"
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/30 text-sky-300 text-[10px] font-bold",
+								children: "Freemake DSP"
+							})]
 						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 							className: "text-xs text-neutral-400 mt-0.5",
-							children: "周波数帯域の微調整と低音ブースト"
+							children: "周波数帯域の微調整・低音ブースト・ダウンロード音源へのEQ焼き込みに対応"
 						})] })]
 					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-						className: "flex items-center gap-3",
-						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-							type: "button",
-							onClick: () => equalizer.setEnabled(!settings.enabled),
-							className: `flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${settings.enabled ? "bg-red-600 text-white shadow-lg shadow-red-900/40" : "bg-neutral-800 text-neutral-400 hover:text-white"}`,
-							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: settings.enabled ? "EQ有効" : "バイパス (OFF)" })]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-							type: "button",
-							onClick: onClose,
-							className: "p-2 text-neutral-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors",
-							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-5 h-5" })
-						})]
+						className: "flex items-center gap-2 sm:gap-3",
+						children: [
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								onClick: () => {
+									onClose();
+									openFreemakeModal(currentTrack);
+								},
+								className: "hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 text-xs font-bold transition-all cursor-pointer",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Freemake保存" })]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: () => equalizer.setFreemakeNormalize(!settings.freemakeNormalize),
+								title: "Freemakeラウドネス正規化（書き出し時の音量均一化）",
+								className: `hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition-all cursor-pointer ${settings.freemakeNormalize ? "bg-sky-600/25 border-sky-400 text-sky-200" : "bg-neutral-900 border-white/10 text-neutral-400 hover:text-white"}`,
+								children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: ["正規化 ", settings.freemakeNormalize ? "ON" : "OFF"] })
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								onClick: () => equalizer.setEnabled(!settings.enabled),
+								className: `flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${settings.enabled ? "bg-red-600 text-white shadow-lg shadow-red-900/40" : "bg-neutral-800 text-neutral-400 hover:text-white"}`,
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: settings.enabled ? "EQ有効" : "バイパス (OFF)" })]
+							}),
+							/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: onClose,
+								className: "p-2 text-neutral-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors",
+								children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-5 h-5" })
+							})
+						]
 					})]
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -37355,18 +38011,29 @@ var EqualizerModal = ({ isOpen, onClose }) => {
 					]
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
-					className: "px-6 py-3.5 bg-[#14151c] border-t border-white/5 flex items-center justify-between text-xs text-neutral-400",
+					className: "px-6 py-3.5 bg-[#14151c] border-t border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs text-neutral-400",
 					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 						className: "flex items-center gap-2",
 						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Disc, {
 							className: "w-4 h-4 text-red-500 animate-spin",
 							style: { animationDuration: "8s" }
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "イヤホン・スピーカーどちらでも最適な音響にリアルタイム補正されます" })]
-					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-						type: "button",
-						onClick: onClose,
-						className: "px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors",
-						children: "完了"
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "イヤホン・ローカル再生・Freemakeダウンロード書き出し時にEQが適用されます" })]
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex items-center gap-2",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => {
+								onClose();
+								openFreemakeModal(currentTrack);
+							},
+							className: "px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold flex items-center gap-1.5 transition-colors cursor-pointer",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "このEQでダウンロード" })]
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+							type: "button",
+							onClick: onClose,
+							className: "px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium transition-colors cursor-pointer",
+							children: "完了"
+						})]
 					})]
 				})
 			]
@@ -42667,7 +43334,7 @@ async function parseLocalAudioFile(file) {
 }
 // src/views/LibraryView.tsx
 var LibraryView = () => {
-	const { likedTracks, likedAlbums, likedPlaylists, followedArtists, toggleFollowArtist, recentTracks, userPlaylists, userFolders, createFolder, renameFolder, deleteFolder, assignPlaylistToFolder, togglePinUserPlaylist, playTrack, addToQueue, playNext, showToast, toggleLikeTrack, toggleLikeAlbum, toggleLikePlaylist, toggleLikeUserPlaylist, createUserPlaylist, addToUserPlaylist, deleteUserPlaylist, removeFromUserPlaylist, reorderUserPlaylists, sortUserPlaylists, reorderUserPlaylistTracks, sortUserPlaylistTracks, updateUserPlaylist, hiddenTracks, blockedArtists, unhideTrack, unblockArtist, isTrackBlocked, openTrackDetailModal, currentTrack, setImportModalOpen, openAddToPlaylistModal, openShareModal, openVisualShareCard, openZeroCodeModal, setCollabModalOpen, setMatchModalOpen, navigateTo, libraryTab: activeTab, setLibraryTab: setActiveTab, libraryResetSeq } = usePlayer();
+	const { likedTracks, likedAlbums, likedPlaylists, followedArtists, toggleFollowArtist, recentTracks, userPlaylists, userFolders, createFolder, renameFolder, deleteFolder, assignPlaylistToFolder, togglePinUserPlaylist, playTrack, addToQueue, playNext, showToast, toggleLikeTrack, toggleLikeAlbum, toggleLikePlaylist, toggleLikeUserPlaylist, createUserPlaylist, addToUserPlaylist, deleteUserPlaylist, removeFromUserPlaylist, reorderUserPlaylists, sortUserPlaylists, reorderUserPlaylistTracks, sortUserPlaylistTracks, updateUserPlaylist, hiddenTracks, blockedArtists, unhideTrack, unblockArtist, isTrackBlocked, openTrackDetailModal, currentTrack, setImportModalOpen, openAddToPlaylistModal, openShareModal, openVisualShareCard, openZeroCodeModal, setCollabModalOpen, setMatchModalOpen, navigateTo, libraryTab: activeTab, setLibraryTab: setActiveTab, libraryResetSeq, openFreemakeModal, freemakeModalOpen } = usePlayer();
 	const [newPlaylistName, setNewPlaylistName] = (0, import_react.useState)("");
 	const [isCreatingPlaylist, setIsCreatingPlaylist] = (0, import_react.useState)(false);
 	const [selectedPlaylistId, setSelectedPlaylistId] = (0, import_react.useState)(null);
@@ -42716,7 +43383,7 @@ var LibraryView = () => {
 		return () => {
 			isMounted = false;
 		};
-	}, []);
+	}, [freemakeModalOpen]);
 	const handleAudioFiles = async (files) => {
 		const audioFiles = Array.from(files).filter((f) => f.type.startsWith("audio/") || /\.(mp3|wav|flac|m4a|aac|ogg|opus)$/i.test(f.name));
 		if (audioFiles.length === 0) return;
@@ -44839,6 +45506,13 @@ var LibraryView = () => {
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
+									onClick: () => openFreemakeModal(currentTrack),
+									className: "px-3.5 py-2.5 bg-sky-600/20 hover:bg-sky-600/35 text-sky-300 border border-sky-500/40 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer",
+									title: "FreemakeでURLや再生中の曲をダウンロード・変換＋EQ適用して保存",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-3.5 h-3.5 text-sky-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Freemake ダウンロード・変換" })]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
 									onClick: () => fileInputRef.current?.click(),
 									disabled: isProcessingFiles,
 									className: "px-4 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-lg shadow-cyan-600/20 transition-transform active:scale-95 cursor-pointer",
@@ -46286,7 +46960,7 @@ var REACTION_EMOJIS = [
 	"🎸"
 ];
 var DirectMessageModal = ({ isOpen, onClose }) => {
-	const { currentUser, currentTrack, playTrack, userPlaylists, createUserPlaylist, addToUserPlaylist } = usePlayer();
+	const { currentUser, currentTrack, playTrack, userPlaylists, createUserPlaylist, addToUserPlaylist, setDmUiVisible, showToast } = usePlayer();
 	const [conversations, setConversations] = (0, import_react.useState)([]);
 	const [selectedUser, setSelectedUser] = (0, import_react.useState)(null);
 	const [messages, setMessages] = (0, import_react.useState)([]);
@@ -46471,11 +47145,24 @@ var DirectMessageModal = ({ isOpen, onClose }) => {
 								className: "font-bold text-white text-base",
 								children: "ダイレクトメッセージ"
 							})]
-						}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-							type: "button",
-							onClick: onClose,
-							className: "md:hidden p-1.5 text-neutral-400 hover:text-white",
-							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-5 h-5" })
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "flex items-center gap-1.5",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+								type: "button",
+								onClick: () => {
+									setDmUiVisible(false);
+									onClose();
+									showToast("DMのUIを非表示にしました（アカウント設定から再表示できます）", "info", 3e3);
+								},
+								title: "DMのUIを消す（アカウント設定で再表示可能）",
+								className: "px-2 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(EyeOff, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "UIを消す" })]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+								type: "button",
+								onClick: onClose,
+								className: "md:hidden p-1.5 text-neutral-400 hover:text-white",
+								children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-5 h-5" })
+							})]
 						})]
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
@@ -46837,7 +47524,7 @@ var DirectMessageModal = ({ isOpen, onClose }) => {
 };
 // src/components/SocialNotificationDrawer.tsx
 var SocialNotificationDrawer = ({ isOpen, onClose, onOpenDmWithUser }) => {
-	const { currentUser, playTrack } = usePlayer();
+	const { currentUser, dmUiVisible } = usePlayer();
 	const [activeTab, setActiveTab] = (0, import_react.useState)("notifications");
 	const [notifications, setNotifications] = (0, import_react.useState)([]);
 	const [feed, setFeed] = (0, import_react.useState)([]);
@@ -46929,9 +47616,9 @@ var SocialNotificationDrawer = ({ isOpen, onClose, onOpenDmWithUser }) => {
 							className: "text-[11px] text-neutral-400 hover:text-emerald-400 flex items-center gap-1 transition-colors cursor-pointer",
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Check, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "すべて既読にする" })]
 						})
-					}), notifications.map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+					}), notifications.filter((n) => dmUiVisible || n.type !== "dm").map((n) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
 						onClick: () => {
-							if (n.type === "dm" && onOpenDmWithUser) {
+							if (n.type === "dm" && dmUiVisible && onOpenDmWithUser) {
 								onClose();
 								onOpenDmWithUser(n.sender);
 							}
@@ -49034,7 +49721,7 @@ function formatSeconds(secs) {
 	return `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
 }
 var FullScreenPlayerModal = () => {
-	const { currentTrack, isPlaying, togglePlay, progress, duration, seekTo, nextTrack, prevTrack, repeatMode, cycleRepeat, likedTrackIds, toggleLikeTrack, fullScreenPlayerOpen, setFullScreenPlayerOpen, navigateTo, openAddToPlaylistModal, openShareModal, openVisualShareCard, openZeroCodeModal, setConnectModalOpen, floatingLyricsOverlay, setFloatingLyricsOverlay, canvasEnabled, setCanvasEnabled, playbackContextLabel, setEqModalOpen, setQueueOpen, currentLyrics, activeSyncedLyricText, openLyricsSwitcher, startRadioForTrack, playbackRate, setPlaybackRate, shuffleMode, cycleShuffleMode, audioQuality, setAudioQuality, setWrappedModalOpen, digestMode, toggleDigestMode, digestRemainingSec, trackTimestamps, endlessRadioActive, toggleEndlessRadio, emotionRadioMood, queue, queueIndex, openTrackDetailModal, hideTrack, blockArtist, isTrackBlocked, showToast } = usePlayer();
+	const { currentTrack, isPlaying, togglePlay, progress, duration, seekTo, nextTrack, prevTrack, repeatMode, cycleRepeat, likedTrackIds, toggleLikeTrack, fullScreenPlayerOpen, setFullScreenPlayerOpen, navigateTo, openAddToPlaylistModal, openShareModal, openVisualShareCard, openZeroCodeModal, setConnectModalOpen, floatingLyricsOverlay, setFloatingLyricsOverlay, canvasEnabled, setCanvasEnabled, playbackContextLabel, setEqModalOpen, setQueueOpen, currentLyrics, activeSyncedLyricText, openLyricsSwitcher, startRadioForTrack, playbackRate, setPlaybackRate, shuffleMode, cycleShuffleMode, audioQuality, setAudioQuality, setWrappedModalOpen, digestMode, toggleDigestMode, digestRemainingSec, trackTimestamps, endlessRadioActive, toggleEndlessRadio, emotionRadioMood, queue, queueIndex, openTrackDetailModal, hideTrack, blockArtist, isTrackBlocked, showToast, openFreemakeModal } = usePlayer();
 	const [menuOpen, setMenuOpen] = (0, import_react.useState)(false);
 	const [speedMenuOpen, setSpeedMenuOpen] = (0, import_react.useState)(false);
 	const [inlineLyricsExpanded, setInlineLyricsExpanded] = (0, import_react.useState)(false);
@@ -49595,7 +50282,16 @@ var FullScreenPlayerModal = () => {
 										setEqModalOpen(true);
 									},
 									className: "w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-4 h-4 text-neutral-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "イコライザー調整" })]
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-4 h-4 text-neutral-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Freemake イコライザー調整" })]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+									type: "button",
+									onClick: () => {
+										setMenuOpen(false);
+										openFreemakeModal(currentTrack);
+									},
+									className: "w-full py-2 text-left text-sm font-semibold text-sky-300 hover:text-sky-200 flex items-center gap-4 transition-colors cursor-pointer",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4 text-sky-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Freemake ダウンロード / 形式変換" })]
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 									type: "button",
@@ -49820,25 +50516,35 @@ var FullScreenPlayerModal = () => {
 								})]
 							}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 								className: "flex items-center gap-2",
-								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
-									type: "button",
-									onClick: () => openVisualShareCard({
-										type: "track",
-										track: currentTrack
+								children: [
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => openFreemakeModal(currentTrack),
+										className: "p-2 text-sky-300 hover:text-white rounded-lg hover:bg-sky-500/20 transition-colors cursor-pointer",
+										title: "Freemakeでダウンロード・変換",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-5 h-5" })
 									}),
-									className: "p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer",
-									title: "シェアカードを作成・共有",
-									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Share2, { className: "w-5 h-5" })
-								}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
-									type: "button",
-									onClick: () => setQueueOpen(true),
-									className: "relative p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer",
-									title: "再生キュー",
-									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ListMusic, { className: "w-5 h-5" }), queue.length - 1 - queueIndex > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
-										className: "absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-600 text-[9px] font-black text-white flex items-center justify-center leading-none",
-										children: queue.length - 1 - queueIndex > 99 ? "99+" : queue.length - 1 - queueIndex
-									})]
-								})]
+									/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => openVisualShareCard({
+											type: "track",
+											track: currentTrack
+										}),
+										className: "p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer",
+										title: "シェアカードを作成・共有",
+										children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Share2, { className: "w-5 h-5" })
+									}),
+									/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => setQueueOpen(true),
+										className: "relative p-2 text-neutral-300 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer",
+										title: "再生キュー",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ListMusic, { className: "w-5 h-5" }), queue.length - 1 - queueIndex > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-600 text-[9px] font-black text-white flex items-center justify-center leading-none",
+											children: queue.length - 1 - queueIndex > 99 ? "99+" : queue.length - 1 - queueIndex
+										})]
+									})
+								]
 							})]
 						}),
 						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -51309,6 +52015,936 @@ var ZeroCodeModal = () => {
 		})
 	});
 };
+// src/services/freemake.ts
+var ADV_CONFIG_KEY = "zero_music_freemake_adv_v1";
+function loadFreemakeAdvancedConfig() {
+	try {
+		const raw = localStorage.getItem(ADV_CONFIG_KEY);
+		if (raw) {
+			const parsed = JSON.parse(raw);
+			return {
+				cobaltApiUrl: typeof parsed.cobaltApiUrl === "string" ? parsed.cobaltApiUrl : "",
+				youtubeCookie: typeof parsed.youtubeCookie === "string" ? parsed.youtubeCookie : ""
+			};
+		}
+	} catch {}
+	return {
+		cobaltApiUrl: "",
+		youtubeCookie: ""
+	};
+}
+function saveFreemakeAdvancedConfig(cfg) {
+	try {
+		localStorage.setItem(ADV_CONFIG_KEY, JSON.stringify(cfg));
+	} catch {}
+}
+async function fetchFreemakeFormats() {
+	const res = await fetch("/api/freemake/formats");
+	if (!res.ok) throw new Error("Freemakeエンジン情報の取得に失敗しました");
+	return res.json();
+}
+async function probeFreemakeTrack(params) {
+	const qs = new URLSearchParams();
+	if (params.videoId) qs.set("videoId", params.videoId);
+	if (params.url) qs.set("url", params.url);
+	if (params.title) qs.set("title", params.title);
+	if (params.artist) qs.set("artist", params.artist);
+	const res = await fetch(`/api/freemake/probe?${qs.toString()}`);
+	if (!res.ok) throw new Error("プローブに失敗しました");
+	return res.json();
+}
+function extractFilenameFromDisposition(headerVal, fallbackName) {
+	if (!headerVal) return fallbackName;
+	const utfMatch = headerVal.match(/filename\*=UTF-8''([^;]+)/i);
+	if (utfMatch?.[1]) try {
+		return decodeURIComponent(utfMatch[1]);
+	} catch {}
+	const plainMatch = headerVal.match(/filename="([^"]+)"/i);
+	if (plainMatch?.[1]) return plainMatch[1];
+	return fallbackName;
+}
+function triggerBlobDownload(blob, filename) {
+	const blobUrl = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = blobUrl;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	setTimeout(() => URL.revokeObjectURL(blobUrl), 15e3);
+}
+async function downloadWithFreemake(params) {
+	const adv = loadFreemakeAdvancedConfig();
+	const eqSettings = params.eqOverride || equalizer.getSettings();
+	const eqPayload = params.applyEq ? {
+		enabled: true,
+		gains: eqSettings.gains,
+		bassBoost: eqSettings.bassBoost,
+		normalize: Boolean(eqSettings.freemakeNormalize)
+	} : { enabled: false };
+	const resp = await fetch("/api/freemake/download", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			videoId: params.videoId,
+			url: params.url,
+			title: params.title,
+			artist: params.artist,
+			album: params.album || "",
+			format: params.format,
+			eq: eqPayload,
+			cobaltApiUrl: adv.cobaltApiUrl || void 0,
+			youtubeCookie: adv.youtubeCookie || void 0,
+			allowPreviewFallback: params.allowPreviewFallback !== false
+		})
+	});
+	if (!resp.ok) {
+		let errMsg = "ダウンロードに失敗しました";
+		try {
+			const errJson = await resp.json();
+			if (errJson?.error) errMsg = errJson.error;
+		} catch {}
+		throw new Error(errMsg);
+	}
+	const blob = await resp.blob();
+	const ext = params.format.startsWith("mp3") ? "mp3" : params.format.startsWith("m4a") ? "m4a" : params.format;
+	const fallbackName = `${params.artist ? `${params.artist} - ` : ""}${params.title || "track"}.${ext}`;
+	const filename = extractFilenameFromDisposition(resp.headers.get("Content-Disposition"), fallbackName);
+	const sourceKind = resp.headers.get("X-Freemake-Source-Kind") || "youtube-direct";
+	const rawLabel = resp.headers.get("X-Freemake-Source-Label") || "";
+	const sourceLabel = rawLabel ? decodeURIComponent(rawLabel) : sourceKind;
+	const eqApplied = resp.headers.get("X-Freemake-Eq-Applied") === "1";
+	if (params.saveTarget === "device" || params.saveTarget === "both") triggerBlobDownload(blob, filename);
+	let savedOfflineTrack;
+	if ((params.saveTarget === "offline" || params.saveTarget === "both") && params.format !== "mp4") {
+		const durSec = sourceKind === "official-preview-30s" ? 30 : params.durationSeconds || 180;
+		const durStr = sourceKind === "official-preview-30s" ? "0:30" : params.duration || "3:00";
+		savedOfflineTrack = await saveOfflineTrack(blob, sourceKind === "official-preview-30s" ? `${params.title} (プレビュー)` : params.title, params.artist || "Freemake保存", params.album || "Freemake オフライン保存", durSec, durStr, params.thumbnail, ext);
+	}
+	return {
+		blob,
+		filename,
+		sourceKind,
+		sourceLabel,
+		eqApplied,
+		savedOfflineTrack
+	};
+}
+async function convertLocalFileWithFreemake(params) {
+	const eqSettings = equalizer.getSettings();
+	const eqPayload = params.applyEq ? {
+		enabled: true,
+		gains: eqSettings.gains,
+		bassBoost: eqSettings.bassBoost,
+		normalize: Boolean(eqSettings.freemakeNormalize)
+	} : { enabled: false };
+	const qs = new URLSearchParams({
+		filename: params.file.name,
+		format: params.format,
+		title: params.title || params.file.name.replace(/\.[^.]+$/, ""),
+		artist: params.artist || "ローカル音源",
+		eq: JSON.stringify(eqPayload)
+	});
+	const buf = await params.file.arrayBuffer();
+	const resp = await fetch(`/api/freemake/convert-upload?${qs.toString()}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/octet-stream" },
+		body: buf
+	});
+	if (!resp.ok) {
+		let errMsg = "変換に失敗しました";
+		try {
+			const errJson = await resp.json();
+			if (errJson?.error) errMsg = errJson.error;
+		} catch {}
+		throw new Error(errMsg);
+	}
+	const blob = await resp.blob();
+	const ext = params.format.startsWith("mp3") ? "mp3" : params.format.startsWith("m4a") ? "m4a" : params.format;
+	const baseName = params.title || params.file.name.replace(/\.[^.]+$/, "") || "converted";
+	const filename = extractFilenameFromDisposition(resp.headers.get("Content-Disposition"), `${baseName}_freemake.${ext}`);
+	const eqApplied = resp.headers.get("X-Freemake-Eq-Applied") === "1";
+	if (params.saveTarget === "device" || params.saveTarget === "both") triggerBlobDownload(blob, filename);
+	let savedOfflineTrack;
+	if ((params.saveTarget === "offline" || params.saveTarget === "both") && params.format !== "mp4") savedOfflineTrack = await saveOfflineTrack(blob, `${baseName} (Freemake変換)`, params.artist || "Freemake Audio Engine", "Freemake 変換ライブラリ", 180, "3:00", void 0, ext);
+	return {
+		blob,
+		filename,
+		sourceKind: "local-convert",
+		sourceLabel: "ローカル変換 (FFmpeg + Freemake EQ)",
+		eqApplied,
+		savedOfflineTrack
+	};
+}
+// src/components/FreemakeModal.tsx
+var DEFAULT_FORMATS = [
+	{
+		id: "mp3_320",
+		label: "MP3 最高音質 (320kbps)",
+		ext: "mp3",
+		mimeType: "audio/mpeg",
+		isVideo: false,
+		bitrateLabel: "320 kbps"
+	},
+	{
+		id: "mp3_192",
+		label: "MP3 標準高音質 (192kbps)",
+		ext: "mp3",
+		mimeType: "audio/mpeg",
+		isVideo: false,
+		bitrateLabel: "192 kbps"
+	},
+	{
+		id: "mp3_128",
+		label: "MP3 軽量 (128kbps)",
+		ext: "mp3",
+		mimeType: "audio/mpeg",
+		isVideo: false,
+		bitrateLabel: "128 kbps"
+	},
+	{
+		id: "m4a_256",
+		label: "M4A / AAC 高音質 (256kbps)",
+		ext: "m4a",
+		mimeType: "audio/mp4",
+		isVideo: false,
+		bitrateLabel: "256 kbps"
+	},
+	{
+		id: "flac",
+		label: "FLAC ロスレス (Lossless)",
+		ext: "flac",
+		mimeType: "audio/flac",
+		isVideo: false,
+		bitrateLabel: "Lossless"
+	},
+	{
+		id: "wav",
+		label: "WAV 非圧縮 (16-bit PCM)",
+		ext: "wav",
+		mimeType: "audio/wav",
+		isVideo: false,
+		bitrateLabel: "1411 kbps"
+	},
+	{
+		id: "ogg",
+		label: "OGG Vorbis (高効率)",
+		ext: "ogg",
+		mimeType: "audio/ogg",
+		isVideo: false,
+		bitrateLabel: "~192 kbps"
+	},
+	{
+		id: "mp4",
+		label: "MP4 動画 / MV",
+		ext: "mp4",
+		mimeType: "video/mp4",
+		isVideo: true,
+		bitrateLabel: "H.264 + AAC"
+	}
+];
+var FreemakeModal = () => {
+	const { freemakeModalOpen, setFreemakeModalOpen, freemakeTargetTrack, currentTrack, showToast, navigateTo, setLibraryTab } = usePlayer();
+	const targetTrack = freemakeTargetTrack || currentTrack;
+	const [activeTab, setActiveTab] = (0, import_react.useState)("download");
+	const [formats, setFormats] = (0, import_react.useState)(DEFAULT_FORMATS);
+	const [ffmpegVersion, setFfmpegVersion] = (0, import_react.useState)("");
+	const [selectedFormat, setSelectedFormat] = (0, import_react.useState)("mp3_320");
+	const [applyEqOnExport, setApplyEqOnExport] = (0, import_react.useState)(true);
+	const [customUrlInput, setCustomUrlInput] = (0, import_react.useState)("");
+	const [eqSettings, setEqSettings] = (0, import_react.useState)(equalizer.getSettings());
+	const [probeInfo, setProbeInfo] = (0, import_react.useState)(null);
+	const [isDownloading, setIsDownloading] = (0, import_react.useState)(false);
+	const [statusNotice, setStatusNotice] = (0, import_react.useState)(null);
+	const [advancedOpen, setAdvancedOpen] = (0, import_react.useState)(false);
+	const [advConfig, setAdvConfig] = (0, import_react.useState)(loadFreemakeAdvancedConfig);
+	const [pickedFile, setPickedFile] = (0, import_react.useState)(null);
+	const [convertTitle, setConvertTitle] = (0, import_react.useState)("");
+	const [convertArtist, setConvertArtist] = (0, import_react.useState)("");
+	const [isConverting, setIsConverting] = (0, import_react.useState)(false);
+	const fileInputRef = (0, import_react.useRef)(null);
+	(0, import_react.useEffect)(() => {
+		return equalizer.subscribe((next) => setEqSettings(next));
+	}, []);
+	(0, import_react.useEffect)(() => {
+		if (!freemakeModalOpen) return;
+		setStatusNotice(null);
+		fetchFreemakeFormats().then((res) => {
+			if (Array.isArray(res.formats) && res.formats.length > 0) setFormats(res.formats);
+			if (res.ffmpegVersion) setFfmpegVersion(res.ffmpegVersion);
+		}).catch(() => {});
+	}, [freemakeModalOpen]);
+	(0, import_react.useEffect)(() => {
+		if (!freemakeModalOpen) return;
+		if (!(customUrlInput.trim() || targetTrack?.id || "") && !targetTrack?.title) {
+			setProbeInfo(null);
+			return;
+		}
+		const timer = setTimeout(() => {
+			probeFreemakeTrack({
+				videoId: targetTrack?.id,
+				url: customUrlInput.trim() || void 0,
+				title: targetTrack?.title,
+				artist: targetTrack?.artist
+			}).then(setProbeInfo).catch(() => setProbeInfo(null));
+		}, 250);
+		return () => clearTimeout(timer);
+	}, [
+		freemakeModalOpen,
+		customUrlInput,
+		targetTrack?.id,
+		targetTrack?.title,
+		targetTrack?.artist
+	]);
+	if (!freemakeModalOpen) return null;
+	const formatFreq = (freq) => freq >= 1e3 ? `${freq / 1e3}k` : `${freq}`;
+	const handleSaveAdvConfig = () => {
+		saveFreemakeAdvancedConfig(advConfig);
+		setStatusNotice({
+			type: "success",
+			text: "Freemake 外部ソース設定（Cobalt / Cookie）を保存しました"
+		});
+	};
+	const handleExecuteDownload = async (saveTarget) => {
+		const cleanUrl = customUrlInput.trim();
+		if (!cleanUrl && !targetTrack) {
+			setStatusNotice({
+				type: "error",
+				text: "再生中の楽曲を選ぶか、YouTube URLを入力してください"
+			});
+			return;
+		}
+		setIsDownloading(true);
+		setStatusNotice({
+			type: "info",
+			text: "Freemake Engine (FFmpeg) で音声取得・EQ処理・エンコードを実行中..."
+		});
+		try {
+			const res = await downloadWithFreemake({
+				videoId: cleanUrl ? void 0 : targetTrack?.id,
+				url: cleanUrl || void 0,
+				title: targetTrack?.title || "YouTube Audio",
+				artist: targetTrack?.artist || "",
+				album: targetTrack?.album || "",
+				thumbnail: targetTrack?.thumbnail,
+				duration: targetTrack?.duration,
+				durationSeconds: targetTrack?.durationSeconds,
+				format: selectedFormat,
+				applyEq: applyEqOnExport,
+				saveTarget,
+				allowPreviewFallback: true
+			});
+			const eqMsg = res.eqApplied ? "（Freemake EQ適用済み）" : "";
+			const kindMsg = res.sourceKind === "official-preview-30s" ? "※YouTubeボット保護のため公式30秒高音質プレビュー版を保存しました" : `ソース: ${res.sourceLabel}`;
+			if (saveTarget === "offline" || saveTarget === "both") showToast(`「${res.filename}」をオフライン保存しました ${eqMsg}`, "success", 3800);
+			else showToast(`「${res.filename}」をダウンロードしました ${eqMsg}`, "success", 3500);
+			setStatusNotice({
+				type: "success",
+				text: `完了: ${res.filename} ${eqMsg} — ${kindMsg}`
+			});
+		} catch (err) {
+			setStatusNotice({
+				type: "error",
+				text: err?.message || "ダウンロードに失敗しました"
+			});
+		} finally {
+			setIsDownloading(false);
+		}
+	};
+	const handleExecuteLocalConvert = async (saveTarget) => {
+		if (!pickedFile) {
+			setStatusNotice({
+				type: "error",
+				text: "変換したいローカルファイルを選択してください"
+			});
+			return;
+		}
+		setIsConverting(true);
+		setStatusNotice({
+			type: "info",
+			text: "Freemake FFmpeg 変換と10バンドEQ焼き込みを実行中..."
+		});
+		try {
+			const res = await convertLocalFileWithFreemake({
+				file: pickedFile,
+				format: selectedFormat,
+				applyEq: applyEqOnExport,
+				title: convertTitle.trim() || void 0,
+				artist: convertArtist.trim() || void 0,
+				saveTarget
+			});
+			setStatusNotice({
+				type: "success",
+				text: `変換完了: ${res.filename}${res.eqApplied ? "（EQ焼き込み済み）" : ""}`
+			});
+			showToast(`Freemake変換完了: ${res.filename}`, "success", 3200);
+		} catch (err) {
+			setStatusNotice({
+				type: "error",
+				text: err?.message || "ファイル変換に失敗しました"
+			});
+		} finally {
+			setIsConverting(false);
+		}
+	};
+	const selectedSpec = formats.find((f) => f.id === selectedFormat) || formats[0];
+	const freemakePresets = Object.keys(EQ_PRESETS).filter((k) => EQ_PRESETS[k].isFreemake);
+	const standardPresets = Object.keys(EQ_PRESETS).filter((k) => !EQ_PRESETS[k].isFreemake);
+	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+		className: "fixed inset-0 z-[65] flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-md animate-in fade-in duration-150",
+		onClick: () => setFreemakeModalOpen(false),
+		children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+			className: "w-full max-w-3xl bg-[#0d0f14] border border-sky-500/25 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]",
+			onClick: (e) => e.stopPropagation(),
+			children: [
+				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-center justify-between px-5 sm:px-6 py-4 border-b border-white/10 bg-gradient-to-r from-[#0e1522] via-[#111520] to-[#17111a]",
+					children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+						className: "flex items-center gap-3 min-w-0",
+						children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+							className: "w-10 h-10 rounded-xl bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center shadow-lg shadow-sky-900/40 shrink-0",
+							children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(HardDriveDownload, { className: "w-5 h-5 text-white" })
+						}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "min-w-0",
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+								className: "flex items-center gap-2 flex-wrap",
+								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", {
+									className: "text-base font-black text-white tracking-wide",
+									children: "Freemake Studio"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+									className: "px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/30 text-sky-300 text-[10px] font-bold",
+									children: "FFmpeg 実変換エンジン搭載"
+								})]
+							}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+								className: "text-[11px] text-neutral-400 truncate mt-0.5",
+								children: "高音質ダウンロード・MP3/FLAC/WAV/MP4変換・10バンドイコライザー焼き込み"
+							})]
+						})]
+					}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+						type: "button",
+						onClick: () => setFreemakeModalOpen(false),
+						className: "p-2 text-neutral-400 hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer",
+						children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(X, { className: "w-5 h-5" })
+					})]
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex items-center gap-1.5 px-5 pt-3 pb-2 border-b border-white/5 bg-[#101219]",
+					children: [
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => setActiveTab("download"),
+							className: `flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === "download" ? "bg-sky-600 text-white shadow-md shadow-sky-900/40" : "bg-neutral-900/70 text-neutral-400 hover:text-white"}`,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "楽曲ダウンロード" })]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => setActiveTab("equalizer"),
+							className: `flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === "equalizer" ? "bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-900/40" : "bg-neutral-900/70 text-neutral-400 hover:text-white"}`,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Freemake イコライザー" })]
+						}),
+						/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+							type: "button",
+							onClick: () => setActiveTab("convert"),
+							className: `flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === "convert" ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/40" : "bg-neutral-900/70 text-neutral-400 hover:text-white"}`,
+							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(FileAudio, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "ローカル変換 + EQ" })]
+						})
+					]
+				}),
+				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+					className: "flex-1 overflow-y-auto p-5 sm:p-6 space-y-5",
+					children: [
+						statusNotice && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: `p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${statusNotice.type === "success" ? "bg-emerald-950/50 border-emerald-500/40 text-emerald-200" : statusNotice.type === "error" ? "bg-rose-950/50 border-rose-500/40 text-rose-200" : "bg-sky-950/50 border-sky-500/40 text-sky-200"}`,
+							children: [statusNotice.type === "success" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CircleCheck, { className: "w-4 h-4 text-emerald-400 shrink-0 mt-0.5" }) : statusNotice.type === "error" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TriangleAlert, { className: "w-4 h-4 text-rose-400 shrink-0 mt-0.5" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 text-sky-400 animate-spin shrink-0 mt-0.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+								className: "leading-relaxed break-all",
+								children: statusNotice.text
+							})]
+						}),
+						activeTab === "download" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "space-y-5",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-neutral-900/70 border border-white/10 space-y-3",
+									children: [
+										targetTrack && !customUrlInput.trim() && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center gap-3.5",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SafeImage, {
+												src: targetTrack.thumbnail,
+												alt: targetTrack.title,
+												className: "w-14 h-14 rounded-xl object-cover bg-neutral-800 shrink-0 shadow"
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "min-w-0 flex-1",
+												children: [
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+														className: "text-[10px] font-bold uppercase tracking-wider text-sky-400",
+														children: "ダウンロード対象トラック"
+													}),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", {
+														className: "text-sm font-bold text-white truncate",
+														children: targetTrack.title
+													}),
+													/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+														className: "text-xs text-neutral-400 truncate",
+														children: [targetTrack.artist, targetTrack.duration ? ` • ${targetTrack.duration}` : ""]
+													})
+												]
+											})]
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+											className: "block text-[11px] font-semibold text-neutral-300 mb-1.5",
+											children: "YouTube URL / 動画ID（空欄なら現在選択中の曲を使用）"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "text",
+											value: customUrlInput,
+											onChange: (e) => setCustomUrlInput(e.target.value),
+											placeholder: "https://www.youtube.com/watch?v=... または空欄",
+											className: "w-full bg-neutral-950 border border-neutral-800 focus:border-sky-500 rounded-xl px-3.5 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none"
+										})] }),
+										probeInfo && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex flex-wrap items-center gap-2 text-[11px] text-neutral-400 pt-1",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+													className: "px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono",
+													children: ["FFmpeg: ", ffmpegVersion ? "稼働中" : "待機中"]
+												}),
+												probeInfo.officialPreviewAvailable && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+													className: "px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-600/30 text-emerald-300",
+													children: [probeInfo.officialPreviewSource, " 対応"]
+												}),
+												(advConfig.cobaltApiUrl || advConfig.youtubeCookie || probeInfo.hasCobaltServer || probeInfo.hasServerCookie) && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: "px-2 py-0.5 rounded bg-sky-950/60 border border-sky-500/30 text-sky-300",
+													children: "フル尺直接ルート有効"
+												})
+											]
+										})
+									]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center justify-between mb-2",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+										className: "text-xs font-bold text-neutral-200 flex items-center gap-1.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Music, { className: "w-3.5 h-3.5 text-sky-400" }), "出力フォーマット選択"]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "text-[11px] text-neutral-400 font-mono",
+										children: selectedSpec.bitrateLabel
+									})]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "grid grid-cols-2 sm:grid-cols-4 gap-2",
+									children: formats.map((fmt) => {
+										const active = selectedFormat === fmt.id;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											onClick: () => setSelectedFormat(fmt.id),
+											className: `p-2.5 rounded-xl border text-left transition-all cursor-pointer ${active ? "bg-sky-600/20 border-sky-400 text-white shadow-md shadow-sky-950/40" : "bg-neutral-900/60 border-white/5 text-neutral-300 hover:bg-neutral-800/80"}`,
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "flex items-center justify-between gap-1",
+												children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+													className: "text-xs font-black uppercase",
+													children: [".", fmt.ext]
+												}), fmt.isVideo ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Film, { className: "w-3.5 h-3.5 text-rose-400" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Music, { className: "w-3.5 h-3.5 text-sky-400" })]
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+												className: "text-[11px] font-semibold truncate mt-0.5",
+												children: [
+													fmt.label.split(" ")[0],
+													" ",
+													fmt.bitrateLabel
+												]
+											})]
+										}, fmt.id);
+									})
+								})] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-gradient-to-r from-red-950/30 via-neutral-900 to-amber-950/30 border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-3",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SlidersVertical, { className: "w-5 h-5" })
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex items-center gap-2",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "text-xs font-bold text-white",
+												children: "Freemake イコライザーを音声に焼き込んで保存"
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+												className: "px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-mono font-bold",
+												children: EQ_PRESETS[eqSettings.preset]?.label.split(" ")[0] || "Custom"
+											})]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+											className: "text-[11px] text-neutral-400 mt-0.5",
+											children: [
+												"重低音 +",
+												eqSettings.bassBoost,
+												"dB・10バンドEQ・ラウドネス補正をFFmpegで直接ファイルへ反映します"
+											]
+										})] })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-2 shrink-0",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => setActiveTab("equalizer"),
+											className: "px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-[11px] font-semibold cursor-pointer",
+											children: "EQ調整"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => setApplyEqOnExport((v) => !v),
+											className: `px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${applyEqOnExport ? "bg-amber-500 text-black" : "bg-neutral-800 text-neutral-400"}`,
+											children: applyEqOnExport ? "適用 ON" : "原音のまま"
+										})]
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isDownloading,
+										onClick: () => handleExecuteDownload("device"),
+										className: "py-3 px-4 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-900/40 transition-all cursor-pointer",
+										children: [isDownloading ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+											"端末に保存 (.",
+											selectedSpec.ext.toUpperCase(),
+											")"
+										] })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isDownloading || selectedSpec.isVideo,
+										onClick: () => handleExecuteDownload("offline"),
+										title: selectedSpec.isVideo ? "MP4動画は「端末に保存」をご利用ください" : "アプリ内のローカル音源ライブラリ（オフライン再生＋ライブEQ対応）に保存します",
+										className: "py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white font-bold text-xs sm:text-sm border border-cyan-500/35 flex items-center justify-center gap-2 transition-all cursor-pointer",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(FolderDown, { className: "w-4 h-4 text-cyan-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "オフラインライブラリに保存" })]
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center justify-between text-[11px] text-neutral-400",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => {
+											setFreemakeModalOpen(false);
+											setLibraryTab("local");
+											navigateTo("library");
+										},
+										className: "text-cyan-400 hover:underline cursor-pointer",
+										children: "保存済みのオフライン曲一覧を開く →"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => setAdvancedOpen((v) => !v),
+										className: "flex items-center gap-1 text-neutral-400 hover:text-white cursor-pointer",
+										children: [
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Settings2, { className: "w-3.5 h-3.5" }),
+											/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "フル尺YouTube取得設定 (Cobalt / Cookie)" }),
+											advancedOpen ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronUp, { className: "w-3.5 h-3.5" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "w-3.5 h-3.5" })
+										]
+									})]
+								}),
+								advancedOpen && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-4 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3 text-xs",
+									children: [
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+											className: "text-[11px] text-neutral-400 leading-relaxed",
+											children: "クラウド環境のIPはYouTubeのボット確認によりフル尺直リンクがブロックされる場合があります。自分のCobaltインスタンスURLまたはYouTube Cookieを指定するとフル尺音声・MP4を直接取得できます（未設定時は公式30秒高音質プレビューが自動利用されます）。"
+										}),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+											className: "block text-[11px] text-neutral-300 font-semibold mb-1",
+											children: "Cobalt API エンドポイント URL (任意)"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "text",
+											value: advConfig.cobaltApiUrl,
+											onChange: (e) => setAdvConfig({
+												...advConfig,
+												cobaltApiUrl: e.target.value
+											}),
+											placeholder: "https://your-cobalt-instance.example/",
+											className: "w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs text-white"
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+											className: "block text-[11px] text-neutral-300 font-semibold mb-1",
+											children: "YouTube Cookie ヘッダー (任意)"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+											type: "password",
+											value: advConfig.youtubeCookie,
+											onChange: (e) => setAdvConfig({
+												...advConfig,
+												youtubeCookie: e.target.value
+											}),
+											placeholder: "CONSENT=...; SAPISID=...",
+											className: "w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs text-white"
+										})] }),
+										/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+											className: "flex justify-end",
+											children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+												type: "button",
+												onClick: handleSaveAdvConfig,
+												className: "px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs cursor-pointer",
+												children: "設定を保存"
+											})
+										})
+									]
+								})
+							]
+						}),
+						activeTab === "equalizer" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "space-y-5",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex flex-wrap items-center justify-between gap-2 p-3.5 rounded-2xl bg-neutral-900/70 border border-white/10",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", {
+										className: "text-xs font-bold text-white flex items-center gap-1.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Sparkles, { className: "w-4 h-4 text-sky-400" }), "Freemake Audio Engine DSP"]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-[11px] text-neutral-400",
+										children: "オフライン再生のリアルタイム音質補正 ＆ ダウンロード時のFFmpegマスタリングに連動"
+									})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-2",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											onClick: () => equalizer.setFreemakeNormalize(!eqSettings.freemakeNormalize),
+											className: `px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${eqSettings.freemakeNormalize ? "bg-sky-600/25 border-sky-400 text-sky-200" : "bg-neutral-800 border-neutral-700 text-neutral-400"}`,
+											children: ["音量均一化: ", eqSettings.freemakeNormalize ? "ON" : "OFF"]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => equalizer.setEnabled(!eqSettings.enabled),
+											className: `px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${eqSettings.enabled ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-400"}`,
+											children: eqSettings.enabled ? "EQ ON" : "バイパス"
+										})]
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+									className: "text-[11px] font-bold text-sky-300 mb-2",
+									children: "Freemake 専用サウンドプロファイル"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "grid grid-cols-2 sm:grid-cols-4 gap-2",
+									children: freemakePresets.map((key) => {
+										const p = EQ_PRESETS[key];
+										const active = eqSettings.preset === key;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+											type: "button",
+											onClick: () => equalizer.setPreset(key),
+											className: `p-2.5 rounded-xl border text-left transition-all cursor-pointer ${active ? "bg-gradient-to-r from-sky-600/80 to-blue-700/80 border-sky-400 text-white shadow" : "bg-neutral-900/70 border-white/5 text-neutral-300 hover:bg-neutral-800"}`,
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+												className: "text-xs font-bold truncate",
+												children: p.label.replace("Freemake ", "")
+											}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+												className: "text-[10px] text-neutral-300/80 truncate",
+												children: "Freemake DSP"
+											})]
+										}, key);
+									})
+								})] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+									className: "text-[11px] font-bold text-neutral-400 mb-2",
+									children: "標準プリセット"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "grid grid-cols-3 sm:grid-cols-5 gap-1.5",
+									children: standardPresets.map((key) => {
+										const p = EQ_PRESETS[key];
+										const active = eqSettings.preset === key;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+											type: "button",
+											onClick: () => equalizer.setPreset(key),
+											className: `px-2.5 py-1.5 rounded-lg border text-xs font-semibold truncate transition-all cursor-pointer ${active ? "bg-red-600 border-red-400 text-white" : "bg-neutral-900/60 border-white/5 text-neutral-300 hover:bg-neutral-800"}`,
+											children: p.label.split(" ")[0]
+										}, key);
+									})
+								})] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-3 rounded-2xl bg-black/50 border border-white/5",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center justify-between text-[10px] text-neutral-400 font-mono mb-1.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+											className: "flex items-center gap-1",
+											children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Activity, { className: "w-3 h-3 text-sky-400" }), "Freemake リアルタイムスペクトラム"]
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: EQ_PRESETS[eqSettings.preset]?.label })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SpectrumVisualizer, {
+										height: 48,
+										barCount: 44,
+										mode: "bars"
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "p-3.5 rounded-2xl bg-neutral-900/60 border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+										className: "flex items-center gap-2.5",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Zap, { className: "w-4 h-4 text-amber-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+											className: "text-xs font-bold text-white",
+											children: "重低音ブースト (65Hz Lowshelf)"
+										}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+											className: "ml-2 text-xs font-mono text-amber-400 font-bold",
+											children: [
+												"+",
+												eqSettings.bassBoost,
+												" dB"
+											]
+										})] })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+										type: "range",
+										min: "0",
+										max: "12",
+										step: "0.5",
+										value: eqSettings.bassBoost,
+										onChange: (e) => equalizer.setBassBoost(parseFloat(e.target.value)),
+										className: "w-full sm:w-56 accent-amber-500 h-1.5 bg-neutral-800 rounded-lg cursor-pointer"
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center justify-between mb-2",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+										className: "text-xs font-bold text-neutral-300",
+										children: "10バンド・イコライザー (-12dB 〜 +12dB)"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => equalizer.resetToFlat(),
+										className: "text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 px-2 py-1 rounded bg-neutral-900 border border-white/5 cursor-pointer",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(RotateCcw, { className: "w-3 h-3" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "フラット" })]
+									})]
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "grid grid-cols-5 sm:grid-cols-10 gap-2 p-3 rounded-2xl bg-[#090b0f] border border-white/5",
+									children: EQ_FREQUENCIES.map((freq, idx) => {
+										const gain = eqSettings.gains[idx] || 0;
+										return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+											className: "flex flex-col items-center gap-1.5",
+											children: [
+												/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+													className: `text-[10px] font-mono font-bold ${gain > 0 ? "text-red-400" : gain < 0 ? "text-cyan-400" : "text-neutral-500"}`,
+													children: gain > 0 ? `+${gain}` : gain
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+													className: "relative h-36 flex items-center justify-center",
+													children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "absolute top-1/2 left-0 right-0 h-px bg-white/15 pointer-events-none" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+														type: "range",
+														min: "-12",
+														max: "12",
+														step: "0.5",
+														value: gain,
+														onChange: (e) => equalizer.setBandGain(idx, parseFloat(e.target.value)),
+														onDoubleClick: () => equalizer.setBandGain(idx, 0),
+														style: {
+															transform: "rotate(-90deg)",
+															width: "124px"
+														},
+														className: "accent-sky-500 bg-neutral-800 rounded-lg cursor-pointer h-1.5"
+													})]
+												}),
+												/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", {
+													className: "text-[10px] font-mono text-neutral-300 font-semibold",
+													children: [formatFreq(freq), "Hz"]
+												})
+											]
+										}, freq);
+									})
+								})] })
+							]
+						}),
+						activeTab === "convert" && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+							className: "space-y-4",
+							children: [
+								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+									ref: fileInputRef,
+									type: "file",
+									accept: "audio/*,video/*,.mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.mp4,.webm,.mov",
+									onChange: (e) => {
+										const f = e.target.files?.[0];
+										if (f) {
+											setPickedFile(f);
+											setConvertTitle(f.name.replace(/\.[^.]+$/, ""));
+										}
+									},
+									className: "hidden"
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									onClick: () => fileInputRef.current?.click(),
+									className: "border-2 border-dashed border-neutral-700 hover:border-emerald-400 rounded-2xl p-6 text-center cursor-pointer bg-neutral-900/40 transition-colors",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(CloudUpload, { className: "w-8 h-8 text-emerald-400 mx-auto mb-2" }), pickedFile ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-sm font-bold text-white",
+										children: pickedFile.name
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
+										className: "text-xs text-emerald-400 font-mono mt-1",
+										children: [(pickedFile.size / 1048576).toFixed(2), " MB — クリックで別ファイルに変更"]
+									})] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-sm font-bold text-white",
+										children: "端末内の音声・動画ファイルを選択 (MP3 / WAV / FLAC / M4A / MP4 / WEBM)"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+										className: "text-xs text-neutral-400 mt-1",
+										children: "Freemake FFmpeg エンジンで高音質変換 ＋ 現在のEQカーブを直接焼き込みます"
+									})] })]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+										className: "block text-[11px] font-semibold text-neutral-300 mb-1",
+										children: "曲名タグ"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+										type: "text",
+										value: convertTitle,
+										onChange: (e) => setConvertTitle(e.target.value),
+										placeholder: "タイトル",
+										className: "w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white"
+									})] }), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+										className: "block text-[11px] font-semibold text-neutral-300 mb-1",
+										children: "アーティスト名タグ"
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", {
+										type: "text",
+										value: convertArtist,
+										onChange: (e) => setConvertArtist(e.target.value),
+										placeholder: "アーティスト名",
+										className: "w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white"
+									})] })]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", {
+									className: "block text-[11px] font-semibold text-neutral-300 mb-1.5",
+									children: "変換後のフォーマット"
+								}), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
+									className: "grid grid-cols-2 sm:grid-cols-4 gap-2",
+									children: formats.map((fmt) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										onClick: () => setSelectedFormat(fmt.id),
+										className: `p-2 rounded-xl border text-left text-xs cursor-pointer ${selectedFormat === fmt.id ? "bg-emerald-600/20 border-emerald-400 text-white font-bold" : "bg-neutral-900/60 border-white/5 text-neutral-300"}`,
+										children: [
+											".",
+											fmt.ext.toUpperCase(),
+											" (",
+											fmt.bitrateLabel,
+											")"
+										]
+									}, fmt.id))
+								})] }),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "flex items-center justify-between p-3 rounded-xl bg-neutral-900/70 border border-white/10 text-xs",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
+										"Freemake EQ焼き込み (",
+										EQ_PRESETS[eqSettings.preset]?.label.split(" ")[0],
+										" / Bass +",
+										eqSettings.bassBoost,
+										"dB)"
+									] }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
+										type: "button",
+										onClick: () => setApplyEqOnExport((v) => !v),
+										className: `px-3 py-1 rounded-lg font-bold cursor-pointer ${applyEqOnExport ? "bg-amber-500 text-black" : "bg-neutral-800 text-neutral-400"}`,
+										children: applyEqOnExport ? "ON" : "OFF"
+									})]
+								}),
+								/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+									className: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+									children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isConverting || !pickedFile,
+										onClick: () => handleExecuteLocalConvert("device"),
+										className: "py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer",
+										children: [isConverting ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "w-4 h-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "w-4 h-4" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "変換して端末に保存" })]
+									}), /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+										type: "button",
+										disabled: isConverting || !pickedFile || selectedSpec.isVideo,
+										onClick: () => handleExecuteLocalConvert("offline"),
+										className: "py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white font-bold text-xs sm:text-sm border border-cyan-500/35 flex items-center justify-center gap-2 cursor-pointer",
+										children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(FolderDown, { className: "w-4 h-4 text-cyan-400" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "変換してオフライン保存" })]
+									})]
+								})
+							]
+						})
+					]
+				})
+			]
+		})
+	});
+};
 // src/App.tsx
 var MainLayout = () => {
 	const { toastNotification, setToastNotification, activeView, playerMode, setPlayerMode, currentTrack, backgroundPlaybackEnabled, eqModalOpen, setEqModalOpen, shareModalOpen, setShareModalOpen, shareModalPayload, commentsModalOpen, setCommentsModalOpen, dmModalOpen, setDmModalOpen, openDmWithUser, notificationDrawerOpen, setNotificationDrawerOpen, storyModalOpen, setStoryModalOpen, visualShareTarget, quizModalOpen, setQuizModalOpen, matchModalOpen, setMatchModalOpen, collabModalOpen, setCollabModalOpen, currentLyrics, deviceMode } = usePlayer();
@@ -51426,6 +53062,7 @@ var MainLayout = () => {
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(TrackDetailModal, {}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectDeviceModal, {}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ZeroCodeModal, {}),
+			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(FreemakeModal, {}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)(PWAInstallBanner, {})
 		]
 	});

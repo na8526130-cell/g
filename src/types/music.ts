@@ -31,6 +31,11 @@ export interface Track {
   views?: string;
   isLocal?: boolean;
   audioUrl?: string;
+  isSharedOffline?: boolean;
+  uploadedBy?: string;
+  uploadedAt?: string;
+  fileSize?: number;
+  isCachedOffline?: boolean;
   commentEmotion?: CommentEmotionData;
 }
 

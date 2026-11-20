@@ -23,6 +23,8 @@ import {
   Monitor,
   BarChart2,
   ArrowRightLeft,
+  Download,
+  Settings,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { IOSInstallGuideModal } from './PWAInstallBanner';
@@ -48,6 +50,8 @@ export const TopNavbar: React.FC = () => {
     setAdminModalOpen,
     setEqModalOpen,
     setDmModalOpen,
+    dmUiVisible,
+    openFreemakeModal,
     setNotificationDrawerOpen,
     unreadNotificationCount,
     setTermsModalOpen,
@@ -63,6 +67,7 @@ export const TopNavbar: React.FC = () => {
     setWrappedModalOpen,
     deviceMode,
     setDeviceMode,
+    setSettingsModalOpen,
   } = usePlayer();
 
   const isPC = deviceMode === 'pc';
@@ -304,6 +309,7 @@ export const TopNavbar: React.FC = () => {
           <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
           <span>同時聴きラウンジ</span>
         </button>
+        {dmUiVisible && (
         <button
           type="button"
           onClick={() => setDmModalOpen(true)}
@@ -311,6 +317,7 @@ export const TopNavbar: React.FC = () => {
         >
           DMチャット
         </button>
+        )}
       </nav>
       )}
 
@@ -467,6 +474,7 @@ export const TopNavbar: React.FC = () => {
         )}
 
         {/* Direct Messages Quick Button */}
+        {dmUiVisible && (
         <button
           type="button"
           onClick={() => setDmModalOpen(true)}
@@ -476,6 +484,7 @@ export const TopNavbar: React.FC = () => {
           <MessageSquare className="w-3.5 h-3.5 text-cyan-400" />
           {isPC && <span>DM</span>}
         </button>
+        )}
 
         {/* Social Notification Bell with live unread badge */}
         <button
@@ -578,11 +587,24 @@ export const TopNavbar: React.FC = () => {
         <button
           type="button"
           onClick={() => setEqModalOpen(true)}
-          title="イコライザー & 重低音ブースト"
+          title="Freemake イコライザー & 重低音ブースト"
           className="flex px-2.5 sm:px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-amber-400 border border-neutral-800 rounded-lg text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Sliders className="w-3.5 h-3.5 text-amber-500" />
           <span className="hidden lg:inline">EQ</span>
+        </button>
+        )}
+
+        {/* Freemake Audio/Video Downloader & Converter */}
+        {isPC && (
+        <button
+          type="button"
+          onClick={() => openFreemakeModal(currentTrack)}
+          title="Freemake ダウンロード & 形式変換 (MP3/M4A/FLAC/WAV/MP4)"
+          className="flex px-2.5 sm:px-3 py-2 bg-sky-600/15 hover:bg-sky-600/25 text-sky-300 hover:text-white border border-sky-500/35 rounded-lg text-xs font-semibold items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <Download className="w-3.5 h-3.5 text-sky-400" />
+          <span className="hidden lg:inline">Freemake</span>
         </button>
         )}
 
@@ -596,6 +618,19 @@ export const TopNavbar: React.FC = () => {
         >
           <FileText className="w-3.5 h-3.5 text-neutral-400" />
           <span className="hidden xl:inline">利用規約</span>
+        </button>
+        )}
+
+        {/* Settings Modal Button (PC) */}
+        {isPC && (
+        <button
+          type="button"
+          onClick={() => setSettingsModalOpen(true)}
+          title="設定"
+          aria-label="設定を開く"
+          className="p-2 bg-neutral-900/90 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 rounded-lg transition-colors shrink-0 cursor-pointer"
+        >
+          <Settings className="w-4 h-4 text-neutral-300" />
         </button>
         )}
 

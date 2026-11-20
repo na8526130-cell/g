@@ -15,6 +15,7 @@ import { api, SyncedAccountLibrary } from '../services/api';
 import { equalizer } from '../services/equalizer';
 import { socialSocket } from '../services/socialSocket';
 import { getPlayableOfflineTrack } from '../services/offlineStorage';
+import { syncSharedTracksForOffline } from '../services/sharedOffline';
 import { normalizeArtistName } from '../utils/artistNames';
 
 const normalizeTrack = (t: Track): Track =>
@@ -59,7 +60,7 @@ export interface ZeroCodeTarget {
   trackId?: string;
 }
 
-export type LibraryTabType = 'liked' | 'history' | 'playlists' | 'local';
+export type LibraryTabType = 'liked' | 'history' | 'playlists' | 'local' | 'shared_offline';
 export type DeviceMode = 'mobile' | 'pc';
 
 export interface ToastAction {
@@ -322,8 +323,15 @@ interface PlayerContextType {
   setCommentsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   dmModalOpen: boolean;
   setDmModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  dmUiVisible: boolean;
+  setDmUiVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  toggleDmUiVisible: () => void;
   dmTargetUser: string | null;
   openDmWithUser: (username?: string) => void;
+  freemakeModalOpen: boolean;
+  setFreemakeModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  freemakeTargetTrack: Track | null;
+  openFreemakeModal: (track?: Track | null) => void;
   notificationDrawerOpen: boolean;
   setNotificationDrawerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   unreadNotificationCount: number;
@@ -332,6 +340,10 @@ interface PlayerContextType {
   // Terms of Service & Privacy Policy (利用規約 & プライバシーポリシー)
   termsModalOpen: boolean;
   setTermsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+
+  // App Settings Modal (設定)
+  settingsModalOpen: boolean;
+  setSettingsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
 
   // Creative & Community Modals
   storyModalOpen: boolean;
@@ -1143,7 +1155,77 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [danmakuEnabled, setDanmakuEnabled] = useState<boolean>(true);
   const [commentsModalOpen, setCommentsModalOpen] = useState<boolean>(false);
   const [dmModalOpen, setDmModalOpen] = useState<boolean>(false);
+  const [dmUiVisible, setDmUiVisible] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('yt_music_dm_ui_visible_v1');
+      return saved === 'false' ? false : true;
+    } catch {
+      return true;
+    }
+  });
   const [dmTargetUser, setDmTargetUser] = useState<string | null>(null);
+  const [freemakeModalOpen, setFreemakeModalOpen] = useState<boolean>(false);
+  const [freemakeTargetTrack, setFreemakeTargetTrack] = useState<Track | null>(null);
+  const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('yt_music_dm_ui_visible_v1', String(dmUiVisible));
+    } catch {}
+    if (!dmUiVisible) {
+      setDmModalOpen(false);
+    }
+  }, [dmUiVisible]);
+
+  const [toastNotification, setToastNotification] = useState<ToastNotificationPayload | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showToast = useCallback(
+    (
+      message: string,
+      type: 'info' | 'success' | 'warning' = 'info',
+      duration = 4000,
+      action?: ToastAction
+    ) => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+      const payload: ToastNotificationPayload = { message, type, action };
+      setToastNotification(payload);
+      toastTimerRef.current = setTimeout(() => {
+        setToastNotification((prev) => (prev === payload ? null : prev));
+        toastTimerRef.current = null;
+      }, duration);
+    },
+    []
+  );
+
+  const toggleDmUiVisible = useCallback(() => {
+    const next = !dmUiVisible;
+    setDmUiVisible(next);
+    showToast(
+      next
+        ? 'DM（ダイレクトメッセージ）UIを表示しました'
+        : 'DM（ダイレクトメッセージ）UIを非表示にしました（アカウント設定からいつでも再表示できます）',
+      'info',
+      3000
+    );
+  }, [dmUiVisible, showToast]);
+
+  const openFreemakeModal = useCallback((track?: Track | null) => {
+    setFreemakeTargetTrack(track || null);
+    setFreemakeModalOpen(true);
+  }, []);
+
   const [notificationDrawerOpen, setNotificationDrawerOpen] = useState<boolean>(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState<number>(0);
   const [termsModalOpen, setTermsModalOpen] = useState<boolean>(false);
@@ -1165,10 +1247,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [matchModalOpen, setMatchModalOpen] = useState<boolean>(false);
   const [collabModalOpen, setCollabModalOpen] = useState<boolean>(false);
 
-  const openDmWithUser = useCallback((username?: string) => {
-    if (username) setDmTargetUser(username);
-    setDmModalOpen(true);
-  }, []);
+  const openDmWithUser = useCallback(
+    (username?: string) => {
+      if (!dmUiVisible) {
+        showToast('DMのUIは現在非表示です（アカウント設定から再表示できます）', 'info', 2800);
+        return;
+      }
+      if (username) setDmTargetUser(username);
+      setDmModalOpen(true);
+    },
+    [dmUiVisible, showToast]
+  );
 
   const refreshNotifications = useCallback(async () => {
     if (!currentUser) {
@@ -1199,8 +1288,33 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const unsub = socialSocket.on('notification:new', () => {
       refreshNotifications();
     });
-    return () => unsub();
+    const unsubShared = socialSocket.on('shared_offline:added', () => {
+      if (navigator.onLine) {
+        syncSharedTracksForOffline().catch(() => {});
+      }
+    });
+    return () => {
+      unsub();
+      unsubShared();
+    };
   }, [refreshNotifications]);
+
+  // Background auto-sync of Shared Offline tracks into IndexedDB while online
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (navigator.onLine) {
+        syncSharedTracksForOffline().catch(() => {});
+      }
+    }, 2500);
+    const onOnline = () => {
+      syncSharedTracksForOffline().catch(() => {});
+    };
+    window.addEventListener('online', onOnline);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('online', onOnline);
+    };
+  }, []);
 
   // Live active synced lyric line
   const activeSyncedLyricText = useMemo(() => {
@@ -1334,6 +1448,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         floatingLyricsOverlay,
         canvasEnabled,
         backgroundPlaybackEnabled,
+        dmUiVisible,
       },
     };
   }, [
@@ -1353,6 +1468,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     floatingLyricsOverlay,
     canvasEnabled,
     backgroundPlaybackEnabled,
+    dmUiVisible,
   ]);
 
   const snapshotRef = useRef<SyncedAccountLibrary>(buildLibrarySnapshot());
@@ -1446,6 +1562,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       if (typeof lib.settings.backgroundPlaybackEnabled === 'boolean') {
         setBackgroundPlaybackEnabled(lib.settings.backgroundPlaybackEnabled);
+      }
+      if (typeof lib.settings.dmUiVisible === 'boolean') {
+        setDmUiVisible(lib.settings.dmUiVisible);
       }
     }
 
@@ -2033,8 +2152,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       isTransitioningEarlyRef.current = false;
 
       let resolvedTrack = normalizeTrack(track);
-      if (track.isLocal) {
+      if (track.isLocal || track.isSharedOffline) {
         resolvedTrack = normalizeTrack(await getPlayableOfflineTrack(track));
+        if (resolvedTrack.isSharedOffline && navigator.onLine) {
+          fetch(`/api/shared-offline/${encodeURIComponent(resolvedTrack.id)}/play`, {
+            method: 'POST',
+          }).catch(() => {});
+        }
       }
 
       if (contextOverride) {
@@ -2667,38 +2791,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return next;
     });
   }, []);
-
-  const [toastNotification, setToastNotification] = useState<ToastNotificationPayload | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-    };
-  }, []);
-
-  const showToast = useCallback(
-    (
-      message: string,
-      type: 'info' | 'success' | 'warning' = 'info',
-      duration = 4000,
-      action?: ToastAction
-    ) => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-        toastTimerRef.current = null;
-      }
-      const payload: ToastNotificationPayload = { message, type, action };
-      setToastNotification(payload);
-      toastTimerRef.current = setTimeout(() => {
-        setToastNotification((prev) => (prev === payload ? null : prev));
-        toastTimerRef.current = null;
-      }, duration);
-    },
-    []
-  );
 
   const cycleShuffleMode = useCallback(async () => {
     setShuffleMode((prev) => {
@@ -3975,14 +4067,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setCommentsModalOpen,
         dmModalOpen,
         setDmModalOpen,
+        dmUiVisible,
+        setDmUiVisible,
+        toggleDmUiVisible,
         dmTargetUser,
         openDmWithUser,
+        freemakeModalOpen,
+        setFreemakeModalOpen,
+        freemakeTargetTrack,
+        openFreemakeModal,
         notificationDrawerOpen,
         setNotificationDrawerOpen,
         unreadNotificationCount,
         refreshNotifications,
         termsModalOpen,
         setTermsModalOpen,
+        settingsModalOpen,
+        setSettingsModalOpen,
         storyModalOpen,
         setStoryModalOpen,
         visualShareTarget,

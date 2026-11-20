@@ -31,6 +31,7 @@ import {
   Zap,
   Info,
   MonitorSpeaker,
+  Download,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -108,6 +109,7 @@ export const PlayerBar: React.FC = () => {
     setFullScreenPlayerOpen,
     deviceMode,
     openTrackDetailModal,
+    openFreemakeModal,
   } = usePlayer();
 
   const [crossfadeMenuOpen, setCrossfadeMenuOpen] = useState(false);
@@ -758,7 +760,7 @@ export const PlayerBar: React.FC = () => {
           <button
             type="button"
             onClick={() => setEqModalOpen((prev) => !prev)}
-            title="10バンド・オーディオイコライザー & 重低音ブースト"
+            title="Freemake イコライザー & 重低音ブースト"
             className={`p-2 rounded-lg transition-colors ${
               eqModalOpen
                 ? 'bg-red-600/20 text-red-400'
@@ -766,6 +768,16 @@ export const PlayerBar: React.FC = () => {
             }`}
           >
             <Sliders className="w-4 h-4 md:w-5 md:h-5" />
+          </button>
+
+          {/* Freemake Download & Converter Button */}
+          <button
+            type="button"
+            onClick={() => openFreemakeModal(currentTrack)}
+            title="Freemake ダウンロード & 変換 (MP3/M4A/FLAC/WAV/MP4)"
+            className="p-2 rounded-lg text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+          >
+            <Download className="w-4 h-4 md:w-5 md:h-5" />
           </button>
 
           {/* Share Track / Playlist Button */}

@@ -65,6 +65,34 @@ export default defineConfig(() => {
               },
             },
             {
+              urlPattern: /^\/api\/shared-offline\/file\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'shared-offline-audio-cache',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+                expiration: {
+                  maxEntries: 120,
+                  maxAgeSeconds: 60 * 24 * 60 * 60, // 60 days
+                },
+              },
+            },
+            {
+              urlPattern: /^\/api\/shared-offline$/i,
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'shared-offline-catalog-cache',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 30 * 24 * 60 * 60,
+                },
+              },
+            },
+            {
               urlPattern: /^\/api\/music\/.*/i,
               handler: 'NetworkFirst',
               options: {

@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 103,
+  "totalAccessCount": 106,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -459,19 +459,20 @@
       "8": 6,
       "9": 46,
       "11": 25,
-      "12": 2
+      "12": 2,
+      "13": 3
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 78,
+      "mobile": 81,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 78,
+      "Safari": 81,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 78,
+      "macOS": 81,
       "Other": 1
     },
     "lyricsStats": {
@@ -480,6 +481,13 @@
       "plainHits": 0,
       "notFound": 1
     },
-    "playbackErrors": []
+    "playbackErrors": [
+      {
+        "timestamp": "2026-11-20T13:31:31.828Z",
+        "videoId": "",
+        "title": "",
+        "error": "埋め込み再生不許可 (配信者制限)"
+      }
+    ]
   }
 }

@@ -23,7 +23,7 @@ export const SocialNotificationDrawer: React.FC<{
   onClose: () => void;
   onOpenDmWithUser?: (username: string) => void;
 }> = ({ isOpen, onClose, onOpenDmWithUser }) => {
-  const { currentUser, playTrack } = usePlayer();
+  const { currentUser, dmUiVisible } = usePlayer();
   const [activeTab, setActiveTab] = useState<'notifications' | 'feed'>('notifications');
   const [notifications, setNotifications] = useState<SocialNotification[]>([]);
   const [feed, setFeed] = useState<ActivityFeedItem[]>([]);
@@ -137,11 +137,13 @@ export const SocialNotificationDrawer: React.FC<{
                     <span>すべて既読にする</span>
                   </button>
                 </div>
-                {notifications.map((n) => (
+                {notifications
+                  .filter((n) => dmUiVisible || n.type !== 'dm')
+                  .map((n) => (
                   <div
                     key={n.id}
                     onClick={() => {
-                      if (n.type === 'dm' && onOpenDmWithUser) {
+                      if (n.type === 'dm' && dmUiVisible && onOpenDmWithUser) {
                         onClose();
                         onOpenDmWithUser(n.sender);
                       }

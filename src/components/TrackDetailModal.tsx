@@ -22,6 +22,7 @@ import {
   FileText,
   ExternalLink,
   Clock,
+  Download,
 } from 'lucide-react';
 
 interface RichTrackDetails {
@@ -46,6 +47,7 @@ export const TrackDetailModal: React.FC = () => {
     playNext,
     openAddToPlaylistModal,
     openShareModal,
+    openFreemakeModal,
     navigateTo,
     setSearchQuery,
     hideTrack,
@@ -250,14 +252,14 @@ export const TrackDetailModal: React.FC = () => {
           </div>
 
           {/* Quick Actions */}
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
             <button
               type="button"
               onClick={() => {
                 playTrack(track);
                 closeTrackDetailModal();
               }}
-              className="py-2.5 px-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex flex-col items-center gap-1 transition-colors cursor-pointer"
+              className="py-2.5 px-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-[11px] sm:text-xs font-bold flex flex-col items-center gap-1 transition-colors cursor-pointer"
             >
               <Play className="w-4 h-4 fill-current" />
               <span>今すぐ再生</span>
@@ -267,7 +269,7 @@ export const TrackDetailModal: React.FC = () => {
               onClick={() => {
                 playNext(track);
               }}
-              className="py-2.5 px-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
+              className="py-2.5 px-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-[11px] sm:text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
             >
               <ListStart className="w-4 h-4 text-red-400" />
               <span>次に再生</span>
@@ -275,9 +277,20 @@ export const TrackDetailModal: React.FC = () => {
             <button
               type="button"
               onClick={() => {
+                closeTrackDetailModal();
+                openFreemakeModal(track);
+              }}
+              className="py-2.5 px-1.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/35 border border-sky-500/30 text-sky-200 text-[11px] sm:text-xs font-bold flex flex-col items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Download className="w-4 h-4 text-sky-400" />
+              <span>保存</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
                 openAddToPlaylistModal(track);
               }}
-              className="py-2.5 px-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
+              className="py-2.5 px-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-[11px] sm:text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
             >
               <ListPlus className="w-4 h-4 text-neutral-300" />
               <span>プレイリスト</span>
@@ -287,7 +300,7 @@ export const TrackDetailModal: React.FC = () => {
               onClick={() => {
                 openShareModal('track');
               }}
-              className="py-2.5 px-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
+              className="py-2.5 px-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-[11px] sm:text-xs font-semibold flex flex-col items-center gap-1 transition-colors cursor-pointer"
             >
               <Share2 className="w-4 h-4 text-neutral-300" />
               <span>共有</span>

@@ -26,6 +26,7 @@ import {
   BookmarkPlus,
   Shuffle,
   X,
+  Download,
 } from 'lucide-react';
 
 interface MadeForYouMix {
@@ -335,6 +336,8 @@ export const HomeExploreView: React.FC = () => {
     hideTrack,
     isTrackBlocked,
     saveTracksAsPlaylist,
+    setSettingsModalOpen,
+    openFreemakeModal,
   } = usePlayer();
 
   const [data, setData] = useState<ExploreData | null>(null);
@@ -979,10 +982,10 @@ export const HomeExploreView: React.FC = () => {
           </h1>
           <button
             type="button"
-            onClick={() => navigateTo('library')}
+            onClick={() => setSettingsModalOpen(true)}
             className="w-10 h-10 -mr-2 flex items-center justify-center text-neutral-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
-            title="マイライブラリ・設定"
-            aria-label="マイライブラリを開く"
+            title="設定"
+            aria-label="設定を開く"
           >
             <Settings className="w-5 h-5" />
           </button>
@@ -1331,6 +1334,18 @@ export const HomeExploreView: React.FC = () => {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        openFreemakeModal(track);
+                      }}
+                      className="w-7 h-7 rounded-full bg-black/70 hover:bg-sky-600 text-white/90 hover:text-white backdrop-blur-md flex items-center justify-center shadow cursor-pointer"
+                      title="ダウンロード・保存"
+                      aria-label="ダウンロード・保存"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
                         openTrackDetailModal(track);
                       }}
                       className="w-7 h-7 rounded-full bg-black/70 hover:bg-neutral-800 text-white/90 hover:text-white backdrop-blur-md flex items-center justify-center shadow cursor-pointer"
@@ -1667,6 +1682,18 @@ export const HomeExploreView: React.FC = () => {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        openFreemakeModal(track);
+                      }}
+                      className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
+                      title="ダウンロード・保存"
+                      aria-label="ダウンロード・保存"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
                         openTrackDetailModal(track);
                       }}
                       className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-white transition-colors cursor-pointer"
@@ -1929,6 +1956,18 @@ export const HomeExploreView: React.FC = () => {
                         title="次に再生"
                       >
                         <ListStart className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openFreemakeModal(track);
+                        }}
+                        className="p-2 text-neutral-400 hover:text-sky-400 cursor-pointer"
+                        title="ダウンロード・保存"
+                        aria-label="ダウンロード・保存"
+                      >
+                        <Download className="w-4 h-4" />
                       </button>
                       <button
                         type="button"

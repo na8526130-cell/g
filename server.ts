@@ -20,6 +20,8 @@ import {
 } from './src/server/liveFeatures.js';
 import { normalizeArtistName, isSameArtist } from './src/utils/artistNames.js';
 import { expandSearchQuery, getSearchConversions } from './src/utils/searchConverter.js';
+import { registerFreemakeRoutes } from './src/server/freemake.js';
+import { registerSharedOfflineRoutes } from './src/server/sharedOffline.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3402,6 +3404,7 @@ export async function createApp(options?: {
       floatingLyricsOverlay?: boolean;
       canvasEnabled?: boolean;
       backgroundPlaybackEnabled?: boolean;
+      dmUiVisible?: boolean;
     };
   }
 
@@ -5714,6 +5717,14 @@ export async function createApp(options?: {
     broadcastToUser(deleted.recipient, payload);
 
     res.json({ success: true, message: 'DMメッセージを強制削除しました', deletedId: id });
+  });
+
+  // --- Freemake Audio/Video Downloader & Equalizer Conversion Engine ---
+  registerFreemakeRoutes(app, getInnertube);
+
+  // --- Shared Offline Library (誰でもアップロード・みんなでオフライン再生) ---
+  registerSharedOfflineRoutes(app, DATA_DIR, (track) => {
+    broadcast({ type: 'shared_offline:added', track });
   });
 
   if (!options?.skipStatic) {
