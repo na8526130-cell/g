@@ -65,7 +65,6 @@ import {
   publishOfflineTrackToShared,
   syncSharedTracksForOffline,
   copySharedTrackToMyOffline,
-  deleteSharedOfflineTrack,
 } from '../services/sharedOffline';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Track } from '../types/music';
@@ -695,6 +694,40 @@ export const LibraryView: React.FC = () => {
           <button
             type="button"
             onClick={() => {
+              setActiveTab('shared_offline');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'shared_offline' && subCategory === 'none'
+                ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-emerald-300 border border-emerald-500/30'
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5 text-emerald-400" />
+            <span>共有オフライン ({sharedTracks.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('local');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'local' && subCategory === 'none'
+                ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-cyan-300 border border-cyan-500/30'
+            }`}
+          >
+            <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
+            <span>オフライン ({localTracks.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
               setActiveTab('playlists');
               setSubCategory('none');
               setSelectedPlaylistId(null);
@@ -791,40 +824,6 @@ export const LibraryView: React.FC = () => {
           >
             <History className="w-3.5 h-3.5" />
             <span>最近の再生 ({recentTracks.length})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('local');
-              setSubCategory('none');
-              setSelectedPlaylistId(null);
-            }}
-            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
-              activeTab === 'local' && subCategory === 'none'
-                ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-600/30'
-                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
-            }`}
-          >
-            <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
-            <span>オフライン ({localTracks.length})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('shared_offline');
-              setSubCategory('none');
-              setSelectedPlaylistId(null);
-            }}
-            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
-              activeTab === 'shared_offline' && subCategory === 'none'
-                ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/30'
-                : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
-            }`}
-          >
-            <Globe className="w-3.5 h-3.5 text-emerald-400" />
-            <span>共有オフライン ({sharedTracks.length})</span>
           </button>
         </div>
       </div>
@@ -3396,28 +3395,6 @@ export const LibraryView: React.FC = () => {
                       >
                         <FolderDown className="w-4 h-4" />
                       </button>
-
-                      {(isAdmin ||
-                        !track.uploadedBy ||
-                        track.uploadedBy === 'ゲスト' ||
-                        track.uploadedBy === currentUser?.username) && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              await deleteSharedOfflineTrack(track.id);
-                              setSharedTracks((prev) => prev.filter((x) => x.id !== track.id));
-                              showToast(`「${track.title}」を削除しました`, 'info');
-                            } catch {
-                              showToast('削除に失敗しました', 'warning');
-                            }
-                          }}
-                          title="共有オフラインから削除"
-                          className="p-2 text-neutral-500 hover:text-red-400 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
                     </div>
                   );
                 })}

@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 106,
+  "totalAccessCount": 116,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -453,26 +453,32 @@
         "query": "藤原聡　feat",
         "count": 1,
         "lastSearched": "2026-11-19T11:45:48.482Z"
+      },
+      "みどりの雨よけ 髭男": {
+        "query": "みどりの雨よけ 髭男",
+        "count": 2,
+        "lastSearched": "2026-11-21T10:16:47.710Z"
       }
     },
     "hourlyVisits": {
       "8": 6,
-      "9": 46,
+      "9": 49,
+      "10": 7,
       "11": 25,
       "12": 2,
       "13": 3
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 81,
+      "mobile": 91,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 81,
+      "Safari": 91,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 81,
+      "macOS": 91,
       "Other": 1
     },
     "lyricsStats": {

@@ -148,7 +148,15 @@ export async function saveOfflineTrack(
 ): Promise<Track> {
   const db = await openOfflineDB();
   const id = `offline_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const fileType = file.type || (fileExt === 'mp4' ? 'audio/mp4' : 'audio/mpeg');
+  const extMimeMap: Record<string, string> = {
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    wav: 'audio/wav',
+    flac: 'audio/flac',
+    ogg: 'audio/ogg',
+    mp4: 'video/mp4',
+  };
+  const fileType = file.type || extMimeMap[fileExt.toLowerCase()] || 'audio/mpeg';
 
   const stored: StoredOfflineTrack = {
     id,

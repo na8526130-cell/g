@@ -548,17 +548,8 @@ export function registerSharedOfflineRoutes(
     res.json({ success: true });
   });
 
-  // 5. Delete shared track
-  app.delete('/api/shared-offline/:id', (req: Request, res: Response) => {
-    const id = String(req.params.id || '').trim();
-    const idx = sharedTracks.findIndex((t) => t.id === id);
-    if (idx === -1) {
-      return res.status(404).json({ error: '共有トラックが見つかりません' });
-    }
-    const [removed] = sharedTracks.splice(idx, 1);
-    const filePath = path.join(filesDir, `${removed.id}${removed.fileExt || '.mp3'}`);
-    fs.promises.unlink(filePath).catch(() => {});
-    saveIndex();
-    res.json({ success: true, deletedId: id });
+  // 5. Shared post deletion disabled
+  app.delete('/api/shared-offline/:id', (_req: Request, res: Response) => {
+    return res.status(403).json({ error: '共有投稿の削除は無効化されています' });
   });
 }

@@ -25,6 +25,7 @@ import {
   ArrowRightLeft,
   Download,
   Settings,
+  Globe,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { IOSInstallGuideModal } from './PWAInstallBanner';
@@ -68,6 +69,8 @@ export const TopNavbar: React.FC = () => {
     deviceMode,
     setDeviceMode,
     setSettingsModalOpen,
+    libraryTab,
+    setLibraryTab,
   } = usePlayer();
 
   const isPC = deviceMode === 'pc';
@@ -259,7 +262,7 @@ export const TopNavbar: React.FC = () => {
 
       {/* Zone 2: Navigation Links (PC Mode) */}
       {isPC && (
-      <nav className="flex items-center gap-5 lg:gap-7 text-sm font-medium">
+      <nav className="flex items-center gap-3.5 lg:gap-5 text-sm font-medium">
         <button
           type="button"
           onClick={() => navigateTo('home')}
@@ -269,7 +272,7 @@ export const TopNavbar: React.FC = () => {
               : 'text-neutral-400 hover:text-white'
           }`}
         >
-          ホーム (Home)
+          ホーム
         </button>
         <button
           type="button"
@@ -284,18 +287,37 @@ export const TopNavbar: React.FC = () => {
           title="オリコン週間ランキングへスクロール"
         >
           <Crown className="w-3.5 h-3.5 text-red-500" />
-          <span>オリコン (Oricon)</span>
+          <span>オリコン</span>
         </button>
         <button
           type="button"
-          onClick={() => navigateTo('library')}
+          onClick={() => {
+            if (libraryTab === 'shared_offline') setLibraryTab('playlists');
+            navigateTo('library');
+          }}
           className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-            activeView === 'library'
+            activeView === 'library' && libraryTab !== 'shared_offline'
               ? 'text-white font-semibold'
               : 'text-neutral-400 hover:text-white'
           }`}
         >
-          ライブラリ (Library)
+          ライブラリ
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setLibraryTab('shared_offline');
+            navigateTo('library');
+          }}
+          title="誰でもアップロード・オフライン再生できる共有ライブラリを開く"
+          className={`transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer ${
+            activeView === 'library' && libraryTab === 'shared_offline'
+              ? 'text-emerald-400 font-semibold'
+              : 'text-emerald-300/85 hover:text-emerald-300'
+          }`}
+        >
+          <Globe className="w-3.5 h-3.5 text-emerald-400" />
+          <span>共有オフライン</span>
         </button>
         <button
           type="button"

@@ -10,7 +10,6 @@ import {
   saveOfflineMeta,
   saveOfflineTrack,
   saveSharedOfflineBlob,
-  deleteCachedSharedOfflineTrack,
 } from './offlineStorage';
 
 export interface ServerSharedOfflineItem {
@@ -492,24 +491,4 @@ export async function copySharedTrackToMyOffline(track: Track): Promise<Track> {
     track.duration || '3:00',
     track.thumbnail
   );
-}
-
-/**
- * Delete a Shared Offline track from server & local cache
- */
-export async function deleteSharedOfflineTrack(id: string): Promise<void> {
-  const res = await fetch(`/api/shared-offline/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    throw new Error('削除に失敗しました');
-  }
-  await deleteCachedSharedOfflineTrack(id);
-  const existingCatalog =
-    (await getOfflineMeta<ServerSharedOfflineItem[]>(SHARED_CATALOG_META_KEY)) || [];
-  await saveOfflineMeta(
-    SHARED_CATALOG_META_KEY,
-    existingCatalog.filter((x) => x.id !== id)
-  );
-  notifySharedOfflineChanged();
 }

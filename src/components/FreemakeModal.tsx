@@ -35,9 +35,12 @@ import {
   convertLocalFileWithFreemake,
   loadFreemakeAdvancedConfig,
   saveFreemakeAdvancedConfig,
+  subscribeFreemakeProgress,
+  getFreemakeProgressState,
   FreemakeFormatId,
   FreemakeFormatOption,
   FreemakeProbeResponse,
+  FreemakeProgressState,
 } from '../services/freemake';
 import { SpectrumVisualizer } from './SpectrumVisualizer';
 import { SafeImage } from './SafeImage';
@@ -77,6 +80,7 @@ export const FreemakeModal: React.FC = () => {
   const [probeInfo, setProbeInfo] = useState<FreemakeProbeResponse | null>(null);
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
   const [statusNotice, setStatusNotice] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
+  const [progressState, setProgressState] = useState<FreemakeProgressState>(getFreemakeProgressState);
 
   // Advanced YouTube Cookie / Cobalt config
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(false);
@@ -91,6 +95,10 @@ export const FreemakeModal: React.FC = () => {
 
   useEffect(() => {
     return equalizer.subscribe((next) => setEqSettings(next));
+  }, []);
+
+  useEffect(() => {
+    return subscribeFreemakeProgress((next) => setProgressState(next));
   }, []);
 
   useEffect(() => {
@@ -114,27 +122,70 @@ export const FreemakeModal: React.FC = () => {
 
   useEffect(() => {
     if (!freemakeModalOpen) return;
-    const urlOrId = customUrlInput.trim() || targetTrack?.id || '';
+    const cleanUrl = customUrlInput.trim();
+    const urlOrId = cleanUrl || targetTrack?.id || '';
     if (!urlOrId && !targetTrack?.title) {
       setProbeInfo(null);
       return;
     }
     const timer = setTimeout(() => {
-      probeFreemakeTrack({
-        videoId: targetTrack?.id,
-        url: customUrlInput.trim() || undefined,
-        title: targetTrack?.title,
-        artist: targetTrack?.artist,
-        durationSeconds: targetTrack?.durationSeconds,
-      })
+      probeFreemakeTrack(
+        cleanUrl
+          ? { url: cleanUrl }
+          : {
+              videoId: targetTrack?.id,
+              title: targetTrack?.title,
+              artist: targetTrack?.artist,
+              duration: targetTrack?.duration,
+              durationSeconds: targetTrack?.durationSeconds,
+            }
+      )
         .then(setProbeInfo)
         .catch(() => setProbeInfo(null));
     }, 250);
     return () => clearTimeout(timer);
-  }, [freemakeModalOpen, customUrlInput, targetTrack?.id, targetTrack?.title, targetTrack?.artist]);
+  }, [freemakeModalOpen, customUrlInput, targetTrack?.id, targetTrack?.title, targetTrack?.artist, targetTrack?.duration, targetTrack?.durationSeconds]);
 
-  if (!freemakeModalOpen) return null;
+  const formatBytes = (bytes?: number) => {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    return `${Math.round(bytes / 1024)} KB`;
+  };
 
+  const formatSec = (sec?: number) => {
+    if (sec === undefined || sec < 0) return '';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+
+  if (!freemakeModalOpen) {
+    if (!progressState.active) return null;
+    return (
+      <button
+        type="button"
+        onClick={() => setFreemakeModalOpen(true)}
+        className="fixed top-16 right-4 z-[60] flex items-center gap-3 px-3.5 py-2.5 rounded-2xl bg-[#0e1420]/95 hover:bg-[#141d2e] border border-sky-400/40 shadow-2xl backdrop-blur-md text-left transition-all cursor-pointer max-w-[260px]"
+        title="クリックしてダウンロード進捗を開く"
+      >
+        <Loader2 className="w-4 h-4 text-sky-400 animate-spin shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-white">
+            <span className="truncate">{progressState.title || 'ダウンロード中'}</span>
+            <span className="text-sky-300 font-mono tabular-nums shrink-0">{progressState.percent}%</span>
+          </div>
+          <div className="w-full h-1.5 rounded-full bg-neutral-800 overflow-hidden mt-1">
+            <div
+              className="h-full bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-400 transition-all duration-200"
+              style={{ width: `${progressState.percent}%` }}
+            />
+          </div>
+        </div>
+      </button>
+    );
+  }
+
+  const busy = isDownloading || isConverting || progressState.active;
   const formatFreq = (freq: number) => (freq >= 1000 ? `${freq / 1000}k` : `${freq}`);
 
   const handleSaveAdvConfig = () => {
@@ -161,12 +212,12 @@ export const FreemakeModal: React.FC = () => {
       const res = await downloadWithFreemake({
         videoId: cleanUrl ? undefined : targetTrack?.id,
         url: cleanUrl || undefined,
-        title: targetTrack?.title || 'YouTube Audio',
-        artist: targetTrack?.artist || '',
-        album: targetTrack?.album || '',
-        thumbnail: targetTrack?.thumbnail,
-        duration: targetTrack?.duration,
-        durationSeconds: targetTrack?.durationSeconds,
+        title: cleanUrl ? (probeInfo?.fullTrackTitle || '') : (targetTrack?.title || 'YouTube Audio'),
+        artist: cleanUrl ? '' : (targetTrack?.artist || ''),
+        album: cleanUrl ? '' : (targetTrack?.album || ''),
+        thumbnail: cleanUrl ? undefined : targetTrack?.thumbnail,
+        duration: cleanUrl ? undefined : targetTrack?.duration,
+        durationSeconds: cleanUrl ? undefined : targetTrack?.durationSeconds,
         format: selectedFormat,
         applyEq: applyEqOnExport,
         saveTarget: effectiveTarget,
@@ -336,8 +387,91 @@ export const FreemakeModal: React.FC = () => {
 
         {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5">
+          {/* Live Progress Panel */}
+          {progressState.active && (
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-sky-950/60 via-[#0e1523] to-emerald-950/40 border border-sky-400/35 shadow-lg space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Loader2 className="w-4.5 h-4.5 text-sky-400 animate-spin shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-white truncate">
+                      {progressState.title}
+                      <span className="ml-1.5 text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300">
+                        .{progressState.formatExt}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-sky-200/90 truncate mt-0.5">
+                      {progressState.message}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-xl font-black text-white font-mono tabular-nums leading-none">
+                    {progressState.percent}%
+                  </div>
+                  <div className="text-[10px] text-neutral-400 font-mono mt-1 tabular-nums">
+                    {progressState.stage === 'converting' && progressState.processedSec !== undefined
+                      ? `${formatSec(progressState.processedSec)}${
+                          progressState.durationSec ? ` / ${formatSec(progressState.durationSec)}` : ''
+                        }`
+                      : progressState.receivedBytes
+                      ? `${formatBytes(progressState.receivedBytes)}${
+                          progressState.totalBytes ? ` / ${formatBytes(progressState.totalBytes)}` : ''
+                        }`
+                      : ''}
+                  </div>
+                </div>
+              </div>
+
+              <div className="w-full h-2.5 rounded-full bg-neutral-900/90 border border-white/10 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-400 transition-all duration-200"
+                  style={{ width: `${Math.max(3, progressState.percent)}%` }}
+                />
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5 text-[10px] font-semibold">
+                {[
+                  {
+                    label: progressState.mode === 'convert' ? '1. アップロード' : '1. 音源照合',
+                    done: !['idle', 'resolving', 'searching', 'uploading'].includes(progressState.stage),
+                    current: ['resolving', 'searching', 'uploading'].includes(progressState.stage),
+                  },
+                  {
+                    label: progressState.mode === 'convert' ? '2. サーバー受信' : '2. 音声取得',
+                    done: ['converting', 'downloading', 'saving', 'done'].includes(progressState.stage),
+                    current: progressState.stage === 'fetching',
+                  },
+                  {
+                    label: '3. FFmpeg変換',
+                    done: ['downloading', 'saving', 'done'].includes(progressState.stage),
+                    current: progressState.stage === 'converting',
+                  },
+                  {
+                    label: '4. 保存完了',
+                    done: progressState.stage === 'done',
+                    current: ['downloading', 'saving'].includes(progressState.stage),
+                  },
+                ].map((step) => (
+                  <div
+                    key={step.label}
+                    className={`px-2 py-1 rounded-lg text-center truncate border ${
+                      step.done
+                        ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'
+                        : step.current
+                        ? 'bg-sky-500/25 border-sky-400/50 text-white'
+                        : 'bg-neutral-900/60 border-white/5 text-neutral-500'
+                    }`}
+                  >
+                    {step.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Status Banner */}
-          {statusNotice && (
+          {statusNotice && !(progressState.active && statusNotice.type === 'info') && (
             <div
               className={`p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${
                 statusNotice.type === 'success'
@@ -402,8 +536,12 @@ export const FreemakeModal: React.FC = () => {
                       FFmpeg: {ffmpegVersion ? '稼働中' : '待機中'}
                     </span>
                     {probeInfo.fullTrackAvailable && (
-                      <span className="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 font-semibold">
+                      <span
+                        className="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 font-semibold truncate max-w-full"
+                        title={probeInfo.fullTrackTitle || undefined}
+                      >
                         {probeInfo.fullTrackSource || 'フル尺音源エンジン対応'}
+                        {probeInfo.fullTrackTitle ? ` — ${probeInfo.fullTrackTitle}` : ''}
                       </span>
                     )}
                     {!probeInfo.fullTrackAvailable && probeInfo.officialPreviewAvailable && (
@@ -510,27 +648,32 @@ export const FreemakeModal: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
-                  disabled={isDownloading}
+                  disabled={busy}
                   onClick={() => handleExecuteDownload('device')}
                   className="py-3 px-4 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-900/40 transition-all cursor-pointer"
                 >
-                  {isDownloading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                  {busy ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>進行中 {progressState.active ? `${progressState.percent}%` : '...'}</span>
+                    </>
                   ) : (
-                    <Download className="w-4 h-4" />
+                    <>
+                      <Download className="w-4 h-4" />
+                      <span>ダウンロード (.{selectedSpec.ext.toUpperCase()} ＋ オフライン追加)</span>
+                    </>
                   )}
-                  <span>ダウンロード (.{selectedSpec.ext.toUpperCase()} ＋ オフライン追加)</span>
                 </button>
 
                 <button
                   type="button"
-                  disabled={isDownloading}
+                  disabled={busy}
                   onClick={() => handleExecuteDownload('offline')}
                   title="端末ストレージにはダウンロードせず、アプリ内のオフラインライブラリのみに保存します"
                   className="py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white font-bold text-xs sm:text-sm border border-cyan-500/35 flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
                   <FolderDown className="w-4 h-4 text-cyan-400" />
-                  <span>アプリ内オフラインのみ保存</span>
+                  <span>{busy ? `保存中 ${progressState.active ? `${progressState.percent}%` : ''}` : 'アプリ内オフラインのみ保存'}</span>
                 </button>
               </div>
 
@@ -887,21 +1030,21 @@ export const FreemakeModal: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
-                  disabled={isConverting || !pickedFile}
+                  disabled={busy || !pickedFile}
                   onClick={() => handleExecuteLocalConvert('device')}
                   className="py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  {isConverting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                  <span>変換して保存（＋オフライン自動追加）</span>
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  <span>{busy && progressState.active ? `変換中 ${progressState.percent}%` : '変換して保存（＋オフライン自動追加）'}</span>
                 </button>
                 <button
                   type="button"
-                  disabled={isConverting || !pickedFile}
+                  disabled={busy || !pickedFile}
                   onClick={() => handleExecuteLocalConvert('offline')}
                   className="py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white font-bold text-xs sm:text-sm border border-cyan-500/35 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <FolderDown className="w-4 h-4 text-cyan-400" />
-                  <span>オフラインのみ保存</span>
+                  <span>{busy && progressState.active ? `進行中 ${progressState.percent}%` : 'オフラインのみ保存'}</span>
                 </button>
               </div>
             </div>

@@ -27,6 +27,7 @@ import {
   Shuffle,
   X,
   Download,
+  Globe,
 } from 'lucide-react';
 
 interface MadeForYouMix {
@@ -338,6 +339,7 @@ export const HomeExploreView: React.FC = () => {
     saveTracksAsPlaylist,
     setSettingsModalOpen,
     openFreemakeModal,
+    setLibraryTab,
   } = usePlayer();
 
   const [data, setData] = useState<ExploreData | null>(null);
@@ -952,14 +954,30 @@ export const HomeExploreView: React.FC = () => {
           <WifiOff className="w-6 h-6" />
         </div>
         <p className="text-sm font-semibold text-white">ネットワークに接続できません</p>
-        <button
-          type="button"
-          onClick={() => navigateTo('library')}
-          className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
-        >
-          <FolderDown className="w-4 h-4" />
-          <span>マイライブラリ</span>
-        </button>
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryTab('local');
+              navigateTo('library');
+            }}
+            className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
+          >
+            <FolderDown className="w-4 h-4" />
+            <span>オフライン曲</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryTab('shared_offline');
+              navigateTo('library');
+            }}
+            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer"
+          >
+            <Globe className="w-4 h-4" />
+            <span>共有オフライン</span>
+          </button>
+        </div>
       </div>
     );
   }
@@ -968,27 +986,54 @@ export const HomeExploreView: React.FC = () => {
     <div className="space-y-8 pb-24">
       {/* Offline banner */}
       {isFromCache && (
-        <div className="flex items-center gap-2 px-3.5 py-2.5 bg-neutral-900/90 border border-neutral-800 rounded-xl text-neutral-300 text-xs">
-          <WifiOff className="w-4 h-4 text-red-500 shrink-0" />
-          <span>オフラインモードで表示しています</span>
+        <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 bg-neutral-900/90 border border-neutral-800 rounded-xl text-neutral-300 text-xs">
+          <div className="flex items-center gap-2">
+            <WifiOff className="w-4 h-4 text-red-500 shrink-0" />
+            <span>オフラインモードで表示しています</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryTab('shared_offline');
+              navigateTo('library');
+            }}
+            className="px-2.5 py-1 rounded-lg bg-emerald-600/25 border border-emerald-500/40 text-emerald-300 font-bold text-[11px] flex items-center gap-1 shrink-0 cursor-pointer"
+          >
+            <Globe className="w-3 h-3" />
+            <span>共有オフラインを開く</span>
+          </button>
         </div>
       )}
 
       {/* 1. Greeting + Compact Horizontal-Scroll Official髭男dism Albums Shelf */}
       <section className="space-y-2.5 pt-1">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight truncate">
             {getGreeting()}
           </h1>
-          <button
-            type="button"
-            onClick={() => setSettingsModalOpen(true)}
-            className="w-10 h-10 -mr-2 flex items-center justify-center text-neutral-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
-            title="設定"
-            aria-label="設定を開く"
-          >
-            <Settings className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setLibraryTab('shared_offline');
+                navigateTo('library');
+              }}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/35 text-emerald-300 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              title="誰でも投稿＆オフライン再生できる共有オフラインを開く"
+            >
+              <Globe className="w-3.5 h-3.5 text-emerald-400" />
+              <span>共有オフライン</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsModalOpen(true)}
+              className="w-10 h-10 -mr-2 flex items-center justify-center text-neutral-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+              title="設定"
+              aria-label="設定を開く"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-2">
