@@ -1,13 +1,24 @@
 import express, { Express, Request, Response } from 'express';
 import { execFile } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { Transform } from 'stream';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
+const MAX_UPLOAD_BYTES = 150 * 1024 * 1024; // 150 MiB
+const CHUNK_SIZE_BYTES = 1024 * 1024; // 1 MiB
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const XOR_KEY = crypto
+  .createHash('sha256')
+  .update('zero-music-shared-offline-xor-obfuscation-key-v1')
+  .digest();
+
 export interface SharedOfflineTrackMeta {
   id: string;
+  shareToken?: string;
   title: string;
   artist: string;
   album: string;
@@ -19,6 +30,10 @@ export interface SharedOfflineTrackMeta {
   fileSize: number;
   uploadedBy: string;
   uploadedAt: string;
+  expiresAt?: string | null;
+  retentionMinutes?: number | null;
+  allowExtension?: boolean;
+  isObfuscated?: boolean;
   plays: number;
 }
 
@@ -78,6 +93,58 @@ const EXT_TO_MIME: Record<string, string> = {
   '.ts': 'video/mp2t',
 };
 
+function xorBufferAtOffset(buf: Buffer, startOffset = 0): Buffer {
+  const out = Buffer.allocUnsafe(buf.length);
+  const keyLen = XOR_KEY.length;
+  for (let i = 0; i < buf.length; i++) {
+    out[i] = buf[i] ^ XOR_KEY[(startOffset + i) % keyLen];
+  }
+  return out;
+}
+
+function createXorTransformStream(startOffset = 0): Transform {
+  let offset = startOffset;
+  const keyLen = XOR_KEY.length;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      const out = Buffer.allocUnsafe(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        out[i] = chunk[i] ^ XOR_KEY[(offset + i) % keyLen];
+      }
+      offset += chunk.length;
+      callback(null, out);
+    },
+  });
+}
+
+function generateShareToken(): string {
+  return crypto.randomBytes(12).toString('base64url');
+}
+
+function computeExpiresAt(retentionMinutesInput: unknown): {
+  retentionMinutes: number | null;
+  expiresAt: string | null;
+} {
+  if (retentionMinutesInput === null || retentionMinutesInput === undefined || retentionMinutesInput === '') {
+    return { retentionMinutes: null, expiresAt: null };
+  }
+  const mins = Number(retentionMinutesInput);
+  if (!Number.isFinite(mins) || mins <= 0) {
+    return { retentionMinutes: null, expiresAt: null };
+  }
+  const clamped = Math.min(Math.max(Math.round(mins), 1), 365 * 24 * 60);
+  return {
+    retentionMinutes: clamped,
+    expiresAt: new Date(Date.now() + clamped * 60 * 1000).toISOString(),
+  };
+}
+
+function isTrackExpired(item: SharedOfflineTrackMeta, nowMs = Date.now()): boolean {
+  if (!item.expiresAt) return false;
+  const expMs = new Date(item.expiresAt).getTime();
+  return Number.isFinite(expMs) && expMs <= nowMs;
+}
+
 function formatDurationLabel(sec: number): string {
   const safe = Math.max(0, Math.round(sec));
   const m = Math.floor(safe / 60);
@@ -94,7 +161,7 @@ function sanitizeText(val: unknown, fallback = '', maxLen = 120): string {
 }
 
 function resolveExtension(rawFilename: string, rawMime: string): string | null {
-  let ext = path.extname(rawFilename).toLowerCase();
+  const ext = path.extname(rawFilename).toLowerCase();
   if (ALLOWED_EXTENSIONS.has(ext)) return ext;
 
   const mime = (rawMime || '').toLowerCase();
@@ -118,7 +185,6 @@ function resolveExtension(rawFilename: string, rawMime: string): string | null {
   if (mime.startsWith('audio/')) return '.mp3';
   if (mime.startsWith('video/')) return '.mp4';
   if (mime === 'application/octet-stream' || !mime) {
-    // Allow raw binary upload with unknown extension as fallback .mp3
     return '.mp3';
   }
   return null;
@@ -147,6 +213,24 @@ async function probeDurationSeconds(filePath: string): Promise<number> {
   return 0;
 }
 
+interface UploadSessionMeta {
+  uploadId: string;
+  filename: string;
+  mimeType: string;
+  ext: string;
+  fileSize: number;
+  chunkCount: number;
+  retentionMinutes: number | null;
+  allowExtension: boolean;
+  title?: string;
+  artist?: string;
+  album?: string;
+  uploadedBy?: string;
+  durationSeconds?: number;
+  duration?: string;
+  createdAt: number;
+}
+
 export function registerSharedOfflineRoutes(
   app: Express,
   dataDir: string,
@@ -168,6 +252,9 @@ export function registerSharedOfflineRoutes(
     }
   };
 
+  const getTrackDiskPath = (item: Pick<SharedOfflineTrackMeta, 'id' | 'fileExt'>) =>
+    path.join(filesDir, `${item.id}${item.fileExt || '.mp3'}`);
+
   const loadIndex = (): SharedOfflineTrackMeta[] => {
     try {
       ensureDirs();
@@ -175,11 +262,16 @@ export function registerSharedOfflineRoutes(
         const raw = fs.readFileSync(indexFile, 'utf8');
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
+          const now = Date.now();
           return parsed.filter((item) => {
             if (!item || typeof item.id !== 'string') return false;
-            const ext = item.fileExt || '.mp3';
-            const filePath = path.join(filesDir, `${item.id}${ext}`);
-            return fs.existsSync(filePath);
+            const filePath = getTrackDiskPath(item);
+            if (!fs.existsSync(filePath)) return false;
+            if (isTrackExpired(item, now)) {
+              fs.promises.unlink(filePath).catch(() => {});
+              return false;
+            }
+            return true;
           });
         }
       }
@@ -200,6 +292,37 @@ export function registerSharedOfflineRoutes(
     }
   };
 
+  const purgeExpiredAndMissing = () => {
+    const now = Date.now();
+    let changed = false;
+    const kept: SharedOfflineTrackMeta[] = [];
+    for (const item of sharedTracks) {
+      const filePath = getTrackDiskPath(item);
+      const exists = fs.existsSync(filePath);
+      const expired = isTrackExpired(item, now);
+      if (!exists || expired) {
+        changed = true;
+        if (exists) {
+          fs.promises.unlink(filePath).catch(() => {});
+        }
+        continue;
+      }
+      kept.push(item);
+    }
+    if (changed) {
+      sharedTracks = kept;
+      saveIndex();
+    }
+  };
+
+  // Periodic cleanup of expired shared files every 5 minutes
+  const expiryTimer = setInterval(() => {
+    purgeExpiredAndMissing();
+  }, 5 * 60 * 1000);
+  if (typeof expiryTimer.unref === 'function') {
+    expiryTimer.unref();
+  }
+
   const cleanupStaleTmpDirs = async () => {
     try {
       ensureDirs();
@@ -217,6 +340,12 @@ export function registerSharedOfflineRoutes(
     } catch {}
   };
 
+  const findTrackByTokenOrId = (tokenOrId: string): SharedOfflineTrackMeta | undefined => {
+    const key = String(tokenOrId || '').trim();
+    if (!key) return undefined;
+    return sharedTracks.find((t) => t.id === key || t.shareToken === key);
+  };
+
   const finalizeTrackFromDisk = async (params: {
     id: string;
     diskPath: string;
@@ -224,12 +353,16 @@ export function registerSharedOfflineRoutes(
     ext: string;
     headerMime: string;
     fileSize: number;
+    isObfuscated: boolean;
+    retentionMinutes?: unknown;
+    allowExtension?: unknown;
     titleInput?: unknown;
     artistInput?: unknown;
     albumInput?: unknown;
     uploadedByInput?: unknown;
     durationSecondsInput?: unknown;
     durationInput?: unknown;
+    probedDurationSeconds?: number;
   }): Promise<SharedOfflineTrackMeta> => {
     const baseName = path.parse(params.rawFilename).name || 'Shared Track';
     let parsedTitle = baseName;
@@ -245,8 +378,11 @@ export function registerSharedOfflineRoutes(
     const album = sanitizeText(params.albumInput, '共有オフライン', 80);
     const uploadedBy = sanitizeText(params.uploadedByInput, 'ゲスト', 40);
 
-    let durationSeconds = Math.max(0, Math.round(Number(params.durationSecondsInput) || 0));
-    if (durationSeconds <= 0) {
+    let durationSeconds = Math.max(
+      0,
+      Math.round(Number(params.durationSecondsInput) || params.probedDurationSeconds || 0)
+    );
+    if (durationSeconds <= 0 && !params.isObfuscated) {
       durationSeconds = await probeDurationSeconds(params.diskPath);
     }
     if (durationSeconds <= 0) {
@@ -258,9 +394,13 @@ export function registerSharedOfflineRoutes(
       16
     );
     const mimeType = EXT_TO_MIME[params.ext] || params.headerMime || 'audio/mpeg';
+    const { retentionMinutes, expiresAt } = computeExpiresAt(params.retentionMinutes);
+    const allowExtension =
+      params.allowExtension === true || params.allowExtension === 'true' || params.allowExtension === '1';
 
     const meta: SharedOfflineTrackMeta = {
       id: params.id,
+      shareToken: generateShareToken(),
       title,
       artist,
       album,
@@ -272,6 +412,10 @@ export function registerSharedOfflineRoutes(
       fileSize: params.fileSize,
       uploadedBy,
       uploadedAt: new Date().toISOString(),
+      expiresAt,
+      retentionMinutes,
+      allowExtension,
+      isObfuscated: params.isObfuscated,
       plays: 0,
     };
 
@@ -279,7 +423,7 @@ export function registerSharedOfflineRoutes(
     if (sharedTracks.length > 200) {
       const removed = sharedTracks.splice(200);
       for (const old of removed) {
-        const oldPath = path.join(filesDir, `${old.id}${old.fileExt || '.mp3'}`);
+        const oldPath = getTrackDiskPath(old);
         fs.promises.unlink(oldPath).catch(() => {});
       }
     }
@@ -294,16 +438,9 @@ export function registerSharedOfflineRoutes(
     return meta;
   };
 
-  // 1. List all shared offline tracks
+  // 1. List all active (non-expired) shared offline tracks
   app.get('/api/shared-offline', (_req: Request, res: Response) => {
-    const valid = sharedTracks.filter((item) => {
-      const filePath = path.join(filesDir, `${item.id}${item.fileExt || '.mp3'}`);
-      return fs.existsSync(filePath);
-    });
-    if (valid.length !== sharedTracks.length) {
-      sharedTracks = valid;
-      saveIndex();
-    }
+    purgeExpiredAndMissing();
     const sorted = [...sharedTracks].sort(
       (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
     );
@@ -315,7 +452,43 @@ export function registerSharedOfflineRoutes(
     });
   });
 
-  // 2a. Single-request Upload (fast path for files up to 12MB)
+  // 1b. Fetch single shared item metadata by shareToken or id (for ?shared_file= links)
+  app.get('/api/shared-offline/item/:tokenOrId', (req: Request, res: Response) => {
+    const key = String(req.params.tokenOrId || '').trim();
+    const item = findTrackByTokenOrId(key);
+    if (!item) {
+      return res.status(404).json({ error: '共有ファイルが見つかりません。削除されたかURLが正しくありません。' });
+    }
+    const filePath = getTrackDiskPath(item);
+    if (!fs.existsSync(filePath) || isTrackExpired(item)) {
+      purgeExpiredAndMissing();
+      return res.status(410).json({ error: 'この共有リンクは有効期限が切れています。' });
+    }
+    res.json({ track: item });
+  });
+
+  // 1c. Extend shared file expiration by +7 days (unlimited times if allowExtension is enabled)
+  app.post('/api/shared-offline/:tokenOrId/extend', (req: Request, res: Response) => {
+    purgeExpiredAndMissing();
+    const key = String(req.params.tokenOrId || '').trim();
+    const item = findTrackByTokenOrId(key);
+    if (!item) {
+      return res.status(404).json({ error: '共有ファイルが見つからないか、既に期限切れです。' });
+    }
+    if (!item.allowExtension) {
+      return res.status(403).json({ error: 'このファイルは有効期限の延長が許可されていません。' });
+    }
+    if (!item.expiresAt) {
+      return res.json({ success: true, track: item });
+    }
+    const currentExpMs = new Date(item.expiresAt).getTime();
+    const baseMs = Number.isFinite(currentExpMs) ? Math.max(Date.now(), currentExpMs) : Date.now();
+    item.expiresAt = new Date(baseMs + SEVEN_DAYS_MS).toISOString();
+    saveIndex();
+    res.json({ success: true, track: item });
+  });
+
+  // 2a. Single-request Upload (fast path for files <= 1 MiB) with fixed-key XOR obfuscation
   app.post(
     '/api/shared-offline/upload',
     express.raw({ type: '*/*', limit: '25mb' }),
@@ -339,7 +512,8 @@ export function registerSharedOfflineRoutes(
         ensureDirs();
         const id = `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const diskPath = path.join(filesDir, `${id}${ext}`);
-        await fs.promises.writeFile(diskPath, bodyBuf);
+        const obfuscated = xorBufferAtOffset(bodyBuf, 0);
+        await fs.promises.writeFile(diskPath, obfuscated);
 
         const meta = await finalizeTrackFromDisk({
           id,
@@ -348,6 +522,9 @@ export function registerSharedOfflineRoutes(
           ext,
           headerMime,
           fileSize: bodyBuf.length,
+          isObfuscated: true,
+          retentionMinutes: req.query.retentionMinutes,
+          allowExtension: req.query.allowExtension,
           titleInput: req.query.title,
           artistInput: req.query.artist,
           albumInput: req.query.album,
@@ -364,7 +541,71 @@ export function registerSharedOfflineRoutes(
     }
   );
 
-  // 2b. Chunked Upload Step 1: Receive a single <=6MB chunk (bypasses Cloud Run 32MB limit)
+  // 2b. Chunked Upload Step 0: Begin upload session (validates size, retention, extension, creates session)
+  app.post('/api/shared-offline/upload-begin', async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const rawFilename = sanitizeText(body.filename || body.fileName, 'shared_audio.mp3', 180);
+      const headerMime = String(body.mimeType || '').toLowerCase();
+      const fileSize = Number(body.fileSize || 0);
+
+      if (!Number.isFinite(fileSize) || fileSize < 32) {
+        return res.status(400).json({ error: '音声ファイルが空、または小さすぎます' });
+      }
+      if (fileSize > MAX_UPLOAD_BYTES) {
+        return res.status(400).json({ error: 'ファイルサイズは150 MiB以下にしてください' });
+      }
+
+      const ext = resolveExtension(rawFilename, headerMime);
+      if (!ext) {
+        return res.status(400).json({
+          error: '対応形式: MP3 / WAV / FLAC / M4A / AAC / OGG / OPUS / WEBM / MP4 / MOV 等',
+        });
+      }
+
+      ensureDirs();
+      const uploadId = `up_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      const chunkCount = Math.ceil(fileSize / CHUNK_SIZE_BYTES);
+      const sessionDir = path.join(tmpDir, uploadId);
+      await fs.promises.mkdir(sessionDir, { recursive: true });
+
+      const { retentionMinutes } = computeExpiresAt(body.retentionMinutes);
+      const sessionMeta: UploadSessionMeta = {
+        uploadId,
+        filename: rawFilename,
+        mimeType: headerMime,
+        ext,
+        fileSize,
+        chunkCount,
+        retentionMinutes,
+        allowExtension: Boolean(body.allowExtension),
+        title: typeof body.title === 'string' ? body.title : undefined,
+        artist: typeof body.artist === 'string' ? body.artist : undefined,
+        album: typeof body.album === 'string' ? body.album : undefined,
+        uploadedBy: typeof body.uploadedBy === 'string' ? body.uploadedBy : undefined,
+        durationSeconds: Number(body.durationSeconds) || undefined,
+        duration: typeof body.duration === 'string' ? body.duration : undefined,
+        createdAt: Date.now(),
+      };
+      await fs.promises.writeFile(
+        path.join(sessionDir, 'session.json'),
+        JSON.stringify(sessionMeta),
+        'utf8'
+      );
+
+      res.json({
+        success: true,
+        uploadId,
+        chunkSize: CHUNK_SIZE_BYTES,
+        chunkCount,
+      });
+    } catch (err: any) {
+      console.error('[SharedOffline] Begin upload error:', err);
+      res.status(500).json({ error: err?.message || 'アップロードの開始に失敗しました' });
+    }
+  });
+
+  // 2c. Chunked Upload Step 1: Receive a single chunk
   app.post(
     '/api/shared-offline/upload-chunk',
     express.raw({ type: '*/*', limit: '8mb' }),
@@ -399,7 +640,23 @@ export function registerSharedOfflineRoutes(
     }
   );
 
-  // 2c. Chunked Upload Step 2: Assemble chunks & register Shared Offline track
+  // 2d. Chunked Upload Abort: Clean up temporary chunks when cancelled/failed
+  app.post('/api/shared-offline/upload-abort', async (req: Request, res: Response) => {
+    try {
+      const uploadId = String(req.body?.uploadId || req.query.uploadId || '')
+        .replace(/[^a-zA-Z0-9_-]/g, '')
+        .slice(0, 64);
+      if (uploadId) {
+        const sessionDir = path.join(tmpDir, uploadId);
+        await fs.promises.rm(sessionDir, { recursive: true, force: true }).catch(() => {});
+      }
+      res.json({ success: true });
+    } catch {
+      res.json({ success: true });
+    }
+  });
+
+  // 2e. Chunked Upload Step 2: Assemble chunks with fixed-key XOR obfuscation & register track
   app.post('/api/shared-offline/upload-complete', async (req: Request, res: Response) => {
     let sessionDir = '';
     try {
@@ -407,9 +664,8 @@ export function registerSharedOfflineRoutes(
       const uploadId = String(body.uploadId || '')
         .replace(/[^a-zA-Z0-9_-]/g, '')
         .slice(0, 64);
-      const totalChunks = parseInt(String(body.totalChunks ?? '0'), 10);
 
-      if (!uploadId || totalChunks <= 0) {
+      if (!uploadId) {
         return res.status(400).json({ error: '無効なアップロード完了リクエストです' });
       }
 
@@ -419,9 +675,22 @@ export function registerSharedOfflineRoutes(
         return res.status(404).json({ error: 'アップロードセッションが見つかりません' });
       }
 
-      const rawFilename = sanitizeText(body.filename, 'shared_audio.mp3', 180);
-      const headerMime = String(body.mimeType || '').toLowerCase();
-      const ext = resolveExtension(rawFilename, headerMime);
+      let sessionMeta: Partial<UploadSessionMeta> = {};
+      const sessionJsonPath = path.join(sessionDir, 'session.json');
+      if (fs.existsSync(sessionJsonPath)) {
+        try {
+          sessionMeta = JSON.parse(fs.readFileSync(sessionJsonPath, 'utf8'));
+        } catch {}
+      }
+
+      const totalChunks = parseInt(String(body.totalChunks ?? sessionMeta.chunkCount ?? '0'), 10);
+      if (!totalChunks || totalChunks <= 0) {
+        return res.status(400).json({ error: '無効なチャンク数です' });
+      }
+
+      const rawFilename = sanitizeText(body.filename || sessionMeta.filename, 'shared_audio.mp3', 180);
+      const headerMime = String(body.mimeType || sessionMeta.mimeType || '').toLowerCase();
+      const ext = sessionMeta.ext || resolveExtension(rawFilename, headerMime);
       if (!ext) {
         return res.status(400).json({
           error: '対応形式: MP3 / WAV / FLAC / M4A / AAC / OGG / OPUS / WEBM / MP4 / MOV 等',
@@ -440,8 +709,9 @@ export function registerSharedOfflineRoutes(
             throw new Error(`分割データ(${i + 1}/${totalChunks})が不足しています`);
           }
           const chunkData = await fs.promises.readFile(chunkPath);
+          const xorData = xorBufferAtOffset(chunkData, totalSize);
           totalSize += chunkData.length;
-          if (!writeStream.write(chunkData)) {
+          if (!writeStream.write(xorData)) {
             await new Promise<void>((resolve) => writeStream.once('drain', resolve));
           }
         }
@@ -470,12 +740,15 @@ export function registerSharedOfflineRoutes(
         ext,
         headerMime,
         fileSize: totalSize,
-        titleInput: body.title,
-        artistInput: body.artist,
-        albumInput: body.album,
-        uploadedByInput: body.uploadedBy,
-        durationSecondsInput: body.durationSeconds,
-        durationInput: body.duration,
+        isObfuscated: true,
+        retentionMinutes: body.retentionMinutes ?? sessionMeta.retentionMinutes,
+        allowExtension: body.allowExtension ?? sessionMeta.allowExtension,
+        titleInput: body.title ?? sessionMeta.title,
+        artistInput: body.artist ?? sessionMeta.artist,
+        albumInput: body.album ?? sessionMeta.album,
+        uploadedByInput: body.uploadedBy ?? sessionMeta.uploadedBy,
+        durationSecondsInput: body.durationSeconds ?? sessionMeta.durationSeconds,
+        durationInput: body.duration ?? sessionMeta.duration,
       });
 
       res.json({ success: true, track: meta });
@@ -490,32 +763,38 @@ export function registerSharedOfflineRoutes(
     }
   });
 
-  // 3. Stream / Download shared offline file with HTTP Range support
+  // 3. Stream / Download shared offline file with HTTP Range & XOR de-obfuscation support
   app.get('/api/shared-offline/file/:id', (req: Request, res: Response) => {
     const id = String(req.params.id || '').trim();
-    const item = sharedTracks.find((t) => t.id === id);
+    const item = findTrackByTokenOrId(id);
     if (!item) {
       return res.status(404).json({ error: '共有オフライン音源が見つかりません' });
     }
 
-    const filePath = path.join(filesDir, `${item.id}${item.fileExt || '.mp3'}`);
+    const filePath = getTrackDiskPath(item);
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: '音声ファイルが存在しません' });
+    }
+    if (isTrackExpired(item)) {
+      purgeExpiredAndMissing();
+      return res.status(410).json({ error: 'この共有ファイルの有効期限は終了しました' });
     }
 
     const stat = fs.statSync(filePath);
     const totalSize = stat.size;
     const range = req.headers.range;
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
 
     res.setHeader('Content-Type', item.mimeType || 'audio/mpeg');
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', item.expiresAt ? 'private, max-age=300' : 'public, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     const safeAscii = `${item.id}${item.fileExt || '.mp3'}`;
-    const encoded = encodeURIComponent(`${item.artist} - ${item.title}${item.fileExt || '.mp3'}`);
+    const downloadName = item.fileName || `${item.artist} - ${item.title}${item.fileExt || '.mp3'}`;
+    const encoded = encodeURIComponent(downloadName);
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${safeAscii}"; filename*=UTF-8''${encoded}`
+      `${isDownload ? 'attachment' : 'inline'}; filename="${safeAscii}"; filename*=UTF-8''${encoded}`
     );
 
     if (range) {
@@ -530,17 +809,27 @@ export function registerSharedOfflineRoutes(
       res.status(206);
       res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
       res.setHeader('Content-Length', String(chunkSize));
-      fs.createReadStream(filePath, { start, end }).pipe(res);
+      const readStream = fs.createReadStream(filePath, { start, end });
+      if (item.isObfuscated) {
+        readStream.pipe(createXorTransformStream(start)).pipe(res);
+      } else {
+        readStream.pipe(res);
+      }
     } else {
       res.setHeader('Content-Length', String(totalSize));
-      fs.createReadStream(filePath).pipe(res);
+      const readStream = fs.createReadStream(filePath);
+      if (item.isObfuscated) {
+        readStream.pipe(createXorTransformStream(0)).pipe(res);
+      } else {
+        readStream.pipe(res);
+      }
     }
   });
 
   // 4. Increment play count
   app.post('/api/shared-offline/:id/play', (req: Request, res: Response) => {
     const id = String(req.params.id || '').trim();
-    const item = sharedTracks.find((t) => t.id === id);
+    const item = findTrackByTokenOrId(id);
     if (item) {
       item.plays = (item.plays || 0) + 1;
       saveIndex();

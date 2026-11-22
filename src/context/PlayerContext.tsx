@@ -1340,7 +1340,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return '';
   }, [currentLyrics, progress, currentTrack?.id, trackOffsets]);
 
-  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx)
+  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx, ?shared_file=xxx)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -1348,8 +1348,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const sharePlId = params.get('share_pl');
     const artistParam = params.get('artist');
     const collabParam = params.get('collab');
+    const sharedFileParam = params.get('shared_file');
 
-    if (trackId) {
+    if (sharedFileParam) {
+      try {
+        sessionStorage.setItem('zero_music_pending_shared_file', sharedFileParam);
+      } catch {}
+      setActiveView('library');
+      setLibraryTab('shared_offline');
+      window.dispatchEvent(
+        new CustomEvent('zero-shared-file-open', { detail: { token: sharedFileParam } })
+      );
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (trackId) {
       api
         .getTrack(trackId)
         .then((res) => {

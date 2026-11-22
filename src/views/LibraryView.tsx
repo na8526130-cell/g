@@ -49,6 +49,10 @@ import {
   CheckCircle2,
   Cloud,
   HardDrive,
+  Copy,
+  Clock,
+  CalendarPlus,
+  Shield,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { parseLocalAudioFile } from '../services/localTracks';
@@ -65,6 +69,14 @@ import {
   publishOfflineTrackToShared,
   syncSharedTracksForOffline,
   copySharedTrackToMyOffline,
+  SHARED_RETENTION_OPTIONS,
+  SHARED_RETENTION_LABELS,
+  buildSharedOfflineUrl,
+  getSharedOfflineDownloadUrl,
+  formatFileSizeLabel,
+  formatRemainingExpiry,
+  fetchSharedOfflineItem,
+  extendSharedOfflineTrack,
 } from '../services/sharedOffline';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Track } from '../types/music';
@@ -190,13 +202,24 @@ export const LibraryView: React.FC = () => {
   const [isDraggingShared, setIsDraggingShared] = useState(false);
   const [isUploadingShared, setIsUploadingShared] = useState(false);
   const [sharedUploadProgress, setSharedUploadProgress] = useState<number | null>(null);
+  const [sharedUploadStage, setSharedUploadStage] = useState<string>('準備中…');
   const [sharedUploadError, setSharedUploadError] = useState<string | null>(null);
   const [sharedMetaOpen, setSharedMetaOpen] = useState(false);
   const [sharedPickedFile, setSharedPickedFile] = useState<File | null>(null);
   const [sharedUploadTitle, setSharedUploadTitle] = useState('');
   const [sharedUploadArtist, setSharedUploadArtist] = useState('');
   const [sharedUploadBy, setSharedUploadBy] = useState('');
+  const [sharedRetentionIdx, setSharedRetentionIdx] = useState<number>(2); // Default: 24時間
+  const [sharedAllowExtension, setSharedAllowExtension] = useState<boolean>(true);
+  const [sharedResultTrack, setSharedResultTrack] = useState<Track | null>(null);
+  const [sharedResultFeedback, setSharedResultFeedback] = useState<string>('');
+  const [sharedLinkedTrack, setSharedLinkedTrack] = useState<Track | null>(null);
+  const [sharedLinkedLoading, setSharedLinkedLoading] = useState(false);
+  const [sharedLinkedError, setSharedLinkedError] = useState<string | null>(null);
+  const [extendingTrackId, setExtendingTrackId] = useState<string | null>(null);
   const sharedFileInputRef = useRef<HTMLInputElement>(null);
+  const sharedUploadAbortRef = useRef<AbortController | null>(null);
+  const sharedShareUrlInputRef = useRef<HTMLInputElement>(null);
 
   const refreshLocalTracks = () => {
     getAllOfflineTracks()
@@ -252,6 +275,47 @@ export const LibraryView: React.FC = () => {
     };
   }, [activeTab, isOnline]);
 
+  // Handle deep-linked ?shared_file=<token> shared offline URLs
+  useEffect(() => {
+    const loadPendingSharedToken = async (token?: string | null) => {
+      let target = token;
+      if (!target) {
+        try {
+          target = sessionStorage.getItem('zero_music_pending_shared_file');
+          if (target) sessionStorage.removeItem('zero_music_pending_shared_file');
+        } catch {}
+      }
+      if (!target) return;
+      setSharedLinkedLoading(true);
+      setSharedLinkedError(null);
+      try {
+        const item = await fetchSharedOfflineItem(target);
+        setSharedLinkedTrack(item);
+      } catch (err: any) {
+        setSharedLinkedTrack(null);
+        setSharedLinkedError(err?.message || '共有ファイルの読み込みに失敗しました');
+      } finally {
+        setSharedLinkedLoading(false);
+      }
+    };
+
+    loadPendingSharedToken();
+
+    const onOpenSharedFile = (ev: Event) => {
+      const customEv = ev as CustomEvent<{ token?: string }>;
+      if (customEv.detail?.token) {
+        try {
+          sessionStorage.removeItem('zero_music_pending_shared_file');
+        } catch {}
+        loadPendingSharedToken(customEv.detail.token);
+      }
+    };
+    window.addEventListener('zero-shared-file-open', onOpenSharedFile);
+    return () => {
+      window.removeEventListener('zero-shared-file-open', onOpenSharedFile);
+    };
+  }, []);
+
   useEffect(() => {
     if (currentUser?.username && !sharedUploadBy) {
       setSharedUploadBy(currentUser.username);
@@ -278,18 +342,66 @@ export const LibraryView: React.FC = () => {
     setIsProcessingFiles(false);
   };
 
+  const isValidSharedFile = (f: File) =>
+    f.type.startsWith('audio/') ||
+    f.type.startsWith('video/') ||
+    f.type === 'application/octet-stream' ||
+    f.type === '' ||
+    /\.(mp3|wav|flac|m4a|m4b|m4r|aac|ogg|oga|opus|webm|mp4|m4v|mov|mkv|avi|3gp|wma|aif|aiff|caf|amr|mpeg|mpga|ts)$/i.test(
+      f.name
+    );
+
+  const handleSharedFilePick = (file: File | null | undefined) => {
+    if (!file) return;
+    if (isUploadingShared) {
+      setSharedUploadError('アップロード中は別のファイルを選択できません。');
+      return;
+    }
+    if (!isValidSharedFile(file)) {
+      const msg = '音声・動画ファイル（MP3 / WAV / FLAC / M4A / OGG / MP4 / MOV 等）を選択してください';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
+    if (file.size > 150 * 1024 * 1024) {
+      setSharedPickedFile(null);
+      const msg = 'ファイルサイズは150 MiB以下にしてください。';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
+    setSharedResultTrack(null);
+    setSharedResultFeedback('');
+    setSharedUploadError(null);
+    setSharedPickedFile(file);
+    const base = file.name.replace(/\.[^/.]+$/, '');
+    if (base.includes(' - ')) {
+      const parts = base.split(' - ');
+      setSharedUploadArtist(parts[0].trim());
+      setSharedUploadTitle(parts.slice(1).join(' - ').trim());
+    } else {
+      setSharedUploadArtist('');
+      setSharedUploadTitle(base);
+    }
+  };
+
+  const handleSharedResetPanel = () => {
+    setSharedPickedFile(null);
+    setSharedResultTrack(null);
+    setSharedResultFeedback('');
+    setSharedUploadTitle('');
+    setSharedUploadArtist('');
+    setSharedUploadError(null);
+    setSharedUploadProgress(null);
+    setSharedUploadStage('準備中…');
+    if (sharedFileInputRef.current) {
+      sharedFileInputRef.current.value = '';
+    }
+  };
+
   const handleSharedFilesUpload = async (files: FileList | File[]) => {
     const pickedList = Array.from(files);
-    const validFiles = pickedList.filter(
-      (f) =>
-        f.type.startsWith('audio/') ||
-        f.type.startsWith('video/') ||
-        f.type === 'application/octet-stream' ||
-        f.type === '' ||
-        /\.(mp3|wav|flac|m4a|m4b|m4r|aac|ogg|oga|opus|webm|mp4|m4v|mov|mkv|avi|3gp|wma|aif|aiff|caf|amr|mpeg|mpga|ts)$/i.test(
-          f.name
-        )
-    );
+    const validFiles = pickedList.filter(isValidSharedFile);
     if (validFiles.length === 0) {
       const msg = '音声・動画ファイル（MP3 / WAV / FLAC / M4A / OGG / MP4 / MOV 等）を選択してください';
       setSharedUploadError(msg);
@@ -303,38 +415,60 @@ export const LibraryView: React.FC = () => {
       return;
     }
 
-    // Snapshot file payloads synchronously so input element resets cannot invalidate handles
     const snapshots = validFiles.map((f) => ({
       blob: f.slice(0, f.size, f.type || 'audio/mpeg'),
       name: f.name,
     }));
 
+    const retentionMinutes = SHARED_RETENTION_OPTIONS[sharedRetentionIdx] ?? 24 * 60;
+    const abortController = new AbortController();
+    sharedUploadAbortRef.current = abortController;
+
     setSharedUploadError(null);
+    setSharedResultTrack(null);
+    setSharedResultFeedback('');
     setSharedUploadProgress(0);
+    setSharedUploadStage('準備中…');
     setIsUploadingShared(true);
+
     let successCount = 0;
+    let lastUploaded: Track | null = null;
     try {
       for (let i = 0; i < snapshots.length; i++) {
         const snap = snapshots[i];
-        const useCustomMeta = snapshots.length === 1 && sharedMetaOpen;
+        const isSingle = snapshots.length === 1;
         const uploaded = await uploadSharedOfflineFile(snap.blob, {
           filename: snap.name,
-          title: useCustomMeta && sharedUploadTitle.trim() ? sharedUploadTitle.trim() : undefined,
-          artist: useCustomMeta && sharedUploadArtist.trim() ? sharedUploadArtist.trim() : undefined,
+          title: isSingle && sharedUploadTitle.trim() ? sharedUploadTitle.trim() : undefined,
+          artist: isSingle && sharedUploadArtist.trim() ? sharedUploadArtist.trim() : undefined,
           uploadedBy: sharedUploadBy.trim() || currentUser?.username || 'ゲスト',
-          onProgress: (pct) => {
+          retentionMinutes,
+          allowExtension: sharedAllowExtension,
+          signal: abortController.signal,
+          onProgress: (pct, stageLabel) => {
             const overall = Math.round(((i + pct / 100) / snapshots.length) * 100);
             setSharedUploadProgress(overall);
+            if (stageLabel) {
+              setSharedUploadStage(
+                snapshots.length > 1
+                  ? `(${i + 1}/${snapshots.length}) ${stageLabel}`
+                  : stageLabel
+              );
+            }
           },
         });
+        lastUploaded = uploaded;
         setSharedTracks((prev) => [uploaded, ...prev.filter((t) => t.id !== uploaded.id)]);
         successCount++;
       }
       setSharedPickedFile(null);
       setSharedUploadTitle('');
       setSharedUploadArtist('');
+      if (lastUploaded) {
+        setSharedResultTrack(lastUploaded);
+      }
       showToast(
-        `${successCount}曲を「共有オフライン」に公開＆オフライン再生用に保存しました`,
+        `${successCount}曲を「共有オフライン」に公開＆共有URLを発行しました`,
         'success',
         3800
       );
@@ -343,11 +477,64 @@ export const LibraryView: React.FC = () => {
       setSharedUploadError(errMsg);
       showToast(errMsg, 'warning', 4500);
     } finally {
+      sharedUploadAbortRef.current = null;
       setIsUploadingShared(false);
       setSharedUploadProgress(null);
       if (sharedFileInputRef.current) {
         sharedFileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleCopySharedUrl = async (track: Track, isResultPanel = false) => {
+    const url = buildSharedOfflineUrl(track);
+    try {
+      await navigator.clipboard.writeText(url);
+      if (isResultPanel) {
+        setSharedResultFeedback('共有URLをコピーしました。');
+      } else {
+        showToast('共有URLをコピーしました', 'success', 2400);
+      }
+    } catch {
+      if (isResultPanel && sharedShareUrlInputRef.current) {
+        sharedShareUrlInputRef.current.focus();
+        sharedShareUrlInputRef.current.select();
+        const copied = document.execCommand('copy');
+        setSharedResultFeedback(
+          copied ? '共有URLをコピーしました。' : 'URLを選択しました。コピーしてください。'
+        );
+      } else {
+        showToast(url, 'info', 4000);
+      }
+    }
+  };
+
+  const handleExtendSharedTrack = async (track: Track) => {
+    if (!navigator.onLine) {
+      showToast('オフライン中は有効期限を延長できません', 'warning');
+      return;
+    }
+    setExtendingTrackId(track.id);
+    try {
+      const updated = await extendSharedOfflineTrack(track.shareToken || track.id);
+      setSharedTracks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      if (sharedResultTrack?.id === updated.id) {
+        setSharedResultTrack(updated);
+      }
+      if (sharedLinkedTrack?.id === updated.id) {
+        setSharedLinkedTrack(updated);
+      }
+      showToast(
+        `有効期限を7日間延長しました（${
+          updated.expiresAt ? new Date(updated.expiresAt).toLocaleString('ja-JP') : '無期限'
+        }）`,
+        'success',
+        3400
+      );
+    } catch (err: any) {
+      showToast(err?.message || '有効期限の延長に失敗しました', 'warning');
+    } finally {
+      setExtendingTrackId(null);
     }
   };
 
@@ -421,8 +608,13 @@ export const LibraryView: React.FC = () => {
   const handleSharedDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingShared(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleSharedFilesUpload(e.dataTransfer.files);
+    if (isUploadingShared) return;
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    if (files.length === 1) {
+      handleSharedFilePick(files[0]);
+    } else {
+      handleSharedFilesUpload(files);
     }
   };
 
@@ -3036,7 +3228,7 @@ export const LibraryView: React.FC = () => {
         </div>
       )}
 
-      {/* Shared Offline Library (誰でもアップロードしてオフラインでも全員が聴ける) */}
+      {/* Shared Offline Library (FileUp! lite 参照: 期限付き共有リンク・1MBチャンク送信・XOR難読化・オフライン自動同期) */}
       {subCategory === 'none' && activeTab === 'shared_offline' && (
         <div className="space-y-6">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-6 bg-gradient-to-r from-emerald-950/45 via-neutral-900 to-teal-950/45 border border-emerald-500/25 rounded-2xl shadow-xl">
@@ -3055,7 +3247,7 @@ export const LibraryView: React.FC = () => {
                   )}
                 </div>
                 <p className="text-xs text-neutral-300">
-                  誰でもファイルをアップロードして共有でき、自動キャッシュ後はオフラインの状況下でも誰が出した曲でも再生できます
+                  ファイルを1つ選択して共有リンク（有効期限・延長許可設定可）を発行でき、自動キャッシュ後はオフラインでも再生・ダウンロードできます
                 </p>
                 <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px]">
                   <span className="px-2 py-0.5 rounded bg-neutral-800/90 text-neutral-300 font-mono">
@@ -3082,22 +3274,10 @@ export const LibraryView: React.FC = () => {
                 multiple
                 onChange={(e) => {
                   const files = e.target.files ? Array.from(e.target.files) : [];
-                  if (files.length > 0) {
-                    if (sharedMetaOpen && files.length === 1) {
-                      const f = files[0];
-                      setSharedPickedFile(f);
-                      setSharedUploadError(null);
-                      const base = f.name.replace(/\.[^/.]+$/, '');
-                      if (base.includes(' - ')) {
-                        const parts = base.split(' - ');
-                        setSharedUploadArtist(parts[0].trim());
-                        setSharedUploadTitle(parts.slice(1).join(' - ').trim());
-                      } else {
-                        setSharedUploadTitle(base);
-                      }
-                    } else {
-                      handleSharedFilesUpload(files);
-                    }
+                  if (files.length === 1) {
+                    handleSharedFilePick(files[0]);
+                  } else if (files.length > 1) {
+                    handleSharedFilesUpload(files);
                   }
                 }}
                 className="hidden"
@@ -3135,7 +3315,7 @@ export const LibraryView: React.FC = () => {
                 <span>
                   {isUploadingShared
                     ? `アップロード中${sharedUploadProgress !== null ? ` (${sharedUploadProgress}%)` : '...'}`
-                    : 'ファイルをアップロードして共有'}
+                    : 'ファイルを選択'}
                 </span>
               </button>
 
@@ -3152,140 +3332,437 @@ export const LibraryView: React.FC = () => {
             </div>
           </div>
 
-          {/* Public Shared Offline Dropzone & Optional Metadata Form */}
-          <div className="space-y-3">
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDraggingShared(true);
-              }}
-              onDragLeave={() => setIsDraggingShared(false)}
-              onDrop={handleSharedDrop}
-              onClick={() => {
-                if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
-                sharedFileInputRef.current?.click();
-              }}
-              className={`border-2 border-dashed rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer ${
-                isDraggingShared
-                  ? 'border-emerald-400 bg-emerald-950/30 scale-[1.01]'
-                  : 'border-emerald-700/40 hover:border-emerald-500/70 bg-neutral-900/35'
-              }`}
-            >
-              <div className="max-w-lg mx-auto space-y-2.5">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-950/70 border border-emerald-500/35 flex items-center justify-center mx-auto text-emerald-400">
-                  {isUploadingShared ? (
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                  ) : (
-                    <Cloud className="w-6 h-6" />
-                  )}
+          {/* Deep-Linked Shared File Card (?shared_file=token) */}
+          {(sharedLinkedLoading || sharedLinkedError || sharedLinkedTrack) && (
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-950/60 to-neutral-900 border border-emerald-500/40 shadow-xl space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2 text-emerald-300 text-xs font-bold">
+                  <Link2 className="w-4 h-4" />
+                  <span>共有URLから開いたファイル</span>
                 </div>
-                <h3 className="text-sm sm:text-base font-bold text-white">
-                  {isUploadingShared
-                    ? `共有オフラインへアップロード中${sharedUploadProgress !== null ? ` (${sharedUploadProgress}%)` : '...'}`
-                    : 'ここにファイルをドロップして「共有オフライン」に公開'}
-                </h3>
-                <p className="text-xs text-neutral-400">
-                  ログイン不要で誰でもアップロード可能（最大150MB・分割送信対応）。公開した曲は他ユーザーの端末にも自動キャッシュされ、オフライン環境でも再生できます。
-                </p>
-                {isUploadingShared && sharedUploadProgress !== null && (
-                  <div className="max-w-xs mx-auto pt-1">
-                    <div className="h-1.5 w-full rounded-full bg-neutral-800 overflow-hidden">
-                      <div
-                        className="h-full bg-emerald-500 transition-all duration-200"
-                        style={{ width: `${sharedUploadProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {sharedUploadError && (
-              <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-red-950/60 border border-red-500/40 text-xs text-red-200">
-                <span>エラー: {sharedUploadError}</span>
                 <button
                   type="button"
-                  onClick={() => setSharedUploadError(null)}
-                  className="text-red-300 hover:text-white cursor-pointer"
+                  onClick={() => {
+                    setSharedLinkedTrack(null);
+                    setSharedLinkedError(null);
+                  }}
+                  className="text-neutral-400 hover:text-white cursor-pointer"
                   aria-label="閉じる"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
-            )}
 
-            <div className="flex items-center justify-between px-1">
-              <button
-                type="button"
-                onClick={() => setSharedMetaOpen((v) => !v)}
-                className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-                <span>{sharedMetaOpen ? '詳細入力フォームを閉じる' : '曲名・投稿者名を指定してアップロードする'}</span>
-              </button>
+              {sharedLinkedLoading ? (
+                <div className="py-4 flex items-center gap-2 text-xs text-neutral-300">
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  <span>共有ファイル情報を取得中…</span>
+                </div>
+              ) : sharedLinkedError ? (
+                <div className="p-3 rounded-xl bg-red-950/50 border border-red-500/40 text-xs text-red-200">
+                  {sharedLinkedError}
+                </div>
+              ) : (
+                sharedLinkedTrack && (
+                  <div className="space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <h3 className="text-base font-bold text-white truncate">
+                          {sharedLinkedTrack.title}
+                        </h3>
+                        <p className="text-xs text-neutral-300 truncate">
+                          {sharedLinkedTrack.artist} • 投稿: {sharedLinkedTrack.uploadedBy || 'ゲスト'}
+                          {sharedLinkedTrack.fileSize
+                            ? ` • ${formatFileSizeLabel(sharedLinkedTrack.fileSize)}`
+                            : ''}
+                        </p>
+                        <div className="flex items-center gap-2 text-[11px] text-emerald-300">
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>
+                            有効期限:{' '}
+                            {sharedLinkedTrack.expiresAt
+                              ? `${new Date(sharedLinkedTrack.expiresAt).toLocaleString('ja-JP')}（${formatRemainingExpiry(
+                                  sharedLinkedTrack.expiresAt
+                                )}）`
+                              : '無期限'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => playTrack(sharedLinkedTrack, sharedTracks.length ? sharedTracks : [sharedLinkedTrack])}
+                          className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>再生</span>
+                        </button>
+                        <a
+                          href={getSharedOfflineDownloadUrl(sharedLinkedTrack)}
+                          download
+                          className="px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-100 text-xs font-semibold flex items-center gap-1.5 border border-neutral-700"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>ダウンロード</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySharedUrl(sharedLinkedTrack)}
+                          className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>URLコピー</span>
+                        </button>
+                        {sharedLinkedTrack.allowExtension && sharedLinkedTrack.expiresAt && (
+                          <button
+                            type="button"
+                            disabled={extendingTrackId === sharedLinkedTrack.id || !isOnline}
+                            onClick={() => handleExtendSharedTrack(sharedLinkedTrack)}
+                            className="px-3 py-2 rounded-xl bg-amber-600/20 hover:bg-amber-600/35 border border-amber-500/40 text-amber-200 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-45 cursor-pointer"
+                          >
+                            {extendingTrackId === sharedLinkedTrack.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CalendarPlus className="w-3.5 h-3.5" />
+                            )}
+                            <span>有効期限を7日延長</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
             </div>
+          )}
 
-            {sharedMetaOpen && (
-              <div className="p-4 rounded-2xl bg-neutral-900/80 border border-emerald-500/25 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                      曲名 (任意)
-                    </label>
-                    <input
-                      type="text"
-                      value={sharedUploadTitle}
-                      onChange={(e) => setSharedUploadTitle(e.target.value)}
-                      placeholder="空欄ならファイル名から自動設定"
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
+          {/* FileUp! lite Style Selection -> Retention Config -> Progress -> Result Panel */}
+          <div className="p-5 sm:p-6 rounded-2xl bg-neutral-900/60 border border-neutral-800/90 shadow-xl space-y-5">
+            {sharedResultTrack ? (
+              /* Result Panel (アップロード完了・共有URL発行結果) */
+              <div className="space-y-4">
+                <div className="text-center space-y-1">
+                  <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto text-emerald-400">
+                    <CheckCircle2 className="w-6 h-6" />
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                      アーティスト名 (任意)
-                    </label>
-                    <input
-                      type="text"
-                      value={sharedUploadArtist}
-                      onChange={(e) => setSharedUploadArtist(e.target.value)}
-                      placeholder="アーティスト名"
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                      投稿者名 (ニックネーム)
-                    </label>
-                    <input
-                      type="text"
-                      value={sharedUploadBy}
-                      onChange={(e) => setSharedUploadBy(e.target.value)}
-                      placeholder="ゲスト"
-                      className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
+                  <h3 className="text-base font-bold text-emerald-400">
+                    アップロードが完了しました
+                  </h3>
+                  <p className="text-xs text-neutral-300">
+                    有効期限:{' '}
+                    {sharedResultTrack.expiresAt
+                      ? new Date(sharedResultTrack.expiresAt).toLocaleString('ja-JP')
+                      : '無期限'}
+                  </p>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-semibold text-neutral-400">
+                    共有URL（リンクを知っている人は再生・ダウンロード可能）
+                  </label>
+                  <input
+                    ref={sharedShareUrlInputRef}
+                    type="text"
+                    readOnly
+                    value={buildSharedOfflineUrl(sharedResultTrack)}
+                    onClick={(e) => e.currentTarget.select()}
+                    aria-label="共有URL"
+                    className="w-full bg-neutral-950 border border-neutral-700 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm font-mono text-emerald-300 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5">
                   <button
                     type="button"
-                    onClick={() => sharedFileInputRef.current?.click()}
-                    className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 font-semibold cursor-pointer"
+                    onClick={() => handleCopySharedUrl(sharedResultTrack, true)}
+                    className="flex-1 min-h-[42px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    {sharedPickedFile ? `選択中: ${sharedPickedFile.name}` : 'ファイルを選択...'}
+                    <Copy className="w-4 h-4" />
+                    <span>URLをコピー</span>
                   </button>
                   <button
                     type="button"
-                    disabled={!sharedPickedFile || isUploadingShared || !isOnline}
-                    onClick={() => {
-                      if (sharedPickedFile) handleSharedFilesUpload([sharedPickedFile]);
-                    }}
-                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    onClick={handleSharedResetPanel}
+                    className="flex-1 min-h-[42px] px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-200 text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer"
                   >
-                    {isUploadingShared ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-3.5 h-3.5" />}
-                    <span>アップロードして共有</span>
+                    <UploadCloud className="w-4 h-4" />
+                    <span>別のファイルをアップロード</span>
                   </button>
                 </div>
+
+                {sharedResultFeedback && (
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    className="text-xs text-emerald-400 font-semibold text-center"
+                  >
+                    {sharedResultFeedback}
+                  </p>
+                )}
               </div>
+            ) : (
+              /* Selection & Retention Settings State */
+              <>
+                <div
+                  role="group"
+                  tabIndex={0}
+                  aria-label="共有オフライン ファイル選択エリア"
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    if (!isUploadingShared) setIsDraggingShared(true);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    if (!isUploadingShared) setIsDraggingShared(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    setIsDraggingShared(false);
+                  }}
+                  onDrop={handleSharedDrop}
+                  onClick={() => {
+                    if (isUploadingShared) return;
+                    if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
+                    sharedFileInputRef.current?.click();
+                  }}
+                  onKeyDown={(e) => {
+                    if (isUploadingShared) return;
+                    if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                      e.preventDefault();
+                      if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
+                      sharedFileInputRef.current?.click();
+                    }
+                  }}
+                  className={`border-2 rounded-2xl p-6 text-center transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-400/60 ${
+                    isDraggingShared
+                      ? 'border-dashed border-emerald-400 bg-emerald-950/35 scale-[1.01]'
+                      : sharedPickedFile
+                      ? 'border-solid border-emerald-500/50 bg-emerald-950/20'
+                      : 'border-dashed border-emerald-700/45 hover:border-emerald-500/75 bg-neutral-950/40'
+                  }`}
+                >
+                  <div className="max-w-lg mx-auto space-y-2.5">
+                    <div className="w-11 h-11 rounded-2xl bg-emerald-950/80 border border-emerald-500/35 flex items-center justify-center mx-auto text-emerald-400">
+                      {isUploadingShared ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Cloud className="w-5 h-5" />
+                      )}
+                    </div>
+                    <h3 className="text-sm sm:text-base font-bold text-white break-all">
+                      {sharedPickedFile
+                        ? sharedPickedFile.name
+                        : 'ファイルをここにドロップ'}
+                    </h3>
+                    <p className="text-xs text-neutral-400">
+                      {sharedPickedFile
+                        ? formatFileSizeLabel(sharedPickedFile.size)
+                        : 'または音声・動画ファイルを選択してください（複数ドロップで一括アップロード可）'}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isUploadingShared}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
+                        sharedFileInputRef.current?.click();
+                      }}
+                      className="mt-1 px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-xs font-semibold text-neutral-100 disabled:opacity-50 cursor-pointer"
+                    >
+                      {sharedPickedFile ? 'ほかのファイルに変更' : 'ファイルを選択'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Retention Slider & Extension Permission (FileUp! lite inspired) */}
+                {!isUploadingShared && (
+                  <div className="space-y-3 pt-1">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <label
+                        htmlFor="sharedRetentionSlider"
+                        className="text-xs sm:text-sm font-bold text-neutral-200"
+                      >
+                        共有リンクの有効期間
+                      </label>
+                      <output
+                        htmlFor="sharedRetentionSlider"
+                        className="text-xs sm:text-sm font-bold text-emerald-400"
+                      >
+                        {SHARED_RETENTION_LABELS[sharedRetentionIdx]}
+                      </output>
+                    </div>
+
+                    <input
+                      id="sharedRetentionSlider"
+                      type="range"
+                      min={0}
+                      max={SHARED_RETENTION_OPTIONS.length - 1}
+                      step={1}
+                      value={sharedRetentionIdx}
+                      onChange={(e) => setSharedRetentionIdx(Number(e.target.value))}
+                      className="w-full accent-emerald-500 cursor-pointer"
+                    />
+
+                    <div
+                      aria-hidden="true"
+                      className="flex justify-between gap-1 text-[11px] text-neutral-400"
+                    >
+                      {SHARED_RETENTION_LABELS.map((label, idx) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setSharedRetentionIdx(idx)}
+                          className={`cursor-pointer transition-colors ${
+                            sharedRetentionIdx === idx
+                              ? 'text-emerald-400 font-bold'
+                              : 'hover:text-neutral-200'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <p className="text-[11px] text-neutral-400">
+                      選択した期間が過ぎると、共有リスト・共有URLから再生やダウンロードができなくなります。
+                    </p>
+
+                    <label className="flex items-start gap-2.5 pt-1 text-xs text-neutral-300 leading-relaxed cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sharedAllowExtension}
+                        onChange={(e) => setSharedAllowExtension(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-emerald-500 rounded shrink-0 cursor-pointer"
+                      />
+                      <span>
+                        共有URLを知っている人による有効期限の延長を許可する（1回につき7日、回数制限なし）
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Optional Metadata Inputs */}
+                {!isUploadingShared && (
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => setSharedMetaOpen((v) => !v)}
+                      className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>
+                        {sharedMetaOpen
+                          ? '曲名・投稿者名の編集を閉じる'
+                          : '曲名・アーティスト・投稿者名を編集する（任意）'}
+                      </span>
+                    </button>
+
+                    {sharedMetaOpen && (
+                      <div className="p-4 rounded-xl bg-neutral-950/70 border border-neutral-800 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                            曲名 (任意)
+                          </label>
+                          <input
+                            type="text"
+                            value={sharedUploadTitle}
+                            onChange={(e) => setSharedUploadTitle(e.target.value)}
+                            placeholder="空欄ならファイル名から自動設定"
+                            className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                            アーティスト名 (任意)
+                          </label>
+                          <input
+                            type="text"
+                            value={sharedUploadArtist}
+                            onChange={(e) => setSharedUploadArtist(e.target.value)}
+                            placeholder="アーティスト名"
+                            className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
+                            投稿者名 (ニックネーム)
+                          </label>
+                          <input
+                            type="text"
+                            value={sharedUploadBy}
+                            onChange={(e) => setSharedUploadBy(e.target.value)}
+                            placeholder="ゲスト"
+                            className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Upload Button or Progress Bar */}
+                {isUploadingShared ? (
+                  <div className="space-y-2.5">
+                    <div
+                      role="progressbar"
+                      aria-label="アップロード進捗"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={sharedUploadProgress ?? 0}
+                      className="relative h-12 rounded-xl bg-neutral-800 overflow-hidden flex items-center justify-center"
+                    >
+                      <div
+                        className="absolute inset-y-0 left-0 bg-emerald-600 transition-all duration-200"
+                        style={{ width: `${sharedUploadProgress ?? 0}%` }}
+                      />
+                      <span className="relative z-10 text-xs sm:text-sm font-bold text-white">
+                        {sharedUploadStage} ({sharedUploadProgress ?? 0}%)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => sharedUploadAbortRef.current?.abort()}
+                      className="w-full py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 cursor-pointer"
+                    >
+                      アップロードを中止
+                    </button>
+                  </div>
+                ) : (
+                  sharedPickedFile && (
+                    <button
+                      type="button"
+                      disabled={!isOnline}
+                      onClick={() => handleSharedFilesUpload([sharedPickedFile])}
+                      className="w-full min-h-[52px] px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-45 text-white text-sm font-bold flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-600/25 active:scale-[0.99] transition-all cursor-pointer"
+                    >
+                      <UploadCloud className="w-5 h-5" />
+                      <span>アップロードして共有URLを発行</span>
+                    </button>
+                  )
+                )}
+
+                {sharedUploadError && (
+                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl bg-red-950/60 border border-red-500/40 text-xs text-red-200">
+                    <span>エラー: {sharedUploadError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSharedUploadError(null)}
+                      className="text-red-300 hover:text-white cursor-pointer"
+                      aria-label="閉じる"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-neutral-500 flex items-start gap-1.5 leading-relaxed">
+                  <Shield className="w-3.5 h-3.5 shrink-0 mt-0.5 text-neutral-500" />
+                  <span>
+                    最大150 MiB（1 MiBチャンク分割送信）。保存データには固定キーによる単純なXOR難読化を施しますが、これは暗号化ではなく、機密情報の保護には使えません。
+                  </span>
+                </p>
+              </>
             )}
           </div>
 
@@ -3302,7 +3779,7 @@ export const LibraryView: React.FC = () => {
                 まだ共有オフラインに曲がありません
               </p>
               <p className="text-xs text-neutral-500">
-                上のエリアから音声ファイルをアップロードすると、誰でもオンライン・オフラインの両方で聴けるようになります。
+                上のエリアから音声ファイルを選択してアップロードすると、共有URL発行とオフライン自動キャッシュが有効になります。
               </p>
             </div>
           ) : (
@@ -3317,9 +3794,8 @@ export const LibraryView: React.FC = () => {
                 .map((track) => {
                   const isCurrent = currentTrack?.id === track.id;
                   const canPlayNow = Boolean(track.isCachedOffline || isOnline);
-                  const sizeMb = track.fileSize
-                    ? `${(track.fileSize / (1024 * 1024)).toFixed(1)}MB`
-                    : '';
+                  const sizeLabel = track.fileSize ? formatFileSizeLabel(track.fileSize) : '';
+                  const expiryLabel = formatRemainingExpiry(track.expiresAt);
                   return (
                     <div
                       key={track.id}
@@ -3351,9 +3827,21 @@ export const LibraryView: React.FC = () => {
                         </p>
                         <p className="text-xs text-neutral-400 truncate">
                           {track.artist} • 投稿: {track.uploadedBy || 'ゲスト'}
-                          {sizeMb ? ` • ${sizeMb}` : ''}
+                          {sizeLabel ? ` • ${sizeLabel}` : ''}
                         </p>
                       </div>
+
+                      <span
+                        title={
+                          track.expiresAt
+                            ? `有効期限: ${new Date(track.expiresAt).toLocaleString('ja-JP')}`
+                            : '有効期限なし'
+                        }
+                        className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-neutral-800/90 text-neutral-300 text-[10px] font-mono shrink-0"
+                      >
+                        <Clock className="w-3 h-3 text-neutral-400" />
+                        <span>{expiryLabel}</span>
+                      </span>
 
                       {track.isCachedOffline ? (
                         <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/35 text-emerald-300 text-[10px] font-bold shrink-0">
@@ -3369,6 +3857,43 @@ export const LibraryView: React.FC = () => {
                       <span className="text-xs font-mono text-neutral-400 shrink-0">
                         {track.duration}
                       </span>
+
+                      {track.allowExtension && track.expiresAt && (
+                        <button
+                          type="button"
+                          disabled={extendingTrackId === track.id || !isOnline}
+                          onClick={() => handleExtendSharedTrack(track)}
+                          title="有効期限を7日間延長"
+                          aria-label="有効期限を7日間延長"
+                          className="p-2 text-amber-300 hover:text-amber-200 disabled:opacity-40 transition-colors cursor-pointer"
+                        >
+                          {extendingTrackId === track.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <CalendarPlus className="w-4 h-4" />
+                          )}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => handleCopySharedUrl(track)}
+                        title="共有URLをコピー"
+                        aria-label="共有URLをコピー"
+                        className="p-2 text-neutral-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+
+                      <a
+                        href={getSharedOfflineDownloadUrl(track)}
+                        download
+                        title="ファイルをダウンロード"
+                        aria-label="ファイルをダウンロード"
+                        className="p-2 text-neutral-400 hover:text-sky-400 transition-colors"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
 
                       <button
                         type="button"
