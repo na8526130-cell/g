@@ -2,12 +2,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   X,
   Download,
-  Sliders,
   FileAudio,
-  Sparkles,
   CheckCircle2,
   Loader2,
-  Zap,
   Music,
   Film,
   HardDriveDownload,
@@ -16,33 +13,28 @@ import {
   ChevronDown,
   ChevronUp,
   UploadCloud,
-  RotateCcw,
-  Activity,
   AlertTriangle,
+  Globe,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
-import {
-  equalizer,
-  EqualizerSettings,
-  EQ_FREQUENCIES,
-  EQ_PRESETS,
-  EqPresetKey,
-} from '../services/equalizer';
 import {
   fetchFreemakeFormats,
   probeFreemakeTrack,
   downloadWithFreemake,
   convertLocalFileWithFreemake,
+  downloadArtworkImageFile,
   loadFreemakeAdvancedConfig,
   saveFreemakeAdvancedConfig,
   subscribeFreemakeProgress,
   getFreemakeProgressState,
   FreemakeFormatId,
   FreemakeFormatOption,
+  FreemakeDownloadSiteInfo,
   FreemakeProbeResponse,
   FreemakeProgressState,
 } from '../services/freemake';
-import { SpectrumVisualizer } from './SpectrumVisualizer';
+import { uploadSharedOfflineFile } from '../services/sharedOffline';
 import { SafeImage } from './SafeImage';
 
 const DEFAULT_FORMATS: FreemakeFormatOption[] = [
@@ -56,6 +48,22 @@ const DEFAULT_FORMATS: FreemakeFormatOption[] = [
   { id: 'mp4', label: 'MP4 動画 / MV', ext: 'mp4', mimeType: 'video/mp4', isVideo: true, bitrateLabel: 'H.264 + AAC' },
 ];
 
+const DEFAULT_DOWNLOAD_SITES: FreemakeDownloadSiteInfo[] = [
+  { id: 'youtube-direct', name: 'YouTube Direct', category: 'youtube-mirror', supportsVideo: true, badge: 'InnerTube', description: 'YouTube 直接抽出' },
+  { id: 'cobalt', name: 'Cobalt Network', category: 'youtube-mirror', supportsVideo: true, badge: 'Cobalt API', description: 'Cobalt 高速抽出' },
+  { id: 'piped', name: 'Piped Network', category: 'youtube-mirror', supportsVideo: true, badge: 'Mirror Pool', description: '公開 Piped ノード' },
+  { id: 'invidious', name: 'Invidious Mirrors', category: 'youtube-mirror', supportsVideo: true, badge: 'Mirror Pool', description: '公開 Invidious ノード' },
+  { id: 'bilibili-full', name: 'Bilibili', category: 'full-track-search', supportsVideo: true, badge: 'Music / MV', description: '高音質 DASH / MV' },
+  { id: 'soundcloud-full', name: 'SoundCloud', category: 'full-track-search', supportsVideo: false, badge: 'MP3 / HLS', description: 'フル尺 MP3 / HLS' },
+  { id: 'jiosaavn-full', name: 'JioSaavn', category: 'full-track-search', supportsVideo: false, badge: '320k AAC', description: '最大320kbps AAC' },
+  { id: 'audius-full', name: 'Audius', category: 'full-track-search', supportsVideo: false, badge: 'MP3 Stream', description: '直接 MP3 配信' },
+  { id: 'dailymotion-full', name: 'Dailymotion', category: 'full-track-search', supportsVideo: true, badge: 'MV / HLS', description: '公式 MV HLS' },
+  { id: 'hearthis-full', name: 'Hearthis.at', category: 'full-track-search', supportsVideo: false, badge: 'HD Audio', description: 'HD オーディオ' },
+  { id: 'odysee-full', name: 'Odysee / LBRY', category: 'full-track-search', supportsVideo: true, badge: 'P2P Media', description: 'LBRY 分散メディア' },
+  { id: 'peertube-full', name: 'PeerTube', category: 'full-track-search', supportsVideo: true, badge: 'Fediverse', description: 'SepiaSearch 連合' },
+  { id: 'archive-full', name: 'Internet Archive', category: 'full-track-search', supportsVideo: false, badge: 'MP3 / FLAC', description: 'archive.org 音源' },
+];
+
 export const FreemakeModal: React.FC = () => {
   const {
     freemakeModalOpen,
@@ -65,21 +73,39 @@ export const FreemakeModal: React.FC = () => {
     showToast,
     navigateTo,
     setLibraryTab,
+    currentUser,
   } = usePlayer();
 
   const targetTrack = freemakeTargetTrack || currentTrack;
 
-  const [activeTab, setActiveTab] = useState<'download' | 'equalizer' | 'convert'>('download');
+  const validTargetVideoId =
+    targetTrack?.id && /^[a-zA-Z0-9_-]{11}$/.test(targetTrack.id)
+      ? targetTrack.id
+      : undefined;
+
+  const [activeTab, setActiveTab] = useState<'download' | 'convert'>('download');
   const [formats, setFormats] = useState<FreemakeFormatOption[]>(DEFAULT_FORMATS);
+  const [downloadSites, setDownloadSites] = useState<FreemakeDownloadSiteInfo[]>(DEFAULT_DOWNLOAD_SITES);
+  const [disabledSiteIds, setDisabledSiteIds] = useState<string[]>([]);
+  const [sitesPanelOpen, setSitesPanelOpen] = useState<boolean>(true);
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean>(true);
   const [ffmpegVersion, setFfmpegVersion] = useState<string>('');
   const [selectedFormat, setSelectedFormat] = useState<FreemakeFormatId>('mp3_320');
-  const [applyEqOnExport, setApplyEqOnExport] = useState<boolean>(true);
   const [customUrlInput, setCustomUrlInput] = useState<string>('');
-  const [eqSettings, setEqSettings] = useState<EqualizerSettings>(equalizer.getSettings());
 
   const [probeInfo, setProbeInfo] = useState<FreemakeProbeResponse | null>(null);
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [statusNotice, setStatusNotice] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
+  const [statusNotice, setStatusNotice] = useState<{
+    type: 'success' | 'info' | 'error';
+    text: string;
+    previewFallbackTarget?: 'device' | 'offline' | 'both' | 'shared';
+    artworkUrl?: string;
+    artworkBaseName?: string;
+    fileBlobUrl?: string;
+    fileName?: string;
+    fileBlob?: Blob;
+  } | null>(null);
+  const noticeBlobUrlRef = useRef<string | null>(null);
   const [progressState, setProgressState] = useState<FreemakeProgressState>(getFreemakeProgressState);
 
   // Advanced YouTube Cookie / Cobalt config
@@ -92,10 +118,6 @@ export const FreemakeModal: React.FC = () => {
   const [convertArtist, setConvertArtist] = useState<string>('');
   const [isConverting, setIsConverting] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    return equalizer.subscribe((next) => setEqSettings(next));
-  }, []);
 
   useEffect(() => {
     return subscribeFreemakeProgress((next) => setProgressState(next));
@@ -113,17 +135,39 @@ export const FreemakeModal: React.FC = () => {
         if (Array.isArray(res.formats) && res.formats.length > 0) {
           setFormats(res.formats);
         }
-        if (res.ffmpegVersion) {
-          setFfmpegVersion(res.ffmpegVersion);
+        if (Array.isArray(res.downloadSites) && res.downloadSites.length > 0) {
+          setDownloadSites(res.downloadSites);
         }
+        setFfmpegAvailable(Boolean(res.ffmpegAvailable));
+        setFfmpegVersion(res.ffmpegVersion || '');
       })
       .catch(() => {});
   }, [freemakeModalOpen, freemakeTargetTrack?.id]);
 
   useEffect(() => {
+    const nextUrl = statusNotice?.fileBlobUrl || null;
+    if (noticeBlobUrlRef.current && noticeBlobUrlRef.current !== nextUrl) {
+      try {
+        URL.revokeObjectURL(noticeBlobUrlRef.current);
+      } catch {}
+    }
+    noticeBlobUrlRef.current = nextUrl;
+  }, [statusNotice?.fileBlobUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (noticeBlobUrlRef.current) {
+        try {
+          URL.revokeObjectURL(noticeBlobUrlRef.current);
+        } catch {}
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!freemakeModalOpen) return;
     const cleanUrl = customUrlInput.trim();
-    const urlOrId = cleanUrl || targetTrack?.id || '';
+    const urlOrId = cleanUrl || validTargetVideoId || '';
     if (!urlOrId && !targetTrack?.title) {
       setProbeInfo(null);
       return;
@@ -133,7 +177,7 @@ export const FreemakeModal: React.FC = () => {
         cleanUrl
           ? { url: cleanUrl }
           : {
-              videoId: targetTrack?.id,
+              videoId: validTargetVideoId,
               title: targetTrack?.title,
               artist: targetTrack?.artist,
               duration: targetTrack?.duration,
@@ -144,7 +188,7 @@ export const FreemakeModal: React.FC = () => {
         .catch(() => setProbeInfo(null));
     }, 250);
     return () => clearTimeout(timer);
-  }, [freemakeModalOpen, customUrlInput, targetTrack?.id, targetTrack?.title, targetTrack?.artist, targetTrack?.duration, targetTrack?.durationSeconds]);
+  }, [freemakeModalOpen, customUrlInput, validTargetVideoId, targetTrack?.title, targetTrack?.artist, targetTrack?.duration, targetTrack?.durationSeconds]);
 
   const formatBytes = (bytes?: number) => {
     if (!bytes || bytes <= 0) return '';
@@ -186,53 +230,103 @@ export const FreemakeModal: React.FC = () => {
   }
 
   const busy = isDownloading || isConverting || progressState.active;
-  const formatFreq = (freq: number) => (freq >= 1000 ? `${freq / 1000}k` : `${freq}`);
 
   const handleSaveAdvConfig = () => {
     saveFreemakeAdvancedConfig(advConfig);
     setStatusNotice({ type: 'success', text: 'Freemake 外部ソース設定（Cobalt / Cookie）を保存しました' });
   };
 
-  const handleExecuteDownload = async (saveTarget: 'device' | 'offline' | 'both') => {
+  const handleExecuteDownload = async (
+    saveTarget: 'device' | 'offline' | 'both' | 'shared',
+    allowPreviewFallback = false
+  ) => {
     const cleanUrl = customUrlInput.trim();
     if (!cleanUrl && !targetTrack) {
       setStatusNotice({ type: 'error', text: '再生中の楽曲を選ぶか、YouTube URLを入力してください' });
       return;
     }
 
+    const activeSiteIds = downloadSites
+      .map((s) => s.id)
+      .filter((id) => !disabledSiteIds.includes(id));
+
+    if (activeSiteIds.length === 0) {
+      setStatusNotice({ type: 'error', text: '少なくとも1つ以上のダウンロードサイトを有効にしてください' });
+      return;
+    }
+
     setIsDownloading(true);
     setStatusNotice({
       type: 'info',
-      text: 'Freemake Engine (FFmpeg) で音声取得・EQ処理・エンコードを実行中...',
+      text: ffmpegAvailable
+        ? `Freemake Engine (${activeSiteIds.length}サイト横断 + FFmpeg) でフル尺音源を取得中...`
+        : `ダイレクト取得モード (${activeSiteIds.length}サイト横断 / FFmpegレス) でフル尺音源を取得中...`,
     });
 
-    const effectiveTarget = saveTarget === 'device' ? 'both' : saveTarget;
+    const effectiveTarget =
+      saveTarget === 'device' ? 'both' : saveTarget === 'shared' ? 'offline' : saveTarget;
 
     try {
+      const resolvedInputThumb = cleanUrl
+        ? probeInfo?.thumbnailUrl || undefined
+        : targetTrack?.thumbnail || probeInfo?.thumbnailUrl || undefined;
+      const resolvedInputAlbum = cleanUrl
+        ? probeInfo?.album || undefined
+        : targetTrack?.album || probeInfo?.album || undefined;
+      const resolvedTitle = cleanUrl
+        ? probeInfo?.fullTrackTitle || ''
+        : targetTrack?.title || 'YouTube Audio';
+      const resolvedArtist = cleanUrl ? '' : targetTrack?.artist || '';
+
       const res = await downloadWithFreemake({
-        videoId: cleanUrl ? undefined : targetTrack?.id,
+        videoId: cleanUrl ? undefined : validTargetVideoId,
         url: cleanUrl || undefined,
-        title: cleanUrl ? (probeInfo?.fullTrackTitle || '') : (targetTrack?.title || 'YouTube Audio'),
-        artist: cleanUrl ? '' : (targetTrack?.artist || ''),
-        album: cleanUrl ? '' : (targetTrack?.album || ''),
-        thumbnail: cleanUrl ? undefined : targetTrack?.thumbnail,
+        title: resolvedTitle,
+        artist: resolvedArtist,
+        album: resolvedInputAlbum,
+        thumbnail: resolvedInputThumb,
         duration: cleanUrl ? undefined : targetTrack?.duration,
         durationSeconds: cleanUrl ? undefined : targetTrack?.durationSeconds,
         format: selectedFormat,
-        applyEq: applyEqOnExport,
         saveTarget: effectiveTarget,
-        allowPreviewFallback: true,
+        allowPreviewFallback,
+        enabledSites: disabledSiteIds.length > 0 ? activeSiteIds : undefined,
       });
 
-      const eqMsg = res.eqApplied ? '（Freemake EQ適用済み）' : '';
       const kindMsg =
         res.sourceKind === 'official-preview-30s'
-          ? '※フル尺音源が見つからなかったため公式30秒プレビュー版を保存しました'
+          ? '公式30秒プレビュー版を保存しました'
           : `フル尺音源取得: ${res.sourceLabel}`;
 
-      if (effectiveTarget === 'both') {
+      if (saveTarget === 'shared') {
+        setStatusNotice({
+          type: 'info',
+          text: `「${res.filename}」を共有オフラインへアップロード中...`,
+        });
+        await uploadSharedOfflineFile(res.blob, {
+          filename: res.filename,
+          title: resolvedTitle || res.filename.replace(/\.[^.]+$/, ''),
+          artist: resolvedArtist || '共有アップロード',
+          album: res.album || resolvedInputAlbum || '共有オフライン',
+          uploadedBy: currentUser?.username || 'ゲスト',
+          durationSeconds: res.durationSec,
+        });
         showToast(
-          `「${res.filename}」を端末に保存＆オフラインへ自動追加しました ${eqMsg}`,
+          `「${res.filename}」を共有オフラインに公開しました`,
+          'success',
+          4000,
+          {
+            label: '共有オフラインを開く',
+            onClick: () => {
+              setFreemakeModalOpen(false);
+              setLibraryTab('shared_offline');
+              navigateTo('library');
+            },
+          }
+        );
+      } else if (effectiveTarget === 'both') {
+        showToast(
+          `「${res.filename}」を端末に保存＆オフラインへ自動追加しました`,
           'success',
           4000,
           {
@@ -246,20 +340,34 @@ export const FreemakeModal: React.FC = () => {
         );
       } else {
         showToast(
-          `「${res.filename}」をオフライン保存しました ${eqMsg}`,
+          `「${res.filename}」をオフライン保存しました`,
           'success',
           3800
         );
       }
 
+      const finalArt = res.artworkUrl || resolvedInputThumb;
+      let directFileBlobUrl: string | undefined;
+      try {
+        directFileBlobUrl = URL.createObjectURL(res.blob);
+      } catch {}
       setStatusNotice({
         type: 'success',
-        text: `完了: ${res.filename} ${eqMsg}（オフラインライブラリに自動追加済み） — ${kindMsg}`,
+        text:
+          saveTarget === 'shared'
+            ? `完了: ${res.filename}（共有オフラインに公開＆マイ・オフラインにも保存済み） — ${kindMsg}`
+            : `完了: ${res.filename}（ジャケット埋め込み＆オフライン保存済み） — ${kindMsg}`,
+        artworkUrl: finalArt,
+        artworkBaseName: res.filename.replace(/\.[^.]+$/, '') || targetTrack?.title || 'track',
+        fileBlobUrl: directFileBlobUrl,
+        fileName: res.filename,
+        fileBlob: res.blob,
       });
     } catch (err: any) {
       setStatusNotice({
         type: 'error',
         text: err?.message || 'ダウンロードに失敗しました',
+        previewFallbackTarget: err?.previewAvailable ? saveTarget : undefined,
       });
     } finally {
       setIsDownloading(false);
@@ -267,6 +375,13 @@ export const FreemakeModal: React.FC = () => {
   };
 
   const handleExecuteLocalConvert = async (saveTarget: 'device' | 'offline' | 'both') => {
+    if (!ffmpegAvailable) {
+      setStatusNotice({
+        type: 'error',
+        text: '現在のサーバー環境ではFFmpegが利用できないため、ローカルファイル変換は利用できません。',
+      });
+      return;
+    }
     if (!pickedFile) {
       setStatusNotice({ type: 'error', text: '変換したいローカルファイルを選択してください' });
       return;
@@ -274,21 +389,20 @@ export const FreemakeModal: React.FC = () => {
     setIsConverting(true);
     setStatusNotice({
       type: 'info',
-      text: 'Freemake FFmpeg 変換と10バンドEQ焼き込みを実行中...',
+      text: 'Freemake FFmpeg 変換を実行中...',
     });
     const effectiveTarget = saveTarget === 'device' ? 'both' : saveTarget;
     try {
       const res = await convertLocalFileWithFreemake({
         file: pickedFile,
         format: selectedFormat,
-        applyEq: applyEqOnExport,
         title: convertTitle.trim() || undefined,
         artist: convertArtist.trim() || undefined,
         saveTarget: effectiveTarget,
       });
       setStatusNotice({
         type: 'success',
-        text: `変換完了: ${res.filename}${res.eqApplied ? '（EQ焼き込み済み）' : ''} — オフラインライブラリに自動保存済み`,
+        text: `変換完了: ${res.filename} — オフラインライブラリに自動保存済み`,
       });
       showToast(`Freemake変換完了＆オフライン追加: ${res.filename}`, 'success', 3400);
     } catch (err: any) {
@@ -299,12 +413,6 @@ export const FreemakeModal: React.FC = () => {
   };
 
   const selectedSpec = formats.find((f) => f.id === selectedFormat) || formats[0];
-  const freemakePresets = (Object.keys(EQ_PRESETS) as EqPresetKey[]).filter(
-    (k) => EQ_PRESETS[k].isFreemake
-  );
-  const standardPresets = (Object.keys(EQ_PRESETS) as EqPresetKey[]).filter(
-    (k) => !EQ_PRESETS[k].isFreemake
-  );
 
   return (
     <div
@@ -326,12 +434,20 @@ export const FreemakeModal: React.FC = () => {
                 <h2 className="text-base font-black text-white tracking-wide">
                   Freemake Studio
                 </h2>
-                <span className="px-2 py-0.5 rounded bg-sky-500/20 border border-sky-400/30 text-sky-300 text-[10px] font-bold">
-                  FFmpeg 実変換エンジン搭載
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                    ffmpegAvailable
+                      ? 'bg-sky-500/20 border-sky-400/30 text-sky-300'
+                      : 'bg-cyan-500/20 border-cyan-400/30 text-cyan-300'
+                  }`}
+                >
+                  {ffmpegAvailable ? 'FFmpeg 実変換エンジン搭載' : 'FFmpegレス・ダイレクトモード'}
                 </span>
               </div>
               <p className="text-[11px] text-neutral-400 truncate mt-0.5">
-                高音質ダウンロード・MP3/FLAC/WAV/MP4変換・10バンドイコライザー焼き込み
+                {ffmpegAvailable
+                  ? '高音質フル尺ダウンロード・MP3/FLAC/WAV/MP4変換・オフライン自動保存'
+                  : 'サーバー環境に合わせた無変換ダイレクト高音質フル尺ダウンロード＆オフライン保存'}
               </p>
             </div>
           </div>
@@ -361,18 +477,6 @@ export const FreemakeModal: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('equalizer')}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'equalizer'
-                ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-900/40'
-                : 'bg-neutral-900/70 text-neutral-400 hover:text-white'
-            }`}
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Freemake イコライザー</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('convert')}
             className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
               activeTab === 'convert'
@@ -381,7 +485,7 @@ export const FreemakeModal: React.FC = () => {
             }`}
           >
             <FileAudio className="w-3.5 h-3.5" />
-            <span>ローカル変換 + EQ</span>
+            <span>ローカル変換</span>
           </button>
         </div>
 
@@ -443,7 +547,7 @@ export const FreemakeModal: React.FC = () => {
                     current: progressState.stage === 'fetching',
                   },
                   {
-                    label: '3. FFmpeg変換',
+                    label: ffmpegAvailable ? '3. FFmpeg変換' : '3. 無変換最適化',
                     done: ['downloading', 'saving', 'done'].includes(progressState.stage),
                     current: progressState.stage === 'converting',
                   },
@@ -473,7 +577,7 @@ export const FreemakeModal: React.FC = () => {
           {/* Status Banner */}
           {statusNotice && !(progressState.active && statusNotice.type === 'info') && (
             <div
-              className={`p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${
+              className={`p-3.5 rounded-xl border text-xs space-y-2 ${
                 statusNotice.type === 'success'
                   ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-200'
                   : statusNotice.type === 'error'
@@ -481,14 +585,72 @@ export const FreemakeModal: React.FC = () => {
                   : 'bg-sky-950/50 border-sky-500/40 text-sky-200'
               }`}
             >
-              {statusNotice.type === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              ) : statusNotice.type === 'error' ? (
-                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              ) : (
-                <Loader2 className="w-4 h-4 text-sky-400 animate-spin shrink-0 mt-0.5" />
+              <div className="flex items-start gap-2.5">
+                {statusNotice.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                ) : statusNotice.type === 'error' ? (
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                ) : (
+                  <Loader2 className="w-4 h-4 text-sky-400 animate-spin shrink-0 mt-0.5" />
+                )}
+                <span className="leading-relaxed break-all">{statusNotice.text}</span>
+              </div>
+              {statusNotice.type === 'success' && (statusNotice.fileBlobUrl || statusNotice.artworkUrl) && (
+                <div className="pl-6 pt-1 flex flex-wrap items-center gap-2.5">
+                  {statusNotice.artworkUrl && (
+                    <SafeImage
+                      src={statusNotice.artworkUrl}
+                      alt="Jacket"
+                      className="w-10 h-10 rounded-lg object-cover border border-emerald-400/30 shrink-0"
+                    />
+                  )}
+                  {statusNotice.fileBlobUrl && statusNotice.fileName && (
+                    <a
+                      href={statusNotice.fileBlobUrl}
+                      download={statusNotice.fileName}
+                      className="px-3 py-1.5 rounded-lg bg-sky-500/25 hover:bg-sky-500/35 border border-sky-400/45 text-sky-100 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-sky-300" />
+                      <span>音声ファイルを端末に保存</span>
+                    </a>
+                  )}
+                  {statusNotice.artworkUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (statusNotice.artworkUrl) {
+                          downloadArtworkImageFile(
+                            statusNotice.artworkUrl,
+                            statusNotice.artworkBaseName || 'artwork'
+                          ).then((ok) => {
+                            showToast(
+                              ok ? '正方形ジャケット画像 (.jpg) を保存しました' : 'ジャケット画像の取得に失敗しました',
+                              ok ? 'success' : 'warning',
+                              2600
+                            );
+                          });
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-100 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>サムネ画像 (.jpg) も単体保存</span>
+                    </button>
+                  )}
+                </div>
               )}
-              <span className="leading-relaxed break-all">{statusNotice.text}</span>
+              {statusNotice.type === 'error' && statusNotice.previewFallbackTarget && (
+                <div className="pl-6">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleExecuteDownload(statusNotice.previewFallbackTarget!, true)}
+                    className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[11px] font-bold transition-colors cursor-pointer"
+                  >
+                    公式30秒プレビュー版のみ保存する
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -497,21 +659,35 @@ export const FreemakeModal: React.FC = () => {
             <div className="space-y-5">
               {/* Target Track Card or URL Input */}
               <div className="p-4 rounded-2xl bg-neutral-900/70 border border-white/10 space-y-3">
-                {targetTrack && !customUrlInput.trim() && (
+                {((targetTrack && !customUrlInput.trim()) || (customUrlInput.trim() && probeInfo?.thumbnailUrl)) && (
                   <div className="flex items-center gap-3.5">
                     <SafeImage
-                      src={targetTrack.thumbnail}
-                      alt={targetTrack.title}
-                      className="w-14 h-14 rounded-xl object-cover bg-neutral-800 shrink-0 shadow"
+                      src={
+                        customUrlInput.trim()
+                          ? probeInfo?.thumbnailUrl || undefined
+                          : probeInfo?.thumbnailUrl || targetTrack?.thumbnail
+                      }
+                      alt={
+                        customUrlInput.trim()
+                          ? probeInfo?.fullTrackTitle || 'YouTube Track'
+                          : targetTrack?.title || 'Track'
+                      }
+                      className="w-14 h-14 rounded-xl object-cover bg-neutral-800 shrink-0 shadow ring-1 ring-white/15"
                     />
                     <div className="min-w-0 flex-1">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
-                        ダウンロード対象トラック
+                        ダウンロード対象トラック・ジャケット自動埋め込み
                       </span>
-                      <h3 className="text-sm font-bold text-white truncate">{targetTrack.title}</h3>
+                      <h3 className="text-sm font-bold text-white truncate">
+                        {customUrlInput.trim()
+                          ? probeInfo?.fullTrackTitle || customUrlInput.trim()
+                          : targetTrack?.title}
+                      </h3>
                       <p className="text-xs text-neutral-400 truncate">
-                        {targetTrack.artist}
-                        {targetTrack.duration ? ` • ${targetTrack.duration}` : ''}
+                        {customUrlInput.trim()
+                          ? probeInfo?.album || 'YouTube URL指定'
+                          : targetTrack?.artist}
+                        {!customUrlInput.trim() && targetTrack?.duration ? ` • ${targetTrack.duration}` : ''}
                       </p>
                     </div>
                   </div>
@@ -533,7 +709,9 @@ export const FreemakeModal: React.FC = () => {
                 {probeInfo && (
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400 pt-1">
                     <span className="px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono">
-                      FFmpeg: {ffmpegVersion ? '稼働中' : '待機中'}
+                      {ffmpegAvailable
+                        ? `FFmpeg: ${ffmpegVersion ? '稼働中' : '待機中'}`
+                        : 'モード: ダイレクト取得 (FFmpegレス)'}
                     </span>
                     {probeInfo.fullTrackAvailable && (
                       <span
@@ -546,7 +724,7 @@ export const FreemakeModal: React.FC = () => {
                     )}
                     {!probeInfo.fullTrackAvailable && probeInfo.officialPreviewAvailable && (
                       <span className="px-2 py-0.5 rounded bg-amber-950/60 border border-amber-600/30 text-amber-300">
-                        {probeInfo.officialPreviewSource} (フォールバック待機)
+                        {probeInfo.officialPreviewSource} (自動30秒フォールバック無効)
                       </span>
                     )}
                     {(advConfig.cobaltApiUrl || advConfig.youtubeCookie || probeInfo.hasCobaltServer || probeInfo.hasServerCookie) && (
@@ -555,6 +733,12 @@ export const FreemakeModal: React.FC = () => {
                       </span>
                     )}
                   </div>
+                )}
+
+                {!ffmpegAvailable && (
+                  <p className="text-[11px] text-cyan-300/90 bg-cyan-950/35 border border-cyan-500/25 rounded-lg px-3 py-2 leading-relaxed">
+                    サーバーにFFmpegが搭載されていない環境のため、音声変換を行わず取得元の高音質コンテナ（.m4a / .mp3 / .webm等）のままダイレクト保存します。
+                  </p>
                 )}
               </div>
 
@@ -566,7 +750,7 @@ export const FreemakeModal: React.FC = () => {
                     出力フォーマット選択
                   </span>
                   <span className="text-[11px] text-neutral-400 font-mono">
-                    {selectedSpec.bitrateLabel}
+                    {ffmpegAvailable ? selectedSpec.bitrateLabel : '自動最適コンテナ (無変換)'}
                   </span>
                 </div>
 
@@ -601,47 +785,88 @@ export const FreemakeModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Apply Freemake Equalizer Switch */}
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-red-950/30 via-neutral-900 to-amber-950/30 border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
-                    <Sliders className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-white">
-                        Freemake イコライザーを音声に焼き込んで保存
+              {/* Connected Download Sites (13 Sites) */}
+              <div className="p-3.5 rounded-2xl bg-neutral-900/55 border border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSitesPanelOpen((v) => !v)}
+                    className="flex items-center gap-2 text-xs font-bold text-white hover:text-sky-300 transition-colors cursor-pointer"
+                  >
+                    <Globe className="w-4 h-4 text-sky-400" />
+                    <span>
+                      連携ダウンロードサイト ({downloadSites.length - disabledSiteIds.length}/{downloadSites.length} サイト有効)
+                    </span>
+                    {probeInfo?.matchedSites && probeInfo.matchedSites.length > 0 && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/35 text-emerald-300 text-[10px] font-bold">
+                        {probeInfo.matchedSites.length}サイトでフル尺ヒット
                       </span>
-                      <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-mono font-bold">
-                        {EQ_PRESETS[eqSettings.preset]?.label.split(' ')[0] || 'Custom'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-neutral-400 mt-0.5">
-                      重低音 +{eqSettings.bassBoost}dB・10バンドEQ・ラウドネス補正をFFmpegで直接ファイルへ反映します
-                    </p>
-                  </div>
+                    )}
+                    {sitesPanelOpen ? (
+                      <ChevronUp className="w-3.5 h-3.5 text-neutral-400" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5 text-neutral-400" />
+                    )}
+                  </button>
+
+                  {disabledSiteIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setDisabledSiteIds([])}
+                      className="text-[11px] text-sky-400 hover:underline cursor-pointer shrink-0"
+                    >
+                      全サイト有効化
+                    </button>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('equalizer')}
-                    className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-[11px] font-semibold cursor-pointer"
-                  >
-                    EQ調整
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setApplyEqOnExport((v) => !v)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                      applyEqOnExport
-                        ? 'bg-amber-500 text-black'
-                        : 'bg-neutral-800 text-neutral-400'
-                    }`}
-                  >
-                    {applyEqOnExport ? '適用 ON' : '原音のまま'}
-                  </button>
-                </div>
+                {sitesPanelOpen && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 pt-1">
+                    {downloadSites.map((site) => {
+                      const enabled = !disabledSiteIds.includes(site.id);
+                      const matched = probeInfo?.matchedSites?.find((m) => m.siteId === site.id);
+                      return (
+                        <button
+                          key={site.id}
+                          type="button"
+                          onClick={() =>
+                            setDisabledSiteIds((prev) =>
+                              prev.includes(site.id)
+                                ? prev.filter((x) => x !== site.id)
+                                : [...prev, site.id]
+                            )
+                          }
+                          title={`${site.description}${matched ? `\n一致: ${matched.title}` : ''}`}
+                          className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${
+                            !enabled
+                              ? 'bg-neutral-950/50 border-white/5 text-neutral-500 opacity-55'
+                              : matched
+                              ? 'bg-emerald-950/45 border-emerald-500/45 text-white'
+                              : 'bg-neutral-950/75 border-white/10 text-neutral-200 hover:border-sky-500/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[11px] font-bold truncate">{site.name}</span>
+                            {matched ? (
+                              <span className="px-1 py-0.2 rounded bg-emerald-500/25 text-emerald-300 text-[9px] font-mono font-bold shrink-0">
+                                {formatSec(matched.durationSec) || 'HIT'}
+                              </span>
+                            ) : (
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  enabled ? 'bg-sky-400' : 'bg-neutral-600'
+                                }`}
+                              />
+                            )}
+                          </div>
+                          <div className="text-[10px] text-neutral-400 truncate mt-0.5 font-mono">
+                            {site.badge}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Action Buttons */}
@@ -660,7 +885,10 @@ export const FreemakeModal: React.FC = () => {
                   ) : (
                     <>
                       <Download className="w-4 h-4" />
-                      <span>ダウンロード (.{selectedSpec.ext.toUpperCase()} ＋ オフライン追加)</span>
+                      <span>
+                        ダウンロード (
+                        {ffmpegAvailable ? `.${selectedSpec.ext.toUpperCase()} ` : ''}＋ オフライン追加)
+                      </span>
                     </>
                   )}
                 </button>
@@ -676,6 +904,19 @@ export const FreemakeModal: React.FC = () => {
                   <span>{busy ? `保存中 ${progressState.active ? `${progressState.percent}%` : ''}` : 'アプリ内オフラインのみ保存'}</span>
                 </button>
               </div>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => handleExecuteDownload('shared')}
+                title="楽曲を取得して、そのままみんなが聴ける「共有オフライン」へ公開追加します"
+                className="w-full py-2.5 px-4 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/35 disabled:opacity-40 text-emerald-200 font-bold text-xs flex items-center justify-center gap-2 border border-emerald-500/40 transition-all cursor-pointer"
+              >
+                <Globe className="w-4 h-4 text-emerald-400" />
+                <span>
+                  {busy ? '処理中...' : '取得して「共有オフライン」へ直接追加・公開'}
+                </span>
+              </button>
 
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400">
                 <div className="flex items-center gap-3">
@@ -756,181 +997,15 @@ export const FreemakeModal: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: FREEMAKE EQUALIZER */}
-          {activeTab === 'equalizer' && (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-2 p-3.5 rounded-2xl bg-neutral-900/70 border border-white/10">
-                <div>
-                  <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-sky-400" />
-                    Freemake Audio Engine DSP
-                  </h3>
-                  <p className="text-[11px] text-neutral-400">
-                    オフライン再生のリアルタイム音質補正 ＆ ダウンロード時のFFmpegマスタリングに連動
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => equalizer.setFreemakeNormalize(!eqSettings.freemakeNormalize)}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
-                      eqSettings.freemakeNormalize
-                        ? 'bg-sky-600/25 border-sky-400 text-sky-200'
-                        : 'bg-neutral-800 border-neutral-700 text-neutral-400'
-                    }`}
-                  >
-                    音量均一化: {eqSettings.freemakeNormalize ? 'ON' : 'OFF'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => equalizer.setEnabled(!eqSettings.enabled)}
-                    className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
-                      eqSettings.enabled ? 'bg-red-600 text-white' : 'bg-neutral-800 text-neutral-400'
-                    }`}
-                  >
-                    {eqSettings.enabled ? 'EQ ON' : 'バイパス'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Freemake Exclusive Presets */}
-              <div>
-                <p className="text-[11px] font-bold text-sky-300 mb-2">Freemake 専用サウンドプロファイル</p>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {freemakePresets.map((key) => {
-                    const p = EQ_PRESETS[key];
-                    const active = eqSettings.preset === key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => equalizer.setPreset(key)}
-                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                          active
-                            ? 'bg-gradient-to-r from-sky-600/80 to-blue-700/80 border-sky-400 text-white shadow'
-                            : 'bg-neutral-900/70 border-white/5 text-neutral-300 hover:bg-neutral-800'
-                        }`}
-                      >
-                        <div className="text-xs font-bold truncate">{p.label.replace('Freemake ', '')}</div>
-                        <div className="text-[10px] text-neutral-300/80 truncate">Freemake DSP</div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Standard Presets */}
-              <div>
-                <p className="text-[11px] font-bold text-neutral-400 mb-2">標準プリセット</p>
-                <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-                  {standardPresets.map((key) => {
-                    const p = EQ_PRESETS[key];
-                    const active = eqSettings.preset === key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => equalizer.setPreset(key)}
-                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold truncate transition-all cursor-pointer ${
-                          active
-                            ? 'bg-red-600 border-red-400 text-white'
-                            : 'bg-neutral-900/60 border-white/5 text-neutral-300 hover:bg-neutral-800'
-                        }`}
-                      >
-                        {p.label.split(' ')[0]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Spectrum */}
-              <div className="p-3 rounded-2xl bg-black/50 border border-white/5">
-                <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono mb-1.5">
-                  <span className="flex items-center gap-1">
-                    <Activity className="w-3 h-3 text-sky-400" />
-                    Freemake リアルタイムスペクトラム
-                  </span>
-                  <span>{EQ_PRESETS[eqSettings.preset]?.label}</span>
-                </div>
-                <SpectrumVisualizer height={48} barCount={44} mode="bars" />
-              </div>
-
-              {/* Bass Boost */}
-              <div className="p-3.5 rounded-2xl bg-neutral-900/60 border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <Zap className="w-4 h-4 text-amber-400" />
-                  <div>
-                    <span className="text-xs font-bold text-white">重低音ブースト (65Hz Lowshelf)</span>
-                    <span className="ml-2 text-xs font-mono text-amber-400 font-bold">
-                      +{eqSettings.bassBoost} dB
-                    </span>
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="12"
-                  step="0.5"
-                  value={eqSettings.bassBoost}
-                  onChange={(e) => equalizer.setBassBoost(parseFloat(e.target.value))}
-                  className="w-full sm:w-56 accent-amber-500 h-1.5 bg-neutral-800 rounded-lg cursor-pointer"
-                />
-              </div>
-
-              {/* 10-Band Sliders */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-neutral-300">10バンド・イコライザー (-12dB 〜 +12dB)</span>
-                  <button
-                    type="button"
-                    onClick={() => equalizer.resetToFlat()}
-                    className="text-[11px] text-neutral-400 hover:text-white flex items-center gap-1 px-2 py-1 rounded bg-neutral-900 border border-white/5 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>フラット</span>
-                  </button>
-                </div>
-                <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 p-3 rounded-2xl bg-[#090b0f] border border-white/5">
-                  {EQ_FREQUENCIES.map((freq, idx) => {
-                    const gain = eqSettings.gains[idx] || 0;
-                    return (
-                      <div key={freq} className="flex flex-col items-center gap-1.5">
-                        <span
-                          className={`text-[10px] font-mono font-bold ${
-                            gain > 0 ? 'text-red-400' : gain < 0 ? 'text-cyan-400' : 'text-neutral-500'
-                          }`}
-                        >
-                          {gain > 0 ? `+${gain}` : gain}
-                        </span>
-                        <div className="relative h-36 flex items-center justify-center">
-                          <div className="absolute top-1/2 left-0 right-0 h-px bg-white/15 pointer-events-none" />
-                          <input
-                            type="range"
-                            min="-12"
-                            max="12"
-                            step="0.5"
-                            value={gain}
-                            onChange={(e) => equalizer.setBandGain(idx, parseFloat(e.target.value))}
-                            onDoubleClick={() => equalizer.setBandGain(idx, 0)}
-                            style={{ transform: 'rotate(-90deg)', width: '124px' }}
-                            className="accent-sky-500 bg-neutral-800 rounded-lg cursor-pointer h-1.5"
-                          />
-                        </div>
-                        <span className="text-[10px] font-mono text-neutral-300 font-semibold">
-                          {formatFreq(freq)}Hz
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: LOCAL FILE CONVERTER + EQ */}
+          {/* TAB 2: LOCAL FILE CONVERTER */}
           {activeTab === 'convert' && (
             <div className="space-y-4">
+              {!ffmpegAvailable && (
+                <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/35 text-amber-200 text-xs leading-relaxed">
+                  現在のサーバー環境 (Vercel等) には FFmpeg バイナリが搭載されていないため、ローカルファイルの形式変換機能は利用できません。「楽曲ダウンロード」タブのダイレクト保存機能をご利用ください。
+                </div>
+              )}
+
               <input
                 ref={fileInputRef}
                 type="file"
@@ -963,7 +1038,7 @@ export const FreemakeModal: React.FC = () => {
                       端末内の音声・動画ファイルを選択 (MP3 / WAV / FLAC / M4A / MP4 / WEBM)
                     </p>
                     <p className="text-xs text-neutral-400 mt-1">
-                      Freemake FFmpeg エンジンで高音質変換 ＋ 現在のEQカーブを直接焼き込みます
+                      Freemake FFmpeg エンジンで高音質フォーマットへ変換します
                     </p>
                   </div>
                 )}
@@ -1012,25 +1087,10 @@ export const FreemakeModal: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-900/70 border border-white/10 text-xs">
-                <span>
-                  Freemake EQ焼き込み ({EQ_PRESETS[eqSettings.preset]?.label.split(' ')[0]} / Bass +{eqSettings.bassBoost}dB)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setApplyEqOnExport((v) => !v)}
-                  className={`px-3 py-1 rounded-lg font-bold cursor-pointer ${
-                    applyEqOnExport ? 'bg-amber-500 text-black' : 'bg-neutral-800 text-neutral-400'
-                  }`}
-                >
-                  {applyEqOnExport ? 'ON' : 'OFF'}
-                </button>
-              </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
-                  disabled={busy || !pickedFile}
+                  disabled={busy || !pickedFile || !ffmpegAvailable}
                   onClick={() => handleExecuteLocalConvert('device')}
                   className="py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
@@ -1039,7 +1099,7 @@ export const FreemakeModal: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  disabled={busy || !pickedFile}
+                  disabled={busy || !pickedFile || !ffmpegAvailable}
                   onClick={() => handleExecuteLocalConvert('offline')}
                   className="py-3 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-white font-bold text-xs sm:text-sm border border-cyan-500/35 flex items-center justify-center gap-2 cursor-pointer"
                 >

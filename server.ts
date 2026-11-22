@@ -5719,7 +5719,7 @@ export async function createApp(options?: {
     res.json({ success: true, message: 'DMメッセージを強制削除しました', deletedId: id });
   });
 
-  // --- Freemake Audio/Video Downloader & Equalizer Conversion Engine ---
+  // --- Freemake Audio/Video Downloader & Conversion Engine ---
   registerFreemakeRoutes(app, getInnertube);
 
   // --- Shared Offline Library (誰でもアップロード・みんなでオフライン再生) ---

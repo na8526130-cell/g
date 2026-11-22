@@ -9,7 +9,6 @@ import {
   User,
   Bell,
   ShieldCheck,
-  Sliders,
   MessageSquare,
   Radio,
   FileText,
@@ -49,7 +48,6 @@ export const TopNavbar: React.FC = () => {
     onlineCount,
     isAdmin,
     setAdminModalOpen,
-    setEqModalOpen,
     setDmModalOpen,
     dmUiVisible,
     openFreemakeModal,
@@ -601,19 +599,6 @@ export const TopNavbar: React.FC = () => {
         >
           <Link2 className="w-3.5 h-3.5 text-red-400" />
           <span className="hidden lg:inline">URLインポート</span>
-        </button>
-        )}
-
-        {/* 10-Band Equalizer Quick Toggle */}
-        {isPC && (
-        <button
-          type="button"
-          onClick={() => setEqModalOpen(true)}
-          title="Freemake イコライザー & 重低音ブースト"
-          className="flex px-2.5 sm:px-3 py-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-amber-400 border border-neutral-800 rounded-lg text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Sliders className="w-3.5 h-3.5 text-amber-500" />
-          <span className="hidden lg:inline">EQ</span>
         </button>
         )}
 

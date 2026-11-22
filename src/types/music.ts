@@ -35,10 +35,9 @@ export interface Track {
   uploadedBy?: string;
   uploadedAt?: string;
   fileSize?: number;
+  fileName?: string;
+  fileExt?: string;
   isCachedOffline?: boolean;
-  expiresAt?: string | null;
-  allowExtension?: boolean;
-  shareToken?: string;
   commentEmotion?: CommentEmotionData;
 }
 

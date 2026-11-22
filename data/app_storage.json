@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 116,
+  "totalAccessCount": 129,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -462,7 +462,7 @@
     },
     "hourlyVisits": {
       "8": 6,
-      "9": 49,
+      "9": 62,
       "10": 7,
       "11": 25,
       "12": 2,
@@ -470,15 +470,15 @@
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 91,
+      "mobile": 104,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 91,
+      "Safari": 104,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 91,
+      "macOS": 104,
       "Other": 1
     },
     "lyricsStats": {

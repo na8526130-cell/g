@@ -18,7 +18,6 @@ import {
   Heart,
   Share2,
   ListMusic,
-  Sliders,
   FileText,
   ListPlus,
   Radio,
@@ -135,7 +134,6 @@ export const FullScreenPlayerModal: React.FC = () => {
     canvasEnabled,
     setCanvasEnabled,
     playbackContextLabel,
-    setEqModalOpen,
     setQueueOpen,
     currentLyrics,
     activeSyncedLyricText,
@@ -900,18 +898,6 @@ export const FullScreenPlayerModal: React.FC = () => {
                 >
                   <Link2 className="w-4 h-4 text-neutral-400" />
                   <span>URLコピー / YouTube埋め込み</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setEqModalOpen(true);
-                  }}
-                  className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
-                >
-                  <Sliders className="w-4 h-4 text-neutral-400" />
-                  <span>Freemake イコライザー調整</span>
                 </button>
 
                 <button

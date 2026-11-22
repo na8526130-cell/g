@@ -12,7 +12,6 @@ import { PlaylistImportModal } from './components/PlaylistImportModal';
 import { AddToPlaylistModal } from './components/AddToPlaylistModal';
 import { AccountModal } from './components/AccountModal';
 import { AdminConsoleModal } from './components/AdminConsoleModal';
-import { EqualizerModal } from './components/EqualizerModal';
 import { ShareModal } from './components/ShareModal';
 import { MiniFloatingPlayer } from './components/MiniFloatingPlayer';
 import { HomeExploreView } from './views/HomeExploreView';
@@ -51,8 +50,6 @@ const MainLayout: React.FC = () => {
     setPlayerMode,
     currentTrack,
     backgroundPlaybackEnabled,
-    eqModalOpen,
-    setEqModalOpen,
     shareModalOpen,
     setShareModalOpen,
     shareModalPayload,
@@ -183,7 +180,6 @@ const MainLayout: React.FC = () => {
       <AddToPlaylistModal />
       <AccountModal />
       <AdminConsoleModal />
-      <EqualizerModal isOpen={eqModalOpen} onClose={() => setEqModalOpen(false)} />
       <ShareModal
         isOpen={shareModalOpen}
         onClose={() => setShareModalOpen(false)}

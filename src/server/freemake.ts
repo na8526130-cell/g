@@ -6,13 +6,27 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import type { Innertube } from 'youtubei.js';
+import {
+  FREEMAKE_DOWNLOAD_SITES,
+  FreemakeDownloadSiteId,
+  resolveViaPipedPool,
+  resolveViaInvidiousPool,
+  searchMultiSiteCandidates,
+  SearchHelpers,
+} from './downloadSites';
+import {
+  CoverImageAsset,
+  embedMetadataAndCoverFile,
+  fetchBestCoverImage,
+  fetchSafeExternalImage,
+} from './coverEmbed';
 
 const execFileAsync = promisify(execFile);
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-export const EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
+const IS_VERCEL = Boolean(process.env.VERCEL);
 
 export type FreemakeFormatId =
   | 'mp3_320'
@@ -109,46 +123,40 @@ export const FREEMAKE_FORMATS: Record<FreemakeFormatId, FreemakeFormatSpec> = {
   },
 };
 
-export interface FreemakeEqPayload {
-  enabled?: boolean;
-  gains?: number[];
-  bassBoost?: number;
-  normalize?: boolean;
+// ---------- FFmpeg / FFprobe Availability Cache ----------
+
+let cachedFfmpegStatus: Promise<{ available: boolean; version: string }> | null = null;
+let cachedFfprobeAvailable: Promise<boolean> | null = null;
+
+async function getFfmpegStatus(): Promise<{ available: boolean; version: string }> {
+  if (!cachedFfmpegStatus) {
+    cachedFfmpegStatus = (async () => {
+      try {
+        const { stdout } = await execFileAsync('ffmpeg', ['-version'], { timeout: 3000 });
+        return {
+          available: true,
+          version: stdout.split('\n')[0]?.trim() || 'ffmpeg available',
+        };
+      } catch {
+        return { available: false, version: '' };
+      }
+    })();
+  }
+  return cachedFfmpegStatus;
 }
 
-export function buildFfmpegEqFilter(eq?: FreemakeEqPayload | null): string | null {
-  if (!eq || eq.enabled === false) return null;
-
-  const filters: string[] = [];
-  const bassBoost = Math.max(0, Math.min(12, Number(eq.bassBoost) || 0));
-  let hasPositiveGain = bassBoost > 0;
-
-  if (bassBoost >= 0.2) {
-    filters.push(`lowshelf=f=65:g=${bassBoost.toFixed(1)}`);
+async function getFfprobeAvailable(): Promise<boolean> {
+  if (!cachedFfprobeAvailable) {
+    cachedFfprobeAvailable = (async () => {
+      try {
+        await execFileAsync('ffprobe', ['-version'], { timeout: 3000 });
+        return true;
+      } catch {
+        return false;
+      }
+    })();
   }
-
-  const gains = Array.isArray(eq.gains) ? eq.gains : [];
-  EQ_FREQUENCIES.forEach((freq, idx) => {
-    const raw = Number(gains[idx]) || 0;
-    const clamped = Math.max(-12, Math.min(12, raw));
-    if (Math.abs(clamped) >= 0.2) {
-      if (clamped > 0) hasPositiveGain = true;
-      filters.push(`equalizer=f=${freq}:t=q:w=1.4:g=${clamped.toFixed(1)}`);
-    }
-  });
-
-  if (eq.normalize) {
-    filters.push('dynaudnorm=f=150:g=15:p=0.92');
-    hasPositiveGain = true;
-  }
-
-  if (filters.length === 0) return null;
-
-  if (hasPositiveGain) {
-    filters.push('alimiter=limit=0.96');
-  }
-
-  return filters.join(',');
+  return cachedFfprobeAvailable;
 }
 
 function sanitizeFilenameBase(name: string): string {
@@ -187,11 +195,23 @@ function stripHtmlTags(s: string): string {
     .trim();
 }
 
-function cleanSearchTitle(title: string): string {
-  return title
-    .replace(/[\[【（(][^\]】）)]*(official|music\s*video|lyric\s*video|audio|mv|hd|4k|公式|歌詞|hi-?res|flac|无损|中字)[^\]】）)]*[\]】）)]/gi, ' ')
+function cleanSearchTitle(title: string, artist = ''): string {
+  let cleaned = title
+    .replace(/[\[【（(][^\]】）)]*(official|music\s*video|lyric\s*video|audio|mv|m\/v|pv|hd|4k|公式|歌詞|hi-?res|flac|无损|中字)[^\]】）)]*[\]】）)]/gi, ' ')
+    .replace(/\b(official\s*(music\s*video|video|audio|lyric\s*video)|music\s*video|lyric\s*video)\b/gi, ' ')
+    .replace(/[「」『』]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  if (artist.trim()) {
+    const escapedArtist = artist.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned
+      .replace(new RegExp(`^${escapedArtist}\\s*[-–—:/|]\\s*`, 'i'), '')
+      .replace(new RegExp(`\\s*[-–—:/|]\\s*${escapedArtist}$`, 'i'), '')
+      .trim();
+  }
+
+  return cleaned;
 }
 
 function normalizeMatchText(s: string): string {
@@ -339,7 +359,7 @@ function hasDisallowedVariantMarker(text: string, intent: VariantIntent): boolea
   }
   if (
     !intent.wantsCover &&
-    /(\bcover\b|\bacapella\b|\barrange\b|歌ってみた|弾いてみた|叩いてみた|翻唱|声真似|アカペラ|唱见|歌枠|the\s*first\s*take|vtuber|にじさんじ|nijisanji|ホロライブ|hololive|原唱[:：])/i.test(
+    /(\bcover\b|\bcovered\b|\bacapella\b|\barrange\b|歌ってみた|弾いてみた|叩いてみた|翻唱|声真似|アカペラ|唱见|歌枠|the\s*first\s*take|vtuber|にじさんじ|nijisanji|ホロライブ|hololive|原唱[:：])/i.test(
       text
     )
   ) {
@@ -378,7 +398,6 @@ function isHarmlessBracketTag(inner: string, targetTitle: string, targetArtist: 
   if (targetArtist.trim() && checkArtistMatch(trimmed, targetArtist)) return true;
   const normTarget = normalizeMatchText(targetTitle);
   if (normTarget && normalizeMatchText(trimmed) === normTarget) return true;
-  // Known technical/subtitle/quality/official release tags only (NOT cover artist names)
   return /^[\s/|·\-_,]*(official(\s*(music\s*video|video|audio|mv))?|music\s*video|lyric\s*video|official\s*audio|mv|m\/v|pv|hd|4k|8k|1080p|60fps|hi-?res|lossless|flac|mp3|full|audio|sub|cc|公式|歌詞|歌詞付き|高音質|高音质|完整版|原曲|无损|纯享|中文字?幕?|中日双?语?字幕?|双语字幕?|中字\s*mv|高清版?\s*mv|高清版?|专辑|单曲|cd|ep|dts|5\.1声道|杜比全景声)[\s/|·\-_,]*$/i.test(
     trimmed
   );
@@ -402,7 +421,8 @@ function stripParenthesesIfPlainTarget(
 
   let cleaned = candidateTitle
     .replace(/\[([^\]]*)\]/g, replaceBracket)
-    .replace(/【([^】]*)】/g, replaceBracket);
+    .replace(/【([^】]*)】/g, replaceBracket)
+    .replace(/[「」『』]/g, ' ');
 
   if (!targetHasParens) {
     cleaned = cleaned.replace(/\(([^)]*)\)/g, ' ').replace(/（([^）]*)）/g, ' ');
@@ -418,7 +438,6 @@ function extractCoreSongTitle(candidateTitle: string, targetTitle: string, targe
       s = s.replace(new RegExp(escaped, 'gi'), ' ');
     }
   }
-  // Also remove raw targetArtist (with spaces/punctuation)
   if (targetArtist.trim()) {
     const escapedRaw = targetArtist.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     s = s.replace(new RegExp(escapedRaw, 'gi'), ' ');
@@ -450,7 +469,6 @@ function scoreCandidateTrack(params: {
     expectedDurationSec = 0,
   } = params;
 
-  // Reject short clips/previews (< 45s) and long unsplit compilations (> 16m unless requested track is long)
   if (durationSec > 0 && durationSec < 45) return -999;
   const maxAllowedSec = expectedDurationSec > 900 ? expectedDurationSec + 180 : 960;
   if (durationSec > maxAllowedSec) return -999;
@@ -461,7 +479,6 @@ function scoreCandidateTrack(params: {
     return -999;
   }
 
-  // Strictly enforce duration closeness when expected studio duration is known
   if (expectedDurationSec > 45 && durationSec > 0) {
     const minAcceptable = expectedDurationSec - Math.max(15, Math.round(expectedDurationSec * 0.12));
     const maxAcceptable = expectedDurationSec + Math.max(35, Math.round(expectedDurationSec * 0.25));
@@ -470,21 +487,21 @@ function scoreCandidateTrack(params: {
     }
   }
 
-  // Strictly require artist match when targetArtist is provided
   const artistHaystack = `${candidateTitle} ${candidateAuthor} ${collectionTitle}`;
   const artistMatched = checkArtistMatch(artistHaystack, targetArtist);
   if (targetArtist.trim() && !artistMatched) {
     return -999;
   }
 
-  const normTargetTitle = normalizeMatchText(cleanSearchTitle(targetTitle) || targetTitle);
+  const cleanedTarget = cleanSearchTitle(targetTitle, targetArtist) || targetTitle;
+  const normTargetTitle = normalizeMatchText(cleanedTarget);
   const { cleaned: strippedCandTitle, hasUnknownBracketTag } = stripParenthesesIfPlainTarget(
     candidateTitle,
-    targetTitle,
+    cleanedTarget,
     targetArtist
   );
   const normStrippedCand = normalizeMatchText(strippedCandTitle);
-  const normCoreCand = extractCoreSongTitle(candidateTitle, targetTitle, targetArtist);
+  const normCoreCand = extractCoreSongTitle(candidateTitle, cleanedTarget, targetArtist);
   const compactTarget = normTargetTitle.replace(/\s+/g, '');
   const compactCore = normCoreCand.replace(/\s+/g, '');
 
@@ -492,7 +509,6 @@ function scoreCandidateTrack(params: {
 
   if (normTargetTitle) {
     if (normCoreCand === normTargetTitle || compactCore === compactTarget) {
-      // Exact core title match (e.g. "Editorial - Official髭男dism" -> "editorial")
       score += 85;
     } else if (
       normStrippedCand === normTargetTitle ||
@@ -505,7 +521,6 @@ function scoreCandidateTrack(params: {
         normCoreCand.split(' ').filter(Boolean).length -
         normTargetTitle.split(' ').filter(Boolean).length;
       if (extraWords > 3) {
-        // Likely an event/compilation/unrelated title mentioning the album/track name
         return -999;
       }
       score += 48;
@@ -519,7 +534,6 @@ function scoreCandidateTrack(params: {
     }
   }
 
-  // Unknown bracket tag (often a cover artist like 【犬山玉姬】 or 【まふまふ】)
   if (hasUnknownBracketTag) {
     score -= 40;
   }
@@ -528,7 +542,6 @@ function scoreCandidateTrack(params: {
     score += 30;
   }
 
-  // Duration closeness bonus
   if (expectedDurationSec > 45 && durationSec > 0) {
     const absDiff = Math.abs(durationSec - expectedDurationSec);
     if (absDiff <= 6) score += 50;
@@ -539,12 +552,10 @@ function scoreCandidateTrack(params: {
     score += 10;
   }
 
-  // Official / Hi-Res / Original markers
   if (/official|music\s*video|\bmv\b|hi-?res|flac|完整版|高音质|原曲|公式|full|无损/i.test(candidateTitle)) {
     score += 12;
   }
 
-  // Popularity tie-breaker
   if (playCount > 0) {
     score += Math.min(18, Math.log10(playCount + 1) * 3);
   }
@@ -554,26 +565,44 @@ function scoreCandidateTrack(params: {
 
 const MIN_CANDIDATE_SCORE = 75;
 
+function isYtimgWideThumb(url?: string | null): boolean {
+  if (!url) return false;
+  return /https?:\/\/(?:i\d*|img)\.ytimg\.com\//i.test(url);
+}
+
+function upgradeItunesArtworkUrl(url?: string | null): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  return url.replace(/\/\d+x\d+bb\.(jpg|png|webp)(\?.*)?$/i, '/1000x1000bb.jpg');
+}
+
 async function resolveMetadataForTrack(params: {
   videoId?: string | null;
   title?: string;
   artist?: string;
+  album?: string;
+  thumbnail?: string;
   duration?: string;
   durationSeconds?: number;
   getInnertube?: () => Promise<Innertube>;
 }): Promise<{
   title: string;
   artist: string;
+  album?: string;
+  thumbnailUrl?: string;
+  coverCandidates: string[];
   expectedDurationSec: number;
   officialPreviewUrl?: string;
   officialPreviewSource?: string;
 }> {
   let title = String(params.title || '').trim();
   let artist = String(params.artist || '').trim();
+  let album = String(params.album || '').trim();
+  const clientThumb = String(params.thumbnail || '').trim();
+  let ytOembedThumb = '';
   let expectedDurationSec =
     Number(params.durationSeconds) || parseDurationTextToSec(params.duration) || 0;
 
-  if (params.videoId && (!title || !artist)) {
+  if (params.videoId && (!title || !artist || !clientThumb)) {
     try {
       const oeRes = await fetch(
         `https://www.youtube.com/oembed?url=${encodeURIComponent(
@@ -587,11 +616,12 @@ async function resolveMetadataForTrack(params: {
         if (!artist && oe?.author_name) {
           artist = String(oe.author_name).replace(/\s*-\s*Topic$/i, '').trim();
         }
+        if (oe?.thumbnail_url) ytOembedThumb = String(oe.thumbnail_url).trim();
       }
     } catch {}
   }
 
-  // If duration is still unknown and we have a YouTube videoId, try lightweight search metadata lookup
+  // If duration is still unknown and we have a YouTube videoId, try lightweight lookup
   if (params.videoId && expectedDurationSec <= 0 && params.getInnertube) {
     try {
       const yt = await params.getInnertube();
@@ -608,10 +638,27 @@ async function resolveMetadataForTrack(params: {
     } catch {}
   }
 
+  // Clean up oEmbed titles like "Artist - Song Title [Official Video]"
+  if (title) {
+    const cleaned = cleanSearchTitle(title, artist);
+    if (cleaned) {
+      if (!artist && cleaned.includes(' - ')) {
+        const parts = cleaned.split(' - ');
+        if (parts[0].trim() && parts.slice(1).join(' - ').trim()) {
+          artist = parts[0].trim();
+          title = parts.slice(1).join(' - ').trim();
+        }
+      } else {
+        title = cleaned;
+      }
+    }
+  }
+
   let officialPreviewUrl: string | undefined;
   let officialPreviewSource: string | undefined;
+  let itunesArtworkUrl: string | undefined;
 
-  const q = [cleanSearchTitle(title), artist].filter(Boolean).join(' ').trim();
+  const q = [cleanSearchTitle(title, artist), artist].filter(Boolean).join(' ').trim();
   if (q) {
     try {
       const res = await fetch(
@@ -621,7 +668,7 @@ async function resolveMetadataForTrack(params: {
       if (res.ok) {
         const data = (await res.json()) as any;
         const intent = detectTargetIntent(title);
-        const normTargetTitle = normalizeMatchText(cleanSearchTitle(title) || title);
+        const normTargetTitle = normalizeMatchText(cleanSearchTitle(title, artist) || title);
         const compactTargetTitle = normTargetTitle.replace(/\s+/g, '');
 
         const scoredHits = (data?.results || [])
@@ -633,7 +680,7 @@ async function resolveMetadataForTrack(params: {
             if (hasDisallowedVariantMarker(rTitle, intent)) return { r, score: -999 };
             if (artist && !checkArtistMatch(rArtist, artist)) return { r, score: -999 };
 
-            const normRTitle = normalizeMatchText(cleanSearchTitle(rTitle) || rTitle);
+            const normRTitle = normalizeMatchText(cleanSearchTitle(rTitle, artist) || rTitle);
             const strippedRTitle = normalizeMatchText(
               stripParenthesesIfPlainTarget(rTitle, title, artist).cleaned
             );
@@ -667,14 +714,45 @@ async function resolveMetadataForTrack(params: {
           }
           if (!title && hit.trackName) title = hit.trackName;
           if (!artist && hit.artistName) artist = hit.artistName;
+          if (!album && hit.collectionName) album = String(hit.collectionName).trim();
+          itunesArtworkUrl = upgradeItunesArtworkUrl(hit.artworkUrl100 || hit.artworkUrl60);
         }
       }
     } catch {}
   }
 
+  const ytCandidates = params.videoId
+    ? [
+        `https://i.ytimg.com/vi/${params.videoId}/sddefault.jpg`,
+        `https://i.ytimg.com/vi/${params.videoId}/hqdefault.jpg`,
+      ]
+    : [];
+
+  // Prefer crisp 1:1 square artwork (custom album cover or 1000x1000 iTunes jacket) over wide 16:9 ytimg
+  const orderedCandidates: string[] = [];
+  if (clientThumb && !isYtimgWideThumb(clientThumb)) {
+    orderedCandidates.push(clientThumb);
+  }
+  if (itunesArtworkUrl) {
+    orderedCandidates.push(itunesArtworkUrl);
+  }
+  if (clientThumb) {
+    orderedCandidates.push(clientThumb);
+  }
+  if (ytOembedThumb) {
+    orderedCandidates.push(ytOembedThumb);
+  }
+  orderedCandidates.push(...ytCandidates);
+
+  const uniqueCandidates = [...new Set(orderedCandidates.filter(Boolean))];
+  const thumbnailUrl = uniqueCandidates[0];
+
   return {
     title,
     artist,
+    album: album || undefined,
+    thumbnailUrl,
+    coverCandidates: uniqueCandidates,
     expectedDurationSec,
     officialPreviewUrl,
     officialPreviewSource,
@@ -721,7 +799,7 @@ async function searchBilibiliCandidates(
   artist: string,
   expectedDurationSec: number
 ): Promise<BiliCandidate[]> {
-  const cleanTitle = cleanSearchTitle(title) || title;
+  const cleanTitle = cleanSearchTitle(title, artist) || title;
   const keyword = [artist, cleanTitle].filter(Boolean).join(' ').trim();
   if (!keyword) return [];
 
@@ -754,6 +832,9 @@ async function searchBilibiliCandidates(
   };
 
   await Promise.all([runQuery(keyword, 'click'), runQuery(keyword, 'totalrank')]);
+  if (seen.size === 0 && artist && cleanTitle && keyword !== cleanTitle) {
+    await runQuery(cleanTitle, 'totalrank');
+  }
 
   const intent = detectTargetIntent(title);
   const maxAllowedSec = expectedDurationSec > 900 ? expectedDurationSec + 180 : 960;
@@ -767,7 +848,6 @@ async function searchBilibiliCandidates(
     const playCount = Number(item.play) || 0;
 
     if (durSec > maxAllowedSec) {
-      // Potentially a multi-part album / discography collection (e.g. "【无损音乐】...歌曲合集")
       const isArtistMatched = !artist.trim() || checkArtistMatch(`${rawTitle} ${rawAuthor}`, artist);
       const isBadCollection =
         (!intent.wantsLive && /(\blive\b|\btour\b|ライブ|ツアー|演唱会|巡演|武道館|アリーナ)/i.test(rawTitle)) ||
@@ -799,7 +879,6 @@ async function searchBilibiliCandidates(
     }
   }
 
-  // Inspect top 4 multi-part album/discography collections for an exact track page match
   if (collectionChecks.length > 0 && cleanTitle) {
     const topCollections = collectionChecks
       .sort((a, b) => {
@@ -891,6 +970,9 @@ async function probeRemoteStream(
       const cl = Number(probe.headers.get('content-length') || 0) || 0;
       if (probe.status === 200 && cl > 1024) totalSize = cl;
     }
+    try {
+      await probe.body?.cancel();
+    } catch {}
     return { ok: true, totalSize };
   } catch {
     return { ok: false, totalSize: 0 };
@@ -928,7 +1010,7 @@ async function resolveBilibiliStreamForCandidate(
       cid = viewJson?.data?.cid;
       realDuration = Number(viewJson?.data?.duration) || candidate.durationSec;
     }
-    if (!cid) return null;
+    if (!cid || realDuration < 45) return null;
 
     const streamHeaders = {
       'User-Agent': BROWSER_UA,
@@ -968,12 +1050,15 @@ async function resolveBilibiliStreamForCandidate(
         );
         if (!dashRes.ok) return null;
         const dashJson = (await dashRes.json()) as any;
-        const audioStreams = Array.isArray(dashJson?.data?.dash?.audio)
-          ? [...dashJson.data.dash.audio].sort(
-              (a: any, b: any) => (b.bandwidth || 0) - (a.bandwidth || 0)
-            )
+        const rawStreams: any[] = Array.isArray(dashJson?.data?.dash?.audio)
+          ? [...dashJson.data.dash.audio]
           : [];
-        for (const stream of audioStreams.slice(0, 2)) {
+        const audioStreams = rawStreams.sort((a: any, b: any) =>
+          IS_VERCEL
+            ? (a.bandwidth || 0) - (b.bandwidth || 0)
+            : (b.bandwidth || 0) - (a.bandwidth || 0)
+        );
+        for (const stream of audioStreams.slice(0, 3)) {
           const urls = prioritizeAkamaiUrls([
             stream.baseUrl,
             stream.base_url,
@@ -982,7 +1067,10 @@ async function resolveBilibiliStreamForCandidate(
           ]);
           for (const u of urls) {
             const probe = await probeRemoteStream(u, streamHeaders);
-            if (probe.ok) return u;
+            if (probe.ok) {
+              if (IS_VERCEL && probe.totalSize > 4_300_000) continue;
+              return u;
+            }
           }
         }
       } catch {}
@@ -990,7 +1078,6 @@ async function resolveBilibiliStreamForCandidate(
     };
 
     if (wantsVideo) {
-      // Try 720p single-container MP4 first if <= 36MB, else prefer faster 480p (qn=32), then oversized qn=64, then DASH audio
       const qn64 = await tryDurlQuality(64);
       if (qn64 && (qn64.size === 0 || qn64.size <= 36 * 1024 * 1024)) {
         return {
@@ -1046,7 +1133,7 @@ async function resolveBilibiliStreamForCandidate(
       }
 
       const qn32 = await tryDurlQuality(32);
-      if (qn32) {
+      if (qn32 && (!IS_VERCEL || qn32.size === 0 || qn32.size <= 4_300_000)) {
         return {
           url: qn32.url,
           headers: streamHeaders,
@@ -1100,13 +1187,18 @@ async function getSoundCloudClientId(forceRefresh = false): Promise<string> {
   return '';
 }
 
+interface ScTranscodingOption {
+  url: string;
+  protocol: string;
+  mimeType: string;
+}
+
 interface ScCandidate {
   id: number;
   title: string;
   author: string;
   durationSec: number;
-  transcodingUrl: string;
-  protocol: string;
+  transcodings: ScTranscodingOption[];
   score: number;
 }
 
@@ -1115,47 +1207,64 @@ async function searchSoundCloudCandidates(
   artist: string,
   expectedDurationSec: number
 ): Promise<ScCandidate[]> {
-  const cleanTitle = cleanSearchTitle(title) || title;
+  const cleanTitle = cleanSearchTitle(title, artist) || title;
   const keyword = [artist, cleanTitle].filter(Boolean).join(' ').trim();
   if (!keyword) return [];
 
   let clientId = await getSoundCloudClientId(false);
   if (!clientId) return [];
 
-  const doSearch = async (cid: string) => {
+  const doSearch = async (cid: string, queryText: string) => {
     const url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(
-      keyword
-    )}&client_id=${encodeURIComponent(cid)}&limit=10`;
+      queryText
+    )}&client_id=${encodeURIComponent(cid)}&limit=12`;
     return fetch(url, {
       headers: { 'User-Agent': BROWSER_UA },
       signal: AbortSignal.timeout(5000),
     });
   };
 
-  let res = await doSearch(clientId);
+  let res = await doSearch(clientId, keyword);
   if (res.status === 401 || res.status === 403) {
     clientId = await getSoundCloudClientId(true);
     if (!clientId) return [];
-    res = await doSearch(clientId);
+    res = await doSearch(clientId, keyword);
   }
   if (!res.ok) return [];
 
-  const data = (await res.json()) as any;
-  const items = Array.isArray(data?.collection) ? data.collection : [];
+  let data = (await res.json()) as any;
+  let items: any[] = Array.isArray(data?.collection) ? data.collection : [];
+
+  if (items.length === 0 && artist && cleanTitle && keyword !== cleanTitle) {
+    const fallbackRes = await doSearch(clientId, cleanTitle);
+    if (fallbackRes.ok) {
+      data = (await fallbackRes.json()) as any;
+      items = Array.isArray(data?.collection) ? data.collection : [];
+    }
+  }
+
   const results: ScCandidate[] = [];
 
   for (const t of items) {
     if (!t || t.policy === 'BLOCK') continue;
     const durSec = Math.round((Number(t.duration) || 0) / 1000);
-    const transcodings: any[] = Array.isArray(t.media?.transcodings) ? t.media.transcodings : [];
-    const usable = transcodings.filter((tr) => tr?.url && !tr.snipped);
-    if (usable.length === 0) continue;
+    // Reject 30s Go+ previews / truncated entries strictly
+    if (durSec > 0 && durSec < 45) continue;
 
-    // Prefer progressive direct MP3 over HLS, else HLS AAC/MP3
-    const chosen =
-      usable.find((tr) => tr.format?.protocol === 'progressive') ||
-      usable.find((tr) => tr.format?.mime_type?.includes('mp4')) ||
-      usable[0];
+    const transcodings: any[] = Array.isArray(t.media?.transcodings) ? t.media.transcodings : [];
+    const usable = transcodings
+      .filter((tr) => tr?.url && !tr.snipped && tr.format?.protocol !== 'encrypted-hls')
+      .sort((a, b) => {
+        const aProg = a.format?.protocol === 'progressive' ? 0 : 1;
+        const bProg = b.format?.protocol === 'progressive' ? 0 : 1;
+        return aProg - bProg;
+      })
+      .map((tr) => ({
+        url: String(tr.url),
+        protocol: String(tr.format?.protocol || 'hls'),
+        mimeType: String(tr.format?.mime_type || ''),
+      }));
+    if (usable.length === 0) continue;
 
     const candTitle = String(t.title || '');
     const candAuthor = String(t.user?.username || '');
@@ -1175,8 +1284,7 @@ async function searchSoundCloudCandidates(
         title: candTitle,
         author: candAuthor,
         durationSec: durSec,
-        transcodingUrl: chosen.url,
-        protocol: chosen.format?.protocol || 'hls',
+        transcodings: usable,
         score,
       });
     }
@@ -1185,7 +1293,10 @@ async function searchSoundCloudCandidates(
   return results.sort((a, b) => b.score - a.score);
 }
 
-async function resolveSoundCloudStreamForCandidate(cand: ScCandidate): Promise<{
+async function resolveSoundCloudStreamForCandidate(
+  cand: ScCandidate,
+  preferProgressiveOnly = false
+): Promise<{
   url: string;
   protocol: string;
   durationSec: number;
@@ -1193,27 +1304,35 @@ async function resolveSoundCloudStreamForCandidate(cand: ScCandidate): Promise<{
 } | null> {
   const clientId = await getSoundCloudClientId(false);
   if (!clientId) return null;
-  try {
-    const sep = cand.transcodingUrl.includes('?') ? '&' : '?';
-    const res = await fetch(`${cand.transcodingUrl}${sep}client_id=${encodeURIComponent(clientId)}`, {
-      headers: { 'User-Agent': BROWSER_UA },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as any;
-    if (typeof data?.url === 'string' && data.url) {
-      return {
-        url: data.url,
-        protocol: cand.protocol,
-        durationSec: cand.durationSec,
-        title: cand.title,
-      };
-    }
-  } catch {}
+
+  const list = preferProgressiveOnly
+    ? cand.transcodings.filter((t) => t.protocol === 'progressive')
+    : cand.transcodings;
+  const ordered = list.length > 0 ? list : cand.transcodings;
+
+  for (const tr of ordered) {
+    try {
+      const sep = tr.url.includes('?') ? '&' : '?';
+      const res = await fetch(`${tr.url}${sep}client_id=${encodeURIComponent(clientId)}`, {
+        headers: { 'User-Agent': BROWSER_UA },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as any;
+      if (typeof data?.url === 'string' && data.url) {
+        return {
+          url: data.url,
+          protocol: tr.protocol,
+          durationSec: cand.durationSec,
+          title: cand.title,
+        };
+      }
+    } catch {}
+  }
   return null;
 }
 
-// ---------- YouTube Direct / Cobalt Resolver ----------
+// ---------- YouTube Direct / Cobalt / Alternate Resolver ----------
 
 async function resolveYouTubeDirectStream(
   videoId: string,
@@ -1223,21 +1342,25 @@ async function resolveYouTubeDirectStream(
     youtubeCookie?: string;
     poToken?: string;
     cobaltApiUrl?: string;
+    enabledSiteSet?: Set<string> | null;
   }
 ): Promise<
   | {
       url: string;
       headers?: Record<string, string>;
-      sourceKind: 'youtube-direct' | 'cobalt';
+      sourceKind: 'youtube-direct' | 'cobalt' | 'piped' | 'invidious';
       sourceLabel: string;
+      durationSec?: number;
     }
   | { error: string }
 > {
+  const allowSite = (id: FreemakeDownloadSiteId) =>
+    !opts?.enabledSiteSet || opts.enabledSiteSet.has(id);
   const cookie = (opts?.youtubeCookie || process.env.YOUTUBE_COOKIE || '').trim();
   const poToken = (opts?.poToken || process.env.YOUTUBE_PO_TOKEN || '').trim();
   const cobaltUrl = (opts?.cobaltApiUrl || process.env.COBALT_API_URL || '').trim();
 
-  if (cobaltUrl) {
+  if (cobaltUrl && allowSite('cobalt')) {
     try {
       const endpoint = cobaltUrl.replace(/\/+$/, '');
       const r = await fetch(endpoint, {
@@ -1257,20 +1380,52 @@ async function resolveYouTubeDirectStream(
       if (r.ok) {
         const data = (await r.json()) as any;
         if (data?.url && typeof data.url === 'string') {
-          return {
-            url: data.url,
-            sourceKind: 'cobalt',
-            sourceLabel: 'Cobalt YouTube フルストリーム',
-          };
+          const probe = await probeRemoteStream(data.url, { 'User-Agent': BROWSER_UA });
+          if (probe.ok) {
+            return {
+              url: data.url,
+              sourceKind: 'cobalt',
+              sourceLabel: 'Cobalt YouTube フルストリーム',
+            };
+          }
         }
       }
     } catch {}
   }
 
+  const pickBestFormats = (formatsList: any[], isCombinedFallback = false): any[] => {
+    if (wantsVideo) {
+      return formatsList
+        .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('video/mp4'))
+        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+    }
+    const audioOnly = formatsList
+      .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('audio/'))
+      .sort((a: any, b: any) => {
+        if (IS_VERCEL) {
+          // On Vercel, prefer <= 4.2MB audio (e.g. ~128kbps m4a) so response stays under 4.5MB limit
+          const aLen = Number(a.contentLength) || 0;
+          const bLen = Number(b.contentLength) || 0;
+          const aFits = aLen > 0 && aLen <= 4_200_000 ? 0 : 1;
+          const bFits = bLen > 0 && bLen <= 4_200_000 ? 0 : 1;
+          if (aFits !== bFits) return aFits - bFits;
+          return (a.bitrate || 0) - (b.bitrate || 0);
+        }
+        // Prefer mp4/m4a AAC or highest bitrate
+        const aM4a = String(a.mimeType || '').includes('mp4') ? 0 : 1;
+        const bM4a = String(b.mimeType || '').includes('mp4') ? 0 : 1;
+        if (aM4a !== bM4a) return aM4a - bM4a;
+        return (b.bitrate || 0) - (a.bitrate || 0);
+      });
+    if (audioOnly.length > 0 || !isCombinedFallback) return audioOnly;
+    return formatsList.filter((f: any) => typeof f?.url === 'string');
+  };
+
   const clients: Array<{
     name: string;
     client: Record<string, any>;
     ua: string;
+    thirdParty?: Record<string, any>;
   }> = [
     {
       name: 'ANDROID_VR',
@@ -1288,6 +1443,44 @@ async function resolveYouTubeDirectStream(
       ua: 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
     },
     {
+      name: 'IOS',
+      client: {
+        clientName: 'IOS',
+        clientVersion: '19.45.4',
+        deviceMake: 'Apple',
+        deviceModel: 'iPhone16,2',
+        osName: 'iPhone',
+        osVersion: '18.1.0.22B83',
+        hl: 'ja',
+        gl: 'JP',
+      },
+      ua: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)',
+    },
+    {
+      name: 'ANDROID',
+      client: {
+        clientName: 'ANDROID',
+        clientVersion: '19.44.38',
+        androidSdkVersion: 34,
+        osName: 'Android',
+        osVersion: '14',
+        hl: 'ja',
+        gl: 'JP',
+      },
+      ua: 'com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip',
+    },
+    {
+      name: 'TV_EMBEDDED',
+      client: {
+        clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+        clientVersion: '2.0',
+        hl: 'ja',
+        gl: 'JP',
+      },
+      thirdParty: { embedUrl: `https://www.youtube.com/watch?v=${videoId}` },
+      ua: BROWSER_UA,
+    },
+    {
       name: 'WEB',
       client: {
         clientName: 'WEB',
@@ -1300,7 +1493,8 @@ async function resolveYouTubeDirectStream(
   ];
 
   let lastReason = '';
-  for (const c of clients) {
+  if (allowSite('youtube-direct')) {
+    for (const c of clients) {
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -1309,7 +1503,10 @@ async function resolveYouTubeDirectStream(
       if (cookie) headers.Cookie = cookie;
 
       const body: Record<string, any> = {
-        context: { client: c.client },
+        context: {
+          client: c.client,
+          ...(c.thirdParty ? { thirdParty: c.thirdParty } : {}),
+        },
         videoId,
         contentCheckOk: true,
         racyCheckOk: true,
@@ -1330,6 +1527,7 @@ async function resolveYouTubeDirectStream(
         lastReason = String(json.playabilityStatus.reason);
       }
 
+      const declaredDur = Number(json?.videoDetails?.lengthSeconds) || 0;
       const adaptive = Array.isArray(json?.streamingData?.adaptiveFormats)
         ? json.streamingData.adaptiveFormats
         : [];
@@ -1338,53 +1536,169 @@ async function resolveYouTubeDirectStream(
         : [];
 
       const candidates = wantsVideo
-        ? [...combined, ...adaptive].filter(
-            (f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('video/mp4')
-          )
-        : adaptive
-            .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('audio/'))
-            .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+        ? pickBestFormats([...combined, ...adaptive], true)
+        : [
+            ...pickBestFormats(adaptive, false),
+            ...pickBestFormats(combined, true),
+          ];
 
-      const picked = candidates[0] || combined.find((f: any) => typeof f?.url === 'string');
-      if (picked?.url) {
-        return {
-          url: picked.url,
-          headers: cookie ? { Cookie: cookie, 'User-Agent': c.ua } : { 'User-Agent': c.ua },
-          sourceKind: 'youtube-direct',
-          sourceLabel: `YouTube 直接フルストリーム (${c.name})`,
-        };
+      const streamHeaders: Record<string, string> = cookie
+        ? { Cookie: cookie, 'User-Agent': c.ua }
+        : { 'User-Agent': c.ua };
+      for (const picked of candidates.slice(0, 3)) {
+        if (!picked?.url) continue;
+        const probe = await probeRemoteStream(picked.url, streamHeaders);
+        if (probe.ok) {
+          if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
+          return {
+            url: picked.url,
+            headers: streamHeaders,
+            sourceKind: 'youtube-direct',
+            sourceLabel: `YouTube 直接フルストリーム (${c.name})`,
+            durationSec: declaredDur || undefined,
+          };
+        }
       }
     } catch (e: any) {
       lastReason = e?.message || lastReason;
     }
   }
 
-  // Only invoke youtubei.js decipher if Cookie/PO token present (otherwise skip straight to fast full-track fallback)
-  if (cookie || poToken) {
-    try {
-      const yt = await getInnertube();
-      const info = await yt.getBasicInfo(videoId);
-      const adaptive = info?.streaming_data?.adaptive_formats || [];
-      const formats = info?.streaming_data?.formats || [];
-      const list = wantsVideo
-        ? [...formats, ...adaptive].filter((f: any) => f.mime_type?.includes('mp4'))
-        : adaptive.filter((f: any) => f.mime_type?.startsWith('audio/'));
-      if (list.length > 0) {
-        const deciphered = await list[0].decipher(yt.session.player);
-        if (deciphered) {
-          return {
-            url: deciphered,
-            sourceKind: 'youtube-direct',
-            sourceLabel: 'YouTube InnerTube フルストリーム',
-          };
+  // Try youtubei.js built-in deciphering across multiple InnerTube clients (even without cookies!)
+  const innertubeClients = ['IOS', 'ANDROID', 'TV_EMBEDDED', 'WEB_EMBEDDED', 'WEB'] as const;
+  try {
+    const yt = await getInnertube();
+    for (const clientKey of innertubeClients) {
+      try {
+        const info = await yt.getBasicInfo(videoId, { client: clientKey });
+        const declaredDur = Number((info as any)?.basic_info?.duration) || 0;
+        const adaptive = info?.streaming_data?.adaptive_formats || [];
+        const formats = info?.streaming_data?.formats || [];
+        const rawList = wantsVideo
+          ? [...formats, ...adaptive].filter((f: any) => f.mime_type?.includes('mp4'))
+          : [...adaptive.filter((f: any) => f.mime_type?.startsWith('audio/')), ...formats];
+
+        const sorted = rawList.sort((a: any, b: any) =>
+          IS_VERCEL && !wantsVideo
+            ? (a.bitrate || 0) - (b.bitrate || 0)
+            : (b.bitrate || 0) - (a.bitrate || 0)
+        );
+
+        for (const fmt of sorted.slice(0, 3)) {
+          try {
+            const deciphered = fmt.url || (await fmt.decipher(yt.session.player));
+            if (!deciphered) continue;
+            const probe = await probeRemoteStream(deciphered, { 'User-Agent': BROWSER_UA });
+            if (probe.ok) {
+              if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
+              return {
+                url: deciphered,
+                sourceKind: 'youtube-direct',
+                sourceLabel: `YouTube InnerTube フルストリーム (${clientKey})`,
+                durationSec: declaredDur || undefined,
+              };
+            }
+          } catch {}
         }
+        } catch {}
       }
     } catch {}
+  }
+
+  if (allowSite('piped')) {
+    const piped = await resolveViaPipedPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL);
+    if (piped) return piped;
+  }
+
+  if (allowSite('invidious')) {
+    const inv = await resolveViaInvidiousPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL);
+    if (inv) return inv;
   }
 
   return {
     error: lastReason || 'YouTube直接ストリームが制限されています',
   };
+}
+
+async function searchYouTubeAlternateVideoIds(
+  title: string,
+  artist: string,
+  excludeVideoId: string | null,
+  expectedDurationSec: number,
+  getInnertube: () => Promise<Innertube>
+): Promise<Array<{ videoId: string; title: string; durationSec: number }>> {
+  const cleanTitle = cleanSearchTitle(title, artist) || title;
+  if (!cleanTitle) return [];
+
+  const results: Array<{ videoId: string; title: string; durationSec: number; score: number }> = [];
+  const seen = new Set<string>();
+  if (excludeVideoId) seen.add(excludeVideoId);
+
+  try {
+    const yt = await getInnertube();
+    const queries = [
+      `${cleanTitle} ${artist} official audio`.trim(),
+      `${cleanTitle} ${artist}`.trim(),
+    ];
+
+    for (const q of queries) {
+      try {
+        const musicRes: any = await yt.music.search(q, { type: 'song' });
+        const shelves = Array.isArray(musicRes?.results) ? musicRes.results : [];
+        for (const shelf of shelves) {
+          const items = Array.isArray(shelf?.contents) ? shelf.contents : [];
+          for (const item of items) {
+            const id = String(item?.id || '').trim();
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            const candTitle = String(item?.title?.toString?.() || item?.title || '');
+            const candArtist = String(item?.artists?.[0]?.name || item?.author?.name || '');
+            const durSec = Number(item?.duration?.seconds) || parseDurationTextToSec(item?.duration?.text);
+            const score = scoreCandidateTrack({
+              candidateTitle: candTitle,
+              candidateAuthor: candArtist,
+              durationSec: durSec,
+              targetTitle: cleanTitle,
+              targetArtist: artist,
+              expectedDurationSec,
+            });
+            if (score >= MIN_CANDIDATE_SCORE) {
+              results.push({ videoId: id, title: candTitle, durationSec: durSec, score });
+            }
+          }
+        }
+      } catch {}
+      if (results.length >= 4) break;
+    }
+
+    if (results.length === 0) {
+      try {
+        const vidRes: any = await yt.search(`${cleanTitle} ${artist} audio`.trim(), { type: 'video' });
+        const videos = Array.isArray(vidRes?.videos) ? vidRes.videos : [];
+        for (const v of videos.slice(0, 10)) {
+          const id = String(v?.id || '').trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          const candTitle = String(v?.title?.toString?.() || v?.title || '');
+          const candArtist = String(v?.author?.name || '').replace(/\s*-\s*Topic$/i, '').trim();
+          const durSec = Number(v?.duration?.seconds) || parseDurationTextToSec(v?.duration?.text);
+          const score = scoreCandidateTrack({
+            candidateTitle: candTitle,
+            candidateAuthor: candArtist,
+            durationSec: durSec,
+            targetTitle: cleanTitle,
+            targetArtist: artist,
+            expectedDurationSec,
+          });
+          if (score >= MIN_CANDIDATE_SCORE) {
+            results.push({ videoId: id, title: candTitle, durationSec: durSec, score });
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return results.sort((a, b) => b.score - a.score).slice(0, 4);
 }
 
 // ---------- FFmpeg Conversion & Download Utilities ----------
@@ -1423,7 +1737,8 @@ interface FreemakeJobRecord {
   sourceKind?: string;
   sourceLabel?: string;
   durationSec?: number;
-  eqApplied?: boolean;
+  artworkUrl?: string;
+  album?: string;
   listeners: Set<(p: FreemakeJobProgress) => void>;
   cleanupTimer?: NodeJS.Timeout;
   consumed?: boolean;
@@ -1490,6 +1805,10 @@ async function probeMediaFile(filePath: string): Promise<{
   videoCodec: string | null;
   hasAudio: boolean;
 }> {
+  const ffprobeOk = await getFfprobeAvailable();
+  if (!ffprobeOk) {
+    return { durationSec: 0, hasVideo: false, videoCodec: null, hasAudio: true };
+  }
   try {
     const { stdout } = await execFileAsync(
       'ffprobe',
@@ -1518,6 +1837,62 @@ async function probeMediaFile(filePath: string): Promise<{
   } catch {
     return { durationSec: 0, hasVideo: false, videoCodec: null, hasAudio: true };
   }
+}
+
+async function detectMediaContainerFromFile(
+  filePath: string,
+  contentType: string,
+  wantsVideo: boolean
+): Promise<{ ext: string; mimeType: string; isAudioOnly: boolean }> {
+  try {
+    const fh = await fs.promises.open(filePath, 'r');
+    const buf = Buffer.alloc(32);
+    const { bytesRead } = await fh.read(buf, 0, 32, 0);
+    await fh.close();
+
+    if (bytesRead >= 4) {
+      const ascii4 = buf.subarray(0, 4).toString('ascii');
+      if (ascii4 === 'fLaC') return { ext: 'flac', mimeType: 'audio/flac', isAudioOnly: true };
+      if (ascii4 === 'OggS') return { ext: 'ogg', mimeType: 'audio/ogg', isAudioOnly: true };
+      if (ascii4 === 'RIFF' && bytesRead >= 12 && buf.subarray(8, 12).toString('ascii') === 'WAVE') {
+        return { ext: 'wav', mimeType: 'audio/wav', isAudioOnly: true };
+      }
+      if (buf.subarray(0, 3).toString('ascii') === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) {
+        return { ext: 'mp3', mimeType: 'audio/mpeg', isAudioOnly: true };
+      }
+      if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+        return wantsVideo
+          ? { ext: 'webm', mimeType: 'video/webm', isAudioOnly: false }
+          : { ext: 'webm', mimeType: 'audio/webm', isAudioOnly: true };
+      }
+      if (bytesRead >= 12 && buf.subarray(4, 8).toString('ascii') === 'ftyp') {
+        const brand = buf.subarray(8, 12).toString('ascii').toLowerCase();
+        if (brand.includes('m4a')) {
+          return { ext: 'm4a', mimeType: 'audio/mp4', isAudioOnly: true };
+        }
+        if (wantsVideo || contentType.includes('video/')) {
+          return { ext: 'mp4', mimeType: 'video/mp4', isAudioOnly: false };
+        }
+        return { ext: 'm4a', mimeType: 'audio/mp4', isAudioOnly: true };
+      }
+    }
+  } catch {}
+
+  const ct = (contentType || '').toLowerCase();
+  if (ct.includes('mpeg') || ct.includes('mp3')) return { ext: 'mp3', mimeType: 'audio/mpeg', isAudioOnly: true };
+  if (ct.includes('flac')) return { ext: 'flac', mimeType: 'audio/flac', isAudioOnly: true };
+  if (ct.includes('wav')) return { ext: 'wav', mimeType: 'audio/wav', isAudioOnly: true };
+  if (ct.includes('ogg')) return { ext: 'ogg', mimeType: 'audio/ogg', isAudioOnly: true };
+  if (ct.includes('webm')) {
+    return wantsVideo
+      ? { ext: 'webm', mimeType: 'video/webm', isAudioOnly: false }
+      : { ext: 'webm', mimeType: 'audio/webm', isAudioOnly: true };
+  }
+  if (ct.includes('video/mp4')) return { ext: 'mp4', mimeType: 'video/mp4', isAudioOnly: false };
+  if (ct.includes('mp4') || ct.includes('aac') || ct.includes('m4a')) {
+    return { ext: 'm4a', mimeType: 'audio/mp4', isAudioOnly: true };
+  }
+  return { ext: 'm4a', mimeType: 'audio/mp4', isAudioOnly: true };
 }
 
 async function spawnFfmpegWithProgress(
@@ -1605,10 +1980,10 @@ async function runFfmpegConvert(options: {
   inputHeaders?: Record<string, string>;
   outputPath: string;
   format: FreemakeFormatSpec;
-  eq?: FreemakeEqPayload | null;
   title?: string;
   artist?: string;
   album?: string;
+  coverImagePath?: string;
   isAudioOnlyInput?: boolean;
   inputVideoCodec?: string | null;
   expectedDurationSec?: number;
@@ -1619,17 +1994,25 @@ async function runFfmpegConvert(options: {
     inputHeaders,
     outputPath,
     format,
-    eq,
     title,
     artist,
     album,
+    coverImagePath,
     isAudioOnlyInput,
     inputVideoCodec,
     expectedDurationSec = 0,
     onProgress,
   } = options;
 
-  const buildArgs = (videoStrategy: 'copy' | 'ultrafast' | 'still' | 'formatDefault') => {
+  const canAttachAudioCover =
+    Boolean(coverImagePath) &&
+    !format.isVideo &&
+    (format.ext === 'mp3' || format.ext === 'm4a' || format.ext === 'flac' || format.ext === 'ogg');
+
+  const buildArgs = (
+    videoStrategy: 'copy' | 'ultrafast' | 'still' | 'formatDefault',
+    withCover: boolean
+  ) => {
     const args: string[] = ['-y', '-progress', 'pipe:1', '-nostats'];
     if (inputSource.startsWith('http') && inputHeaders && Object.keys(inputHeaders).length > 0) {
       const hdrLines = Object.entries(inputHeaders)
@@ -1640,26 +2023,38 @@ async function runFfmpegConvert(options: {
     args.push('-i', inputSource);
 
     if (format.isVideo && isAudioOnlyInput) {
-      // Fast 1fps dark canvas so audio-only -> MP4 encodes in ~2-3s and stays lightweight
-      const durParam = expectedDurationSec > 0 ? `:d=${Math.ceil(expectedDurationSec + 1)}` : '';
-      args.push(
-        '-f',
-        'lavfi',
-        '-i',
-        `color=c=#09090d:s=640x360:r=1${durParam}`,
-        '-map',
-        '1:v:0',
-        '-map',
-        '0:a:0',
-        '-fflags',
-        '+shortest',
-        '-shortest'
-      );
-    }
-
-    const eqFilter = buildFfmpegEqFilter(eq);
-    if (eqFilter) {
-      args.push('-af', eqFilter);
+      if (withCover && coverImagePath) {
+        args.push(
+          '-loop',
+          '1',
+          '-i',
+          coverImagePath,
+          '-map',
+          '1:v:0',
+          '-map',
+          '0:a:0',
+          '-vf',
+          'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,format=yuv420p',
+          '-shortest'
+        );
+      } else {
+        const durParam = expectedDurationSec > 0 ? `:d=${Math.ceil(expectedDurationSec + 1)}` : '';
+        args.push(
+          '-f',
+          'lavfi',
+          '-i',
+          `color=c=#09090d:s=640x360:r=1${durParam}`,
+          '-map',
+          '1:v:0',
+          '-map',
+          '0:a:0',
+          '-fflags',
+          '+shortest',
+          '-shortest'
+        );
+      }
+    } else if (!format.isVideo && withCover && coverImagePath && canAttachAudioCover) {
+      args.push('-i', coverImagePath);
     }
 
     if (format.isVideo) {
@@ -1706,6 +2101,31 @@ async function runFfmpegConvert(options: {
       } else {
         args.push(...format.ffmpegArgs);
       }
+    } else if (withCover && coverImagePath && canAttachAudioCover) {
+      const audioArgs = format.ffmpegArgs.filter((a) => a !== '-vn');
+      args.push(
+        '-map',
+        '0:a:0',
+        '-map',
+        '1:v:0',
+        ...audioArgs,
+        '-vf',
+        "crop='min(iw,ih)':'min(iw,ih)',scale=1000:1000",
+        '-c:v',
+        'mjpeg',
+        '-disposition:v:0',
+        'attached_pic'
+      );
+      if (format.ext === 'mp3') {
+        args.push(
+          '-id3v2_version',
+          '3',
+          '-metadata:s:v',
+          'title=Album cover',
+          '-metadata:s:v',
+          'comment=Cover (front)'
+        );
+      }
     } else {
       args.push(...format.ffmpegArgs);
     }
@@ -1720,22 +2140,35 @@ async function runFfmpegConvert(options: {
 
   if (format.isVideo) {
     if (isAudioOnlyInput) {
-      await spawnFfmpegWithProgress(buildArgs('still'), expectedDurationSec, onProgress);
+      if (coverImagePath) {
+        try {
+          await spawnFfmpegWithProgress(buildArgs('still', true), expectedDurationSec, onProgress);
+          return;
+        } catch {}
+      }
+      await spawnFfmpegWithProgress(buildArgs('still', false), expectedDurationSec, onProgress);
       return;
     }
     if (inputVideoCodec === 'h264') {
       try {
-        await spawnFfmpegWithProgress(buildArgs('copy'), expectedDurationSec, onProgress);
+        await spawnFfmpegWithProgress(buildArgs('copy', false), expectedDurationSec, onProgress);
         return;
-      } catch {
-        // Fallback to fast re-encode if stream copy fails on non-standard container
-      }
+      } catch {}
     }
-    await spawnFfmpegWithProgress(buildArgs('ultrafast'), expectedDurationSec, onProgress);
+    await spawnFfmpegWithProgress(buildArgs('ultrafast', false), expectedDurationSec, onProgress);
     return;
   }
 
-  await spawnFfmpegWithProgress(buildArgs('formatDefault'), expectedDurationSec, onProgress);
+  if (canAttachAudioCover) {
+    try {
+      await spawnFfmpegWithProgress(buildArgs('formatDefault', true), expectedDurationSec, onProgress);
+      return;
+    } catch {
+      // Fallback safely to audio-only conversion if container rejects attached_pic
+    }
+  }
+
+  await spawnFfmpegWithProgress(buildArgs('formatDefault', false), expectedDurationSec, onProgress);
 }
 
 async function downloadUrlToFile(
@@ -1830,6 +2263,113 @@ async function downloadUrlToFile(
   }
 }
 
+async function downloadUnencryptedHlsToFile(
+  m3u8Url: string,
+  destPath: string,
+  headers?: Record<string, string>,
+  onProgress?: (receivedBytes: number, totalBytes: number) => void,
+  depth = 0
+): Promise<{ contentType: string; bytes: number }> {
+  const res = await fetch(m3u8Url, {
+    headers: { 'User-Agent': BROWSER_UA, ...(headers || {}) },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`HLS playlist failed with HTTP ${res.status}`);
+  const text = await res.text();
+  if (text.includes('#EXT-X-KEY') && !text.includes('METHOD=NONE')) {
+    throw new Error('Encrypted HLS stream requires FFmpeg');
+  }
+
+  // Handle HLS Master Playlist (#EXT-X-STREAM-INF / #EXT-X-MEDIA:TYPE=AUDIO)
+  if (text.includes('#EXT-X-STREAM-INF') && depth < 2) {
+    const rawLines = text.split(/\r?\n/).map((l) => l.trim());
+    const audioMatch = text.match(/#EXT-X-MEDIA:TYPE=AUDIO[^\n]*URI="([^"]+)"/);
+    if (audioMatch?.[1]) {
+      const audioPlaylistUrl = new URL(audioMatch[1], m3u8Url).toString();
+      try {
+        return await downloadUnencryptedHlsToFile(audioPlaylistUrl, destPath, headers, onProgress, depth + 1);
+      } catch {}
+    }
+
+    const variants: Array<{ url: string; bandwidth: number }> = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      if (rawLines[i].startsWith('#EXT-X-STREAM-INF')) {
+        const bwMatch = rawLines[i].match(/BANDWIDTH=(\d+)/);
+        const bw = bwMatch ? Number(bwMatch[1]) : 0;
+        const nextUri = rawLines.slice(i + 1).find((l) => l && !l.startsWith('#'));
+        if (nextUri) {
+          variants.push({ url: new URL(nextUri, m3u8Url).toString(), bandwidth: bw });
+        }
+      }
+    }
+    if (variants.length > 0) {
+      // Pick lightest/medium variant so response stays compact on serverless & fast everywhere
+      variants.sort((a, b) => a.bandwidth - b.bandwidth);
+      const chosen = IS_VERCEL ? variants[0] : variants[Math.min(1, variants.length - 1)];
+      return downloadUnencryptedHlsToFile(chosen.url, destPath, headers, onProgress, depth + 1);
+    }
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  if (lines.length === 0) throw new Error('Empty HLS playlist');
+
+  const initMatch = text.match(/#EXT-X-MAP:URI="([^"]+)"/);
+  const segmentUrls: string[] = [];
+  if (initMatch?.[1]) {
+    segmentUrls.push(new URL(initMatch[1], m3u8Url).toString());
+  }
+  for (const line of lines.slice(0, 220)) {
+    segmentUrls.push(new URL(line, m3u8Url).toString());
+  }
+
+  const ws = fs.createWriteStream(destPath);
+  let totalWritten = 0;
+  let contentType = 'audio/mpeg';
+
+  try {
+    for (let i = 0; i < segmentUrls.length; i++) {
+      const segRes = await fetch(segmentUrls[i], {
+        headers: { 'User-Agent': BROWSER_UA, ...(headers || {}) },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!segRes.ok) throw new Error(`HLS segment ${i + 1} failed (${segRes.status})`);
+      if (i === 0) {
+        const ct = segRes.headers.get('content-type');
+        if (ct) contentType = ct;
+      }
+      const segBuf = Buffer.from(await segRes.arrayBuffer());
+      totalWritten += segBuf.byteLength;
+      if (!ws.write(segBuf)) {
+        await new Promise<void>((resolve, reject) => {
+          ws.once('drain', resolve);
+          ws.once('error', reject);
+        });
+      }
+      onProgress?.(totalWritten, Math.round((totalWritten / (i + 1)) * segmentUrls.length));
+    }
+    await new Promise<void>((resolve, reject) => {
+      ws.on('finish', resolve);
+      ws.on('error', reject);
+      ws.end();
+    });
+  } catch (err) {
+    try {
+      ws.destroy();
+      await fs.promises.unlink(destPath);
+    } catch {}
+    throw err;
+  }
+
+  if (totalWritten < 1024) {
+    await fs.promises.unlink(destPath).catch(() => {});
+    throw new Error('HLS stream too small');
+  }
+  return { contentType, bytes: totalWritten };
+}
+
 interface DownloadPipelineResult {
   tmpDir: string;
   outputPath: string;
@@ -1839,7 +2379,9 @@ interface DownloadPipelineResult {
   sourceKind: string;
   sourceLabel: string;
   durationSec: number;
-  eqApplied: boolean;
+  passthrough: boolean;
+  artworkUrl?: string;
+  album?: string;
 }
 
 async function executeFreemakeDownloadPipeline(
@@ -1855,16 +2397,24 @@ async function executeFreemakeDownloadPipeline(
       title = '',
       artist = '',
       album = '',
+      thumbnail = '',
       duration = '',
       durationSeconds = 0,
       format: rawFormat = 'mp3_320',
-      eq,
       youtubeCookie,
       poToken,
       cobaltApiUrl,
-      allowPreviewFallback = true,
+      allowPreviewFallback = false,
+      enabledSites,
     } = body || {};
 
+    const enabledSiteSet =
+      Array.isArray(enabledSites) && enabledSites.length > 0
+        ? new Set(enabledSites.map((s: any) => String(s || '').trim()).filter(Boolean))
+        : null;
+    const allowSite = (id: FreemakeDownloadSiteId) => !enabledSiteSet || enabledSiteSet.has(id);
+
+    const ffmpegStatus = await getFfmpegStatus();
     const format = FREEMAKE_FORMATS[rawFormat as FreemakeFormatId] || FREEMAKE_FORMATS.mp3_320;
     const videoId = extractYouTubeVideoId(String(rawUrl || rawId || ''));
 
@@ -1872,228 +2422,372 @@ async function executeFreemakeDownloadPipeline(
       stage: 'resolving',
       percent: 6,
       stagePercent: 25,
-      message: '楽曲メタデータと再生時間を確認中...',
+      message: '楽曲メタデータとジャケット画像を取得中...',
     });
 
     const meta = await resolveMetadataForTrack({
       videoId,
       title: String(title || ''),
       artist: String(artist || ''),
+      album: String(album || ''),
+      thumbnail: String(thumbnail || ''),
       duration: String(duration || ''),
       durationSeconds: Number(durationSeconds) || 0,
       getInnertube,
     });
 
+    const coverPromise: Promise<CoverImageAsset | null> = fetchBestCoverImage(
+      meta.coverCandidates
+    ).catch(() => null);
+
     let inputSource = path.join(tmpDir, 'input.media');
     let inputHeaders: Record<string, string> | undefined;
-    let sourceKind:
-      | 'youtube-direct'
-      | 'cobalt'
-      | 'bilibili-full'
-      | 'soundcloud-full'
-      | 'official-preview-30s' = 'youtube-direct';
+    let downloadedContentType = 'audio/mpeg';
+    let sourceKind: FreemakeDownloadSiteId | 'official-preview-30s' = 'youtube-direct';
     let sourceLabel = '';
     let isAudioOnlyInput = true;
     let resolvedDurationSec = meta.expectedDurationSec || 0;
     const resolvedTitle = meta.title || String(title || '').trim();
     const resolvedArtist = meta.artist || String(artist || '').trim();
+    const resolvedAlbum = String(album || '').trim() || meta.album || '';
 
     let resolved = false;
 
-    // Strategy A: Direct YouTube / Cobalt (exact videoId)
+    const tryDownloadStream = async (
+      targetUrl: string,
+      headers: Record<string, string> | undefined,
+      kind: typeof sourceKind,
+      label: string,
+      candDurationSec: number
+    ): Promise<boolean> => {
+      try {
+        emitJobProgress(job, {
+          stage: 'fetching',
+          percent: 25,
+          stagePercent: 0,
+          sourceKind: kind,
+          sourceLabel: label,
+          message: `${label} から音声を取得中...`,
+        });
+        const dl = await downloadUrlToFile(
+          targetUrl,
+          inputSource,
+          headers,
+          (receivedBytes, totalBytes) => {
+            const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
+            emitJobProgress(job, {
+              stage: 'fetching',
+              percent: 25 + ratio * 33,
+              stagePercent: Math.round(ratio * 100),
+              receivedBytes,
+              totalBytes,
+              sourceKind: kind,
+              sourceLabel: label,
+              message: '音声データをダウンロード中...',
+            });
+          }
+        );
+
+        // Verify full-length duration if ffprobe is present and expected track > 60s
+        const probed = await probeMediaFile(inputSource);
+        if (probed.durationSec > 0 && probed.durationSec < 45 && meta.expectedDurationSec > 60) {
+          await fs.promises.unlink(inputSource).catch(() => {});
+          return false;
+        }
+
+        downloadedContentType = dl.contentType;
+        sourceKind = kind;
+        sourceLabel = label;
+        if (probed.durationSec > 0) {
+          resolvedDurationSec = probed.durationSec;
+        } else if (candDurationSec > 0) {
+          resolvedDurationSec = candDurationSec;
+        }
+        isAudioOnlyInput = !probed.hasVideo && !dl.contentType.includes('video') && !format.isVideo;
+        return true;
+      } catch {
+        await fs.promises.unlink(inputSource).catch(() => {});
+        return false;
+      }
+    };
+
+    const tryHlsStream = async (
+      m3u8Url: string,
+      headers: Record<string, string> | undefined,
+      kind: typeof sourceKind,
+      label: string,
+      candDurationSec: number,
+      hasVideoStream = false
+    ): Promise<boolean> => {
+      if (!ffmpegStatus.available) {
+        try {
+          emitJobProgress(job, {
+            stage: 'fetching',
+            percent: 30,
+            stagePercent: 20,
+            sourceKind: kind,
+            sourceLabel: label,
+            message: `${label} (HLS) を取得中...`,
+          });
+          const dl = await downloadUnencryptedHlsToFile(
+            m3u8Url,
+            inputSource,
+            headers || { 'User-Agent': BROWSER_UA },
+            (receivedBytes, totalBytes) => {
+              const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
+              emitJobProgress(job, {
+                stage: 'fetching',
+                percent: 30 + ratio * 28,
+                stagePercent: Math.round(ratio * 100),
+                receivedBytes,
+                totalBytes,
+                sourceKind: kind,
+                sourceLabel: label,
+              });
+            }
+          );
+          downloadedContentType = dl.contentType;
+          sourceKind = kind;
+          resolvedDurationSec = candDurationSec || resolvedDurationSec;
+          sourceLabel = label;
+          isAudioOnlyInput = !hasVideoStream;
+          return true;
+        } catch {
+          await fs.promises.unlink(inputSource).catch(() => {});
+          return false;
+        }
+      }
+
+      inputSource = m3u8Url;
+      inputHeaders = headers || { 'User-Agent': BROWSER_UA };
+      sourceKind = kind;
+      resolvedDurationSec = candDurationSec || resolvedDurationSec;
+      sourceLabel = label;
+      isAudioOnlyInput = !hasVideoStream && !format.isVideo;
+      emitJobProgress(job, {
+        stage: 'fetching',
+        percent: 55,
+        stagePercent: 100,
+        sourceKind: kind,
+        sourceLabel: label,
+        message: `${label} ストリーム接続完了 — 変換準備中...`,
+      });
+      return true;
+    };
+
+    // Strategy A: Direct YouTube / Cobalt / Piped / Invidious (exact videoId)
     if (videoId) {
       emitJobProgress(job, {
         stage: 'searching',
-        percent: 14,
+        percent: 12,
         stagePercent: 30,
-        message: 'YouTube 直接ストリームを確認中...',
+        message: 'YouTube・Piped・Invidious・Cobalt を確認中...',
       });
       const directResult = await resolveYouTubeDirectStream(
         videoId,
         format.isVideo,
         getInnertube,
-        { youtubeCookie, poToken, cobaltApiUrl }
+        { youtubeCookie, poToken, cobaltApiUrl, enabledSiteSet }
       );
       if ('url' in directResult) {
-        try {
-          emitJobProgress(job, {
-            stage: 'fetching',
-            percent: 25,
-            stagePercent: 0,
-            sourceKind: directResult.sourceKind,
-            sourceLabel: directResult.sourceLabel,
-            message: `${directResult.sourceLabel} から音声を取得中...`,
-          });
-          const downloaded = await downloadUrlToFile(
-            directResult.url,
-            inputSource,
-            directResult.headers,
-            (receivedBytes, totalBytes) => {
-              const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
-              emitJobProgress(job, {
-                stage: 'fetching',
-                percent: 25 + ratio * 33,
-                stagePercent: Math.round(ratio * 100),
-                receivedBytes,
-                totalBytes,
-                sourceKind: directResult.sourceKind,
-                sourceLabel: directResult.sourceLabel,
-                message: `音声データをダウンロード中...`,
-              });
-            }
-          );
-          sourceKind = directResult.sourceKind;
-          sourceLabel = directResult.sourceLabel;
-          isAudioOnlyInput = !downloaded.contentType.includes('video') && !format.isVideo;
-          resolved = true;
-        } catch {}
+        resolved = await tryDownloadStream(
+          directResult.url,
+          directResult.headers,
+          directResult.sourceKind,
+          directResult.sourceLabel,
+          directResult.durationSec || resolvedDurationSec
+        );
       }
     }
 
-    // Strategy B: Multi-Engine FULL-TRACK Pipeline (Bilibili Akamai + SoundCloud Full)
+    // Strategy B1: Multi-Site FULL-TRACK Pipeline (9 external search sites in parallel)
     if (!resolved && (resolvedTitle || resolvedArtist)) {
       emitJobProgress(job, {
         stage: 'searching',
         percent: 18,
-        stagePercent: 60,
-        message: 'フル尺音源エンジンを検索・照合中...',
+        stagePercent: 55,
+        message: '10サイト以上のフル尺音源エンジンを横断検索中...',
       });
-      const [biliCandidatesRes, scCandidatesRes] = await Promise.allSettled([
-        searchBilibiliCandidates(resolvedTitle, resolvedArtist, meta.expectedDurationSec),
-        searchSoundCloudCandidates(resolvedTitle, resolvedArtist, meta.expectedDurationSec),
+
+      const helpers: SearchHelpers = {
+        cleanSearchTitle,
+        stripHtmlTags,
+        scoreCandidateTrack,
+        probeRemoteStream,
+        minCandidateScore: MIN_CANDIDATE_SCORE,
+        isVercel: IS_VERCEL,
+      };
+
+      const [biliRes, scRes, multiRes] = await Promise.allSettled([
+        allowSite('bilibili-full')
+          ? searchBilibiliCandidates(resolvedTitle, resolvedArtist, meta.expectedDurationSec)
+          : Promise.resolve([]),
+        allowSite('soundcloud-full')
+          ? searchSoundCloudCandidates(resolvedTitle, resolvedArtist, meta.expectedDurationSec)
+          : Promise.resolve([]),
+        searchMultiSiteCandidates({
+          title: resolvedTitle,
+          artist: resolvedArtist,
+          expectedDurationSec: meta.expectedDurationSec,
+          enabledSiteSet,
+          helpers,
+        }),
       ]);
 
-      const biliCandidates =
-        biliCandidatesRes.status === 'fulfilled' ? biliCandidatesRes.value : [];
-      const scCandidates =
-        scCandidatesRes.status === 'fulfilled' ? scCandidatesRes.value : [];
+      const biliCandidates = biliRes.status === 'fulfilled' ? biliRes.value : [];
+      const scCandidates = scRes.status === 'fulfilled' ? scRes.value : [];
+      const extCandidates = multiRes.status === 'fulfilled' ? multiRes.value : [];
 
-      const topBiliScore = biliCandidates[0]?.score ?? -999;
-      const topScScore = scCandidates[0]?.score ?? -999;
+      interface UnifiedAttempt {
+        score: number;
+        hasVideo: boolean;
+        exec: () => Promise<boolean>;
+      }
 
-      const tryBilibili = async () => {
-        for (const cand of biliCandidates.slice(0, 3)) {
-          const stream = await resolveBilibiliStreamForCandidate(cand, format.isVideo);
-          if (!stream) continue;
-          const label = `フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
-          try {
-            emitJobProgress(job, {
-              stage: 'fetching',
-              percent: 25,
-              stagePercent: 0,
-              sourceKind: 'bilibili-full',
-              sourceLabel: label,
-              message: `${label} を取得中...`,
-            });
-            const dl = await downloadUrlToFile(
+      const unified: UnifiedAttempt[] = [];
+
+      for (const cand of biliCandidates.slice(0, 3)) {
+        unified.push({
+          score: cand.score,
+          hasVideo: true,
+          exec: async () => {
+            const stream = await resolveBilibiliStreamForCandidate(cand, format.isVideo);
+            if (!stream) return false;
+            const label = `Bilibili フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
+            return tryDownloadStream(
               stream.url,
-              inputSource,
               stream.headers,
-              (receivedBytes, totalBytes) => {
-                const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
-                emitJobProgress(job, {
-                  stage: 'fetching',
-                  percent: 25 + ratio * 33,
-                  stagePercent: Math.round(ratio * 100),
-                  receivedBytes,
-                  totalBytes,
-                  sourceKind: 'bilibili-full',
-                  sourceLabel: label,
-                  message: `フル音源データを取得中...`,
-                });
-              }
+              'bilibili-full',
+              label,
+              stream.durationSec || resolvedDurationSec
             );
-            sourceKind = 'bilibili-full';
-            resolvedDurationSec = stream.durationSec || resolvedDurationSec;
-            sourceLabel = `フル音源 (${formatSecLabel(resolvedDurationSec) || 'Full'})`;
-            isAudioOnlyInput = !dl.contentType.includes('video') && !format.isVideo;
-            return true;
-          } catch {}
-        }
-        return false;
-      };
+          },
+        });
+      }
 
-      const trySoundCloud = async () => {
-        for (const cand of scCandidates.slice(0, 3)) {
-          const stream = await resolveSoundCloudStreamForCandidate(cand);
-          if (!stream) continue;
-          const label = `SoundCloud フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
-          if (stream.protocol === 'hls' || stream.url.includes('.m3u8')) {
-            inputSource = stream.url;
-            inputHeaders = { 'User-Agent': BROWSER_UA };
-            sourceKind = 'soundcloud-full';
-            resolvedDurationSec = stream.durationSec || resolvedDurationSec;
-            sourceLabel = label;
-            isAudioOnlyInput = true;
-            emitJobProgress(job, {
-              stage: 'fetching',
-              percent: 55,
-              stagePercent: 100,
-              sourceKind: 'soundcloud-full',
-              sourceLabel: label,
-              message: `SoundCloud ストリーム接続完了 — 変換準備中...`,
-            });
-            return true;
-          } else {
-            try {
-              emitJobProgress(job, {
-                stage: 'fetching',
-                percent: 25,
-                stagePercent: 0,
-                sourceKind: 'soundcloud-full',
-                sourceLabel: label,
-                message: `${label} を取得中...`,
-              });
-              await downloadUrlToFile(
+      for (const cand of scCandidates.slice(0, 3)) {
+        unified.push({
+          score: cand.score,
+          hasVideo: false,
+          exec: async () => {
+            const stream = await resolveSoundCloudStreamForCandidate(cand, !ffmpegStatus.available);
+            if (!stream) return false;
+            const label = `SoundCloud フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
+            if (stream.protocol === 'hls' || stream.url.includes('.m3u8')) {
+              return tryHlsStream(
                 stream.url,
-                inputSource,
                 { 'User-Agent': BROWSER_UA },
-                (receivedBytes, totalBytes) => {
-                  const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
-                  emitJobProgress(job, {
-                    stage: 'fetching',
-                    percent: 25 + ratio * 33,
-                    stagePercent: Math.round(ratio * 100),
-                    receivedBytes,
-                    totalBytes,
-                    sourceKind: 'soundcloud-full',
-                    sourceLabel: label,
-                    message: `SoundCloud フル音源を取得中...`,
-                  });
-                }
+                'soundcloud-full',
+                label,
+                stream.durationSec || resolvedDurationSec,
+                false
               );
-              sourceKind = 'soundcloud-full';
-              resolvedDurationSec = stream.durationSec || resolvedDurationSec;
-              sourceLabel = label;
-              isAudioOnlyInput = true;
-              return true;
-            } catch {}
-          }
-        }
-        return false;
-      };
+            }
+            return tryDownloadStream(
+              stream.url,
+              { 'User-Agent': BROWSER_UA },
+              'soundcloud-full',
+              label,
+              stream.durationSec || resolvedDurationSec
+            );
+          },
+        });
+      }
 
-      if (format.isVideo || topBiliScore >= topScScore) {
-        resolved = await tryBilibili();
-        if (!resolved) {
-          resolved = await trySoundCloud();
+      for (const cand of extCandidates.slice(0, 12)) {
+        unified.push({
+          score: cand.score,
+          hasVideo: cand.hasVideo,
+          exec: async () => {
+            const stream = await cand.resolveStream();
+            if (!stream) return false;
+            const label = `${cand.siteName} フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
+            if (stream.protocol === 'hls' || stream.url.includes('.m3u8')) {
+              return tryHlsStream(
+                stream.url,
+                stream.headers,
+                cand.siteId,
+                label,
+                stream.durationSec || resolvedDurationSec,
+                Boolean(stream.hasVideo)
+              );
+            }
+            return tryDownloadStream(
+              stream.url,
+              stream.headers,
+              cand.siteId,
+              label,
+              stream.durationSec || resolvedDurationSec
+            );
+          },
+        });
+      }
+
+      unified.sort((a, b) => {
+        if (format.isVideo && a.hasVideo !== b.hasVideo) {
+          return a.hasVideo ? -1 : 1;
         }
-      } else {
-        resolved = await trySoundCloud();
-        if (!resolved) {
-          resolved = await tryBilibili();
+        return b.score - a.score;
+      });
+
+      for (const attempt of unified) {
+        const ok = await attempt.exec();
+        if (ok) {
+          resolved = true;
+          break;
+        }
+      }
+
+      // Strategy B2: Alternate YouTube Music / YouTube Video search (e.g. - Topic / Official Audio)
+      if (!resolved) {
+        emitJobProgress(job, {
+          stage: 'searching',
+          percent: 22,
+          stagePercent: 80,
+          message: 'YouTube 代替公式オーディオ・ミラーを検索中...',
+        });
+        const alternates = await searchYouTubeAlternateVideoIds(
+          resolvedTitle,
+          resolvedArtist,
+          videoId,
+          meta.expectedDurationSec,
+          getInnertube
+        );
+        for (const alt of alternates) {
+          const altStream = await resolveYouTubeDirectStream(
+            alt.videoId,
+            format.isVideo,
+            getInnertube,
+            { youtubeCookie, poToken, cobaltApiUrl, enabledSiteSet }
+          );
+          if ('url' in altStream) {
+            const ok = await tryDownloadStream(
+              altStream.url,
+              altStream.headers,
+              altStream.sourceKind,
+              altStream.sourceLabel,
+              altStream.durationSec || alt.durationSec || resolvedDurationSec
+            );
+            if (ok) {
+              resolved = true;
+              break;
+            }
+          }
         }
       }
     }
 
-    // Strategy C: Last-resort 30s official preview fallback ONLY if both full-track engines failed
+    // Strategy C: 30s official preview ONLY if explicitly opted in via allowPreviewFallback === true
     if (!resolved) {
-      if (!allowPreviewFallback || !meta.officialPreviewUrl) {
+      if (allowPreviewFallback !== true || !meta.officialPreviewUrl) {
         const err = new Error(
-          'フル尺音源の取得に失敗しました。詳細設定からYouTube Cookie / Cobalt API URLを指定するか、別のキーワードでお試しください。'
-        ) as Error & { statusCode?: number; requiresCookieOrCobalt?: boolean };
+          meta.officialPreviewUrl
+            ? 'フル尺音源の取得に失敗しました（30秒プレビューの自動保存は誤保存防止のため停止しています）。詳細設定でYouTube Cookie / Cobalt URLを設定するか、別の検索キーワードでお試しください。'
+            : 'フル尺音源の取得に失敗しました。詳細設定からYouTube Cookie / Cobalt API URLを指定するか、別のキーワードでお試しください。'
+        ) as Error & { statusCode?: number; requiresCookieOrCobalt?: boolean; previewAvailable?: boolean };
         err.statusCode = 422;
         err.requiresCookieOrCobalt = true;
+        err.previewAvailable = Boolean(meta.officialPreviewUrl);
         throw err;
       }
       emitJobProgress(job, {
@@ -2104,7 +2798,7 @@ async function executeFreemakeDownloadPipeline(
         sourceLabel: meta.officialPreviewSource || 'Apple iTunes 公式30秒プレビュー',
         message: '公式30秒プレビュー音源を取得中...',
       });
-      await downloadUrlToFile(
+      const dl = await downloadUrlToFile(
         meta.officialPreviewUrl,
         inputSource,
         undefined,
@@ -2119,12 +2813,77 @@ async function executeFreemakeDownloadPipeline(
           });
         }
       );
+      downloadedContentType = dl.contentType;
       sourceKind = 'official-preview-30s';
       sourceLabel = meta.officialPreviewSource || 'Apple iTunes 公式30秒プレビュー';
       resolvedDurationSec = 30;
       isAudioOnlyInput = true;
     }
 
+    const safeBase = sanitizeFilenameBase(
+      resolvedArtist && resolvedTitle
+        ? `${resolvedArtist} - ${resolvedTitle}`
+        : resolvedTitle || videoId || 'track'
+    );
+
+    const coverImage = await coverPromise;
+    const resolvedArtworkUrl =
+      (coverImage?.sourceUrl && /^https?:\/\//i.test(coverImage.sourceUrl)
+        ? coverImage.sourceUrl
+        : undefined) ||
+      meta.thumbnailUrl ||
+      undefined;
+
+    if (!ffmpegStatus.available) {
+      // Zero-FFmpeg Direct Passthrough Mode (e.g., Vercel serverless without ffmpeg binary)
+      const detected = await detectMediaContainerFromFile(
+        inputSource,
+        downloadedContentType,
+        format.isVideo
+      );
+      const outputFilename = `${safeBase}.${detected.ext}`;
+      const outputPath = path.join(tmpDir, `output.${detected.ext}`);
+
+      emitJobProgress(job, {
+        stage: 'converting',
+        percent: 78,
+        stagePercent: 80,
+        durationSec: resolvedDurationSec || undefined,
+        sourceKind,
+        sourceLabel,
+        filename: outputFilename,
+        message: `ジャケット画像・タグ埋め込み＆ダイレクト保存準備中 (.${detected.ext.toUpperCase()})...`,
+      });
+
+      await fs.promises.rename(inputSource, outputPath);
+      await embedMetadataAndCoverFile(
+        outputPath,
+        detected.ext,
+        {
+          title: resolvedTitle || safeBase,
+          artist: resolvedArtist,
+          album: resolvedAlbum,
+        },
+        coverImage
+      );
+      const outStat = await fs.promises.stat(outputPath);
+
+      return {
+        tmpDir,
+        outputPath,
+        outputFilename,
+        mimeType: detected.mimeType,
+        sizeBytes: outStat.size,
+        sourceKind,
+        sourceLabel: `${sourceLabel} (無変換ダイレクト)`,
+        durationSec: resolvedDurationSec,
+        passthrough: true,
+        artworkUrl: resolvedArtworkUrl,
+        album: resolvedAlbum || undefined,
+      };
+    }
+
+    // Standard FFmpeg transcoding path
     let inputVideoCodec: string | null = null;
     if (!inputSource.startsWith('http')) {
       const probedInput = await probeMediaFile(inputSource);
@@ -2137,11 +2896,12 @@ async function executeFreemakeDownloadPipeline(
       isAudioOnlyInput = true;
     }
 
-    const safeBase = sanitizeFilenameBase(
-      resolvedArtist && resolvedTitle
-        ? `${resolvedArtist} - ${resolvedTitle}`
-        : resolvedTitle || videoId || 'track'
-    );
+    let coverImagePath: string | undefined;
+    if (coverImage) {
+      coverImagePath = path.join(tmpDir, `cover.${coverImage.ext}`);
+      await fs.promises.writeFile(coverImagePath, coverImage.buffer);
+    }
+
     const outputFilename = `${safeBase}.${format.ext}`;
     const outputPath = path.join(tmpDir, `output.${format.ext}`);
 
@@ -2153,7 +2913,9 @@ async function executeFreemakeDownloadPipeline(
       sourceKind,
       sourceLabel,
       filename: outputFilename,
-      message: `FFmpeg で .${format.ext.toUpperCase()} へ変換中...`,
+      message: coverImagePath
+        ? `FFmpeg でジャケット画像埋め込み＆ .${format.ext.toUpperCase()} 変換中...`
+        : `FFmpeg で .${format.ext.toUpperCase()} へ変換中...`,
     });
 
     await runFfmpegConvert({
@@ -2161,10 +2923,10 @@ async function executeFreemakeDownloadPipeline(
       inputHeaders,
       outputPath,
       format,
-      eq,
       title: resolvedTitle || safeBase,
       artist: resolvedArtist,
-      album: String(album || ''),
+      album: resolvedAlbum,
+      coverImagePath,
       isAudioOnlyInput,
       inputVideoCodec,
       expectedDurationSec: resolvedDurationSec,
@@ -2175,14 +2937,14 @@ async function executeFreemakeDownloadPipeline(
           stagePercent: Math.round(ratio * 100),
           processedSec,
           durationSec: durationSec || resolvedDurationSec || undefined,
-          message: `FFmpeg で .${format.ext.toUpperCase()} へ変換・EQ適用中...`,
+          message: `FFmpeg で .${format.ext.toUpperCase()} へ変換中...`,
         });
       },
     });
 
     const outStat = await fs.promises.stat(outputPath);
     const probedOut = await probeMediaFile(outputPath);
-    if (probedOut.durationSec > 0) {
+    if (probedOut.durationSec > 0 && sourceKind !== 'official-preview-30s') {
       resolvedDurationSec = probedOut.durationSec;
     }
 
@@ -2195,7 +2957,9 @@ async function executeFreemakeDownloadPipeline(
       sourceKind,
       sourceLabel,
       durationSec: resolvedDurationSec,
-      eqApplied: Boolean(buildFfmpegEqFilter(eq)),
+      passthrough: false,
+      artworkUrl: resolvedArtworkUrl,
+      album: resolvedAlbum || undefined,
     };
   } catch (err) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -2222,10 +2986,16 @@ function setDownloadResponseHeaders(
   res.setHeader('X-Freemake-Source-Kind', result.sourceKind);
   res.setHeader('X-Freemake-Source-Label', encodeURIComponent(result.sourceLabel));
   res.setHeader('X-Freemake-Duration-Sec', String(result.durationSec || 0));
-  res.setHeader('X-Freemake-Eq-Applied', result.eqApplied ? '1' : '0');
+  res.setHeader('X-Freemake-Passthrough', result.passthrough ? '1' : '0');
+  if (result.artworkUrl) {
+    res.setHeader('X-Freemake-Artwork-Url', encodeURIComponent(result.artworkUrl));
+  }
+  if (result.album) {
+    res.setHeader('X-Freemake-Album', encodeURIComponent(result.album));
+  }
   res.setHeader(
     'Access-Control-Expose-Headers',
-    'Accept-Ranges, Content-Range, Content-Length, Content-Disposition, X-Freemake-Source-Kind, X-Freemake-Source-Label, X-Freemake-Duration-Sec, X-Freemake-Eq-Applied'
+    'Accept-Ranges, Content-Range, Content-Length, Content-Disposition, X-Freemake-Source-Kind, X-Freemake-Source-Label, X-Freemake-Duration-Sec, X-Freemake-Passthrough, X-Freemake-Artwork-Url, X-Freemake-Album'
   );
 }
 
@@ -2237,18 +3007,16 @@ export function registerFreemakeRoutes(
 ) {
   // 1. Freemake Engine capabilities & formats
   app.get('/api/freemake/formats', async (_req: Request, res: Response) => {
-    let ffmpegAvailable = false;
-    let ffmpegVersion = '';
-    try {
-      const { stdout } = await execFileAsync('ffmpeg', ['-version']);
-      ffmpegAvailable = true;
-      ffmpegVersion = stdout.split('\n')[0]?.trim() || 'ffmpeg available';
-    } catch {}
+    const ffmpegStatus = await getFfmpegStatus();
 
     res.json({
-      engine: 'Freemake Audio & Video Engine (FFmpeg Powered)',
-      ffmpegAvailable,
-      ffmpegVersion,
+      engine: ffmpegStatus.available
+        ? 'Freemake Audio & Video Engine (FFmpeg Powered)'
+        : 'Freemake Audio & Video Engine (Direct Stream Mode)',
+      ffmpegAvailable: ffmpegStatus.available,
+      ffmpegVersion: ffmpegStatus.version,
+      isVercel: IS_VERCEL,
+      downloadSites: FREEMAKE_DOWNLOAD_SITES,
       formats: Object.values(FREEMAKE_FORMATS).map((f) => ({
         id: f.id,
         label: f.label,
@@ -2260,7 +3028,7 @@ export function registerFreemakeRoutes(
     });
   });
 
-  // 2. Probe available FULL-TRACK download sources for a track/URL
+  // 2. Probe available FULL-TRACK download sources across all sites for a track/URL
   app.get('/api/freemake/probe', async (req: Request, res: Response) => {
     const rawIdOrUrl = String(req.query.videoId || req.query.url || '').trim();
     const rawTitle = String(req.query.title || '').trim();
@@ -2278,34 +3046,82 @@ export function registerFreemakeRoutes(
       getInnertube,
     });
 
-    const [biliRes, scRes] = await Promise.allSettled([
+    const helpers: SearchHelpers = {
+      cleanSearchTitle,
+      stripHtmlTags,
+      scoreCandidateTrack,
+      probeRemoteStream,
+      minCandidateScore: MIN_CANDIDATE_SCORE,
+      isVercel: IS_VERCEL,
+    };
+
+    const [biliRes, scRes, multiRes] = await Promise.allSettled([
       searchBilibiliCandidates(meta.title, meta.artist, meta.expectedDurationSec),
       searchSoundCloudCandidates(meta.title, meta.artist, meta.expectedDurationSec),
+      searchMultiSiteCandidates({
+        title: meta.title,
+        artist: meta.artist,
+        expectedDurationSec: meta.expectedDurationSec,
+        helpers,
+      }),
     ]);
 
     const topBili = biliRes.status === 'fulfilled' ? biliRes.value[0] : undefined;
     const topSc = scRes.status === 'fulfilled' ? scRes.value[0] : undefined;
+    const extList = multiRes.status === 'fulfilled' ? multiRes.value : [];
 
-    let bestEngine: string | null = null;
-    let bestTitle: string | null = null;
-    let bestDurSec: number | null = null;
+    const matchedBySite = new Map<
+      string,
+      { siteId: string; siteName: string; title: string; durationSec: number; score: number }
+    >();
 
-    if (topBili && (!topSc || topBili.score >= topSc.score)) {
-      bestEngine = `フル音源エンジン (Bilibili / ${formatSecLabel(topBili.durationSec) || 'Full'})`;
-      bestTitle = topBili.title;
-      bestDurSec = topBili.durationSec;
-    } else if (topSc) {
-      bestEngine = `フル音源エンジン (SoundCloud / ${formatSecLabel(topSc.durationSec) || 'Full'})`;
-      bestTitle = topSc.title;
-      bestDurSec = topSc.durationSec;
+    if (topBili) {
+      matchedBySite.set('bilibili-full', {
+        siteId: 'bilibili-full',
+        siteName: 'Bilibili',
+        title: topBili.title,
+        durationSec: topBili.durationSec,
+        score: topBili.score,
+      });
     }
+    if (topSc) {
+      matchedBySite.set('soundcloud-full', {
+        siteId: 'soundcloud-full',
+        siteName: 'SoundCloud',
+        title: topSc.title,
+        durationSec: topSc.durationSec,
+        score: topSc.score,
+      });
+    }
+    for (const c of extList) {
+      const existing = matchedBySite.get(c.siteId);
+      if (!existing || c.score > existing.score) {
+        matchedBySite.set(c.siteId, {
+          siteId: c.siteId,
+          siteName: c.siteName,
+          title: c.title,
+          durationSec: c.durationSec,
+          score: c.score,
+        });
+      }
+    }
+
+    const matchedSites = [...matchedBySite.values()].sort((a, b) => b.score - a.score);
+    const bestMatch = matchedSites[0];
 
     res.json({
       videoId,
-      fullTrackAvailable: Boolean(bestEngine || process.env.YOUTUBE_COOKIE || process.env.COBALT_API_URL),
-      fullTrackSource: bestEngine,
-      fullTrackTitle: bestTitle,
-      fullTrackDurationSec: bestDurSec,
+      thumbnailUrl: meta.thumbnailUrl || null,
+      album: meta.album || null,
+      fullTrackAvailable: Boolean(
+        bestMatch || videoId || process.env.YOUTUBE_COOKIE || process.env.COBALT_API_URL
+      ),
+      fullTrackSource: bestMatch
+        ? `フル音源 (${bestMatch.siteName} / ${formatSecLabel(bestMatch.durationSec) || 'Full'})`
+        : null,
+      fullTrackTitle: bestMatch?.title || meta.title || null,
+      fullTrackDurationSec: bestMatch?.durationSec || meta.expectedDurationSec || null,
+      matchedSites,
       officialPreviewAvailable: Boolean(meta.officialPreviewUrl),
       officialPreviewSource: meta.officialPreviewSource || null,
       hasServerCookie: Boolean(process.env.YOUTUBE_COOKIE),
@@ -2313,10 +3129,30 @@ export function registerFreemakeRoutes(
     });
   });
 
-  // 3a. Start Async Download + Convert Job (supports real-time progress)
+  // 2b. SSRF-safe artwork image proxy so client canvas can crop & save square album jackets offline
+  app.get('/api/freemake/artwork', async (req: Request, res: Response) => {
+    const rawUrl = String(req.query.url || '').trim();
+    if (!rawUrl) {
+      return res.status(400).json({ error: 'Missing url parameter' });
+    }
+    try {
+      const asset = await fetchSafeExternalImage(rawUrl, 6000);
+      if (!asset) {
+        return res.status(404).json({ error: 'Artwork image unavailable' });
+      }
+      res.setHeader('Content-Type', asset.mimeType);
+      res.setHeader('Content-Length', String(asset.buffer.length));
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(asset.buffer);
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message || 'Invalid artwork URL' });
+    }
+  });
+
+  // 3a. Start Async Download + Convert Job (for non-serverless stateful servers)
   app.post('/api/freemake/download/start', (req: Request, res: Response) => {
     const job = createFreemakeJob();
-    res.status(202).json({ jobId: job.progress.jobId });
+    res.status(202).json({ jobId: job.progress.jobId, isVercel: IS_VERCEL });
 
     executeFreemakeDownloadPipeline(req.body, getInnertube, job)
       .then((result) => {
@@ -2328,7 +3164,8 @@ export function registerFreemakeRoutes(
         job.sourceKind = result.sourceKind;
         job.sourceLabel = result.sourceLabel;
         job.durationSec = result.durationSec;
-        job.eqApplied = result.eqApplied;
+        job.artworkUrl = result.artworkUrl;
+        job.album = result.album;
 
         emitJobProgress(job, {
           stage: 'ready',
@@ -2339,7 +3176,7 @@ export function registerFreemakeRoutes(
           sourceKind: result.sourceKind,
           sourceLabel: result.sourceLabel,
           filename: result.outputFilename,
-          message: '変換完了 — 端末へダウンロード中...',
+          message: '準備完了 — 端末へダウンロード中...',
         });
         scheduleJobCleanup(job.progress.jobId, 5 * 60 * 1000);
       })
@@ -2349,7 +3186,7 @@ export function registerFreemakeRoutes(
           stage: 'error',
           percent: 0,
           message: err?.message || 'ダウンロードに失敗しました',
-          error: err?.message || 'Freemakeダウンロード変換中にエラーが発生しました',
+          error: err?.message || 'Freemakeダウンロード中にエラーが発生しました',
         });
         scheduleJobCleanup(job.progress.jobId, 60 * 1000);
       });
@@ -2403,7 +3240,7 @@ export function registerFreemakeRoutes(
     res.json(job.progress);
   });
 
-  // 3d. Stream completed job output file with full HTTP Range (206) support for >32MB WAV/FLAC/MP4
+  // 3d. Stream completed job output file with HTTP Range (206) support
   const serveJobFile = async (req: Request, res: Response) => {
     const jobId = String(req.params.jobId || '');
     const job = freemakeJobs.get(jobId);
@@ -2424,7 +3261,9 @@ export function registerFreemakeRoutes(
         sourceKind: job.sourceKind || 'youtube-direct',
         sourceLabel: job.sourceLabel || '',
         durationSec: job.durationSec || 0,
-        eqApplied: Boolean(job.eqApplied),
+        passthrough: false,
+        artworkUrl: job.artworkUrl,
+        album: job.album,
       };
 
       const rangeHeader = req.headers.range;
@@ -2507,7 +3346,7 @@ export function registerFreemakeRoutes(
     res.json({ success: true });
   });
 
-  // 3e. Synchronous Download & Convert FULL Track / URL (Backwards Compatible)
+  // 3e. Synchronous Single-Request Download FULL Track / URL (Primary path for Vercel Serverless)
   app.post('/api/freemake/download', async (req: Request, res: Response) => {
     let result: DownloadPipelineResult | null = null;
     try {
@@ -2520,12 +3359,13 @@ export function registerFreemakeRoutes(
         stream.pipe(res);
       });
     } catch (err: any) {
-      console.error('[Freemake] Download/convert error:', err?.message || err);
+      console.error('[Freemake] Download error:', err?.message || err);
       if (!res.headersSent) {
         const status = typeof err?.statusCode === 'number' ? err.statusCode : 500;
         res.status(status).json({
-          error: err?.message || 'Freemakeダウンロード変換中にエラーが発生しました',
+          error: err?.message || 'Freemakeダウンロード中にエラーが発生しました',
           ...(err?.requiresCookieOrCobalt ? { requiresCookieOrCobalt: true } : {}),
+          ...(err?.previewAvailable ? { previewAvailable: true } : {}),
         });
       }
     } finally {
@@ -2535,11 +3375,19 @@ export function registerFreemakeRoutes(
     }
   });
 
-  // 4. Local Audio/Video File Conversion + Freemake EQ Baking (Raw binary upload)
+  // 4. Local Audio/Video File Conversion (Requires FFmpeg binary)
   app.post(
     '/api/freemake/convert-upload',
     express.raw({ type: '*/*', limit: '64mb' }),
     async (req: Request, res: Response) => {
+      const ffmpegStatus = await getFfmpegStatus();
+      if (!ffmpegStatus.available) {
+        return res.status(501).json({
+          error:
+            '現在のサーバー環境 (Vercel等) にはFFmpegが搭載されていないため、ファイル形式変換は利用できません。「楽曲ダウンロード」タブのダイレクト取得をご利用ください。',
+        });
+      }
+
       const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freemake-conv-'));
       let keepTmpDir = false;
       const jobId = req.query.jobId ? String(req.query.jobId).trim() : '';
@@ -2555,13 +3403,6 @@ export function registerFreemakeRoutes(
         const title = String(req.query.title || path.parse(rawName).name || 'Converted Track');
         const artist = String(req.query.artist || '');
         const allowRangeResult = req.query.allowRangeResult === '1';
-        const eqJson = req.query.eq ? String(req.query.eq) : '';
-        let eq: FreemakeEqPayload | null = null;
-        if (eqJson) {
-          try {
-            eq = JSON.parse(eqJson);
-          } catch {}
-        }
 
         const format = FREEMAKE_FORMATS[rawFormat] || FREEMAKE_FORMATS.mp3_320;
         const inputExt = (path.extname(rawName) || '.bin').replace(/[^a-zA-Z0-9.]/g, '');
@@ -2587,7 +3428,6 @@ export function registerFreemakeRoutes(
           inputSource: inputPath,
           outputPath,
           format,
-          eq,
           title,
           artist,
           isAudioOnlyInput,
@@ -2600,7 +3440,7 @@ export function registerFreemakeRoutes(
               stagePercent: Math.round(ratio * 100),
               processedSec,
               durationSec: durationSec || probedInput.durationSec || undefined,
-              message: `FFmpeg で .${format.ext.toUpperCase()} へ変換・EQ焼き込み中...`,
+              message: `FFmpeg で .${format.ext.toUpperCase()} へ変換中...`,
             });
           },
         });
@@ -2608,7 +3448,6 @@ export function registerFreemakeRoutes(
         const outStat = await fs.promises.stat(outputPath);
         const probedOut = await probeMediaFile(outputPath);
         const resolvedDurationSec = probedOut.durationSec || probedInput.durationSec || 0;
-        const eqApplied = Boolean(buildFfmpegEqFilter(eq));
         const safeBase = sanitizeFilenameBase(title);
         const outputFilename = `${safeBase}_freemake.${format.ext}`;
 
@@ -2620,9 +3459,8 @@ export function registerFreemakeRoutes(
           activeJob.mimeType = format.mimeType;
           activeJob.sizeBytes = outStat.size;
           activeJob.sourceKind = 'local-convert';
-          activeJob.sourceLabel = 'ローカル変換 (FFmpeg + Freemake EQ)';
+          activeJob.sourceLabel = 'ローカル変換 (FFmpeg)';
           activeJob.durationSec = resolvedDurationSec;
-          activeJob.eqApplied = eqApplied;
           keepTmpDir = true;
 
           emitJobProgress(activeJob, {
@@ -2633,7 +3471,7 @@ export function registerFreemakeRoutes(
             receivedBytes: outStat.size,
             durationSec: resolvedDurationSec || undefined,
             sourceKind: 'local-convert',
-            sourceLabel: 'ローカル変換 (FFmpeg + Freemake EQ)',
+            sourceLabel: 'ローカル変換 (FFmpeg)',
             filename: outputFilename,
             message: '変換完了 — 分割受信を開始中...',
           });
@@ -2646,7 +3484,6 @@ export function registerFreemakeRoutes(
             filename: outputFilename,
             mimeType: format.mimeType,
             durationSec: resolvedDurationSec,
-            eqApplied,
           });
         }
 
@@ -2673,10 +3510,9 @@ export function registerFreemakeRoutes(
           )}`
         );
         res.setHeader('X-Freemake-Duration-Sec', String(resolvedDurationSec || 0));
-        res.setHeader('X-Freemake-Eq-Applied', eqApplied ? '1' : '0');
         res.setHeader(
           'Access-Control-Expose-Headers',
-          'Content-Disposition, X-Freemake-Duration-Sec, X-Freemake-Eq-Applied'
+          'Content-Disposition, X-Freemake-Duration-Sec'
         );
 
         await new Promise<void>((resolve, reject) => {

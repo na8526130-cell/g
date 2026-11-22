@@ -12,7 +12,6 @@ import {
   TrackTimestampsData,
 } from '../types/music';
 import { api, SyncedAccountLibrary } from '../services/api';
-import { equalizer } from '../services/equalizer';
 import { socialSocket } from '../services/socialSocket';
 import { getPlayableOfflineTrack } from '../services/offlineStorage';
 import { syncSharedTracksForOffline } from '../services/sharedOffline';
@@ -299,10 +298,6 @@ interface PlayerContextType {
   clearLyricsOverride: (videoId: string) => void;
   lyricsSwitcherTrigger: number;
   openLyricsSwitcher: () => void;
-
-  // Equalizer Modal
-  eqModalOpen: boolean;
-  setEqModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
 
   // Share Modal & URL Sharing
   shareModalOpen: boolean;
@@ -1125,13 +1120,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
   }, [currentTrack?.id]);
 
-  // Equalizer Modal state & sync
-  const [eqModalOpen, setEqModalOpen] = useState<boolean>(false);
-
-  useEffect(() => {
-    equalizer.notifyPlaybackState(isPlaying);
-  }, [isPlaying]);
-
   // Share Modal state & helper
   const [shareModalOpen, setShareModalOpen] = useState<boolean>(false);
   const [shareModalPayload, setShareModalPayload] = useState<{
@@ -1340,7 +1328,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return '';
   }, [currentLyrics, progress, currentTrack?.id, trackOffsets]);
 
-  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx, ?shared_file=xxx)
+  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -1348,19 +1336,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const sharePlId = params.get('share_pl');
     const artistParam = params.get('artist');
     const collabParam = params.get('collab');
-    const sharedFileParam = params.get('shared_file');
 
-    if (sharedFileParam) {
-      try {
-        sessionStorage.setItem('zero_music_pending_shared_file', sharedFileParam);
-      } catch {}
-      setActiveView('library');
-      setLibraryTab('shared_offline');
-      window.dispatchEvent(
-        new CustomEvent('zero-shared-file-open', { detail: { token: sharedFileParam } })
-      );
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (trackId) {
+    if (trackId) {
       api
         .getTrack(trackId)
         .then((res) => {
@@ -2554,33 +2531,73 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [playbackRate]);
 
   // 1) MediaSession Metadata (only updates when track identity/artwork changes)
+  const mediaArtworkBlobUrlRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (mediaArtworkBlobUrlRef.current) {
+      try {
+        URL.revokeObjectURL(mediaArtworkBlobUrlRef.current);
+      } catch {}
+      mediaArtworkBlobUrlRef.current = null;
+    }
+
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     if (!currentTrack) return;
 
-    const resolveAbsUrl = (url?: string) => {
-      if (!url) return '';
-      if (/^https?:\/\//i.test(url)) return url;
-      if (typeof window !== 'undefined') {
-        return `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;
+    const toBlobUrlFromDataUri = (dataUri: string): { url: string; mime: string } | null => {
+      const m = dataUri.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (!m?.[1] || !m?.[2]) return null;
+      try {
+        const binStr = atob(m[2]);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) {
+          bytes[i] = binStr.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: m[1] });
+        const objUrl = URL.createObjectURL(blob);
+        mediaArtworkBlobUrlRef.current = objUrl;
+        return { url: objUrl, mime: m[1] };
+      } catch {
+        return null;
       }
-      return url;
+    };
+
+    const resolveAbsUrl = (url?: string): { src: string; type: string } | null => {
+      if (!url) return null;
+      if (url.startsWith('data:image/')) {
+        const converted = toBlobUrlFromDataUri(url);
+        if (converted) return { src: converted.url, type: converted.mime };
+        return { src: url, type: 'image/jpeg' };
+      }
+      if (/^(?:https?:|blob:)/i.test(url)) {
+        return { src: url, type: url.includes('.png') ? 'image/png' : 'image/jpeg' };
+      }
+      if (typeof window !== 'undefined') {
+        const abs = `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}`;
+        return { src: abs, type: url.includes('.png') ? 'image/png' : 'image/jpeg' };
+      }
+      return { src: url, type: 'image/jpeg' };
     };
 
     const ytId = !currentTrack.isLocal && /^[a-zA-Z0-9_-]{11}$/.test(currentTrack.id) ? currentTrack.id : null;
-    const primaryThumb = resolveAbsUrl(currentTrack.thumbnail);
-    const artworkList: MediaImage[] = ytId
-      ? [
-          { src: `https://i.ytimg.com/vi/${ytId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' },
-          { src: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' },
-          { src: `https://i.ytimg.com/vi/${ytId}/sddefault.jpg`, sizes: '640x480', type: 'image/jpeg' },
-        ]
-      : primaryThumb
-      ? [
-          { src: primaryThumb, sizes: '192x192', type: 'image/jpeg' },
-          { src: primaryThumb, sizes: '512x512', type: 'image/jpeg' },
-        ]
-      : [];
+    const resolvedThumb = resolveAbsUrl(currentTrack.thumbnail);
+    const isYtimgThumb = Boolean(resolvedThumb?.src && /https?:\/\/(?:i\d*|img)\.ytimg\.com\//i.test(resolvedThumb.src));
+
+    const artworkList: MediaImage[] = [];
+    if (resolvedThumb && (!isYtimgThumb || !ytId)) {
+      artworkList.push(
+        { src: resolvedThumb.src, sizes: '600x600', type: resolvedThumb.type },
+        { src: resolvedThumb.src, sizes: '512x512', type: resolvedThumb.type },
+        { src: resolvedThumb.src, sizes: '192x192', type: resolvedThumb.type }
+      );
+    }
+    if (ytId) {
+      artworkList.push(
+        { src: `https://i.ytimg.com/vi/${ytId}/sddefault.jpg`, sizes: '640x480', type: 'image/jpeg' },
+        { src: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' },
+        { src: `https://i.ytimg.com/vi/${ytId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' }
+      );
+    }
 
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -2592,6 +2609,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch {
       // ignore
     }
+
+    return () => {
+      if (mediaArtworkBlobUrlRef.current) {
+        try {
+          URL.revokeObjectURL(mediaArtworkBlobUrlRef.current);
+        } catch {}
+        mediaArtworkBlobUrlRef.current = null;
+      }
+    };
   }, [
     currentTrack?.id,
     currentTrack?.title,
@@ -4058,9 +4084,6 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         clearLyricsOverride,
         lyricsSwitcherTrigger,
         openLyricsSwitcher,
-
-        eqModalOpen,
-        setEqModalOpen,
 
         shareModalOpen,
         setShareModalOpen,

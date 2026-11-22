@@ -10,11 +10,12 @@ import {
   saveOfflineMeta,
   saveOfflineTrack,
   saveSharedOfflineBlob,
+  warmSharedOfflineBlobUrls,
 } from './offlineStorage';
+import { isIosStandalonePwa, shareBlobFile, triggerBlobDownload } from './freemake';
 
 export interface ServerSharedOfflineItem {
   id: string;
-  shareToken?: string;
   title: string;
   artist: string;
   album: string;
@@ -26,28 +27,8 @@ export interface ServerSharedOfflineItem {
   fileSize: number;
   uploadedBy: string;
   uploadedAt: string;
-  expiresAt?: string | null;
-  retentionMinutes?: number | null;
-  allowExtension?: boolean;
   plays: number;
 }
-
-export const SHARED_RETENTION_OPTIONS: ReadonlyArray<number | null> = [
-  30,
-  60,
-  24 * 60,
-  3 * 24 * 60,
-  7 * 24 * 60,
-  null,
-];
-export const SHARED_RETENTION_LABELS: ReadonlyArray<string> = [
-  '30分',
-  '1時間',
-  '24時間',
-  '3日',
-  '1週間',
-  '無期限',
-];
 
 const SHARED_CATALOG_META_KEY = 'shared_offline_catalog_v1';
 const DEFAULT_SHARED_THUMB =
@@ -62,9 +43,11 @@ let activeSyncPromise: Promise<{ cached: number; total: number }> | null = null;
 function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<string>): Track {
   const isCached = cachedIds.has(item.id);
   const activeBlobUrl = getActiveOfflineBlobUrl(item.id);
+  const cleanExt = (item.fileExt || item.fileName?.split('.').pop() || 'mp3')
+    .replace(/^\./, '')
+    .toLowerCase();
   return {
     id: item.id,
-    shareToken: item.shareToken,
     title: item.title,
     artist: item.artist,
     album: item.album || '共有オフライン',
@@ -77,22 +60,10 @@ function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<stri
     uploadedBy: item.uploadedBy || 'ゲスト',
     uploadedAt: item.uploadedAt,
     fileSize: item.fileSize,
-    expiresAt: item.expiresAt ?? null,
-    allowExtension: Boolean(item.allowExtension),
+    fileName: item.fileName,
+    fileExt: cleanExt,
     audioUrl: activeBlobUrl || `/api/shared-offline/file/${encodeURIComponent(item.id)}`,
   };
-}
-
-export function buildSharedOfflineUrl(track: Pick<Track, 'id' | 'shareToken'>): string {
-  const token = track.shareToken || track.id;
-  if (typeof window === 'undefined') {
-    return `/?shared_file=${encodeURIComponent(token)}`;
-  }
-  return `${window.location.origin}/?shared_file=${encodeURIComponent(token)}`;
-}
-
-export function getSharedOfflineDownloadUrl(track: Pick<Track, 'id' | 'shareToken'>): string {
-  return `/api/shared-offline/file/${encodeURIComponent(track.id)}?download=1`;
 }
 
 export function formatFileSizeLabel(bytes: number): string {
@@ -101,20 +72,6 @@ export function formatFileSizeLabel(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-export function formatRemainingExpiry(expiresAt?: string | null): string {
-  if (!expiresAt) return '無期限';
-  const expMs = new Date(expiresAt).getTime();
-  if (!Number.isFinite(expMs)) return '無期限';
-  const diffMs = expMs - Date.now();
-  if (diffMs <= 0) return '期限切れ';
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 60) return `残り ${Math.max(1, diffMins)}分`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `残り ${diffHours}時間`;
-  const diffDays = Math.floor(diffHours / 24);
-  return `残り ${diffDays}日`;
 }
 
 async function readAudioDuration(file: Blob): Promise<number> {
@@ -176,6 +133,9 @@ export async function loadSharedOfflineTracks(): Promise<{
   fromOfflineCache: boolean;
 }> {
   const cachedIds = await getCachedSharedOfflineIds();
+  if (cachedIds.size > 0) {
+    await warmSharedOfflineBlobUrls();
+  }
 
   if (typeof navigator === 'undefined' || navigator.onLine) {
     try {
@@ -200,24 +160,14 @@ export async function loadSharedOfflineTracks(): Promise<{
     getAllCachedSharedTracks(),
   ]);
 
-  const now = Date.now();
   const byId = new Map<string, Track>();
   for (const t of cachedBlobTracks) {
     byId.set(t.id, t);
   }
   if (Array.isArray(cachedCatalog)) {
     for (const item of cachedCatalog) {
-      if (item.expiresAt && new Date(item.expiresAt).getTime() <= now) continue;
       if (!byId.has(item.id)) {
         byId.set(item.id, mapServerItemToTrack(item, cachedIds));
-      } else {
-        const existing = byId.get(item.id)!;
-        byId.set(item.id, {
-          ...existing,
-          shareToken: item.shareToken,
-          expiresAt: item.expiresAt ?? null,
-          allowExtension: Boolean(item.allowExtension),
-        });
       }
     }
   }
@@ -235,55 +185,8 @@ export async function loadSharedOfflineTracks(): Promise<{
 }
 
 /**
- * Fetch metadata for a single shared file by token or id (used when opening ?shared_file=...).
- */
-export async function fetchSharedOfflineItem(tokenOrId: string): Promise<Track> {
-  const cachedIds = await getCachedSharedOfflineIds();
-  const resp = await fetch(`/api/shared-offline/item/${encodeURIComponent(tokenOrId)}`, {
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!resp.ok) {
-    throw new Error(await extractErrorMessage(resp, '共有ファイルの読み込みに失敗しました'));
-  }
-  const data = await resp.json();
-  if (!data?.track) {
-    throw new Error('共有ファイル情報が見つかりません');
-  }
-  return mapServerItemToTrack(data.track, cachedIds);
-}
-
-/**
- * Extend the expiration of a shared file by +7 days (if allowExtension is enabled).
- */
-export async function extendSharedOfflineTrack(tokenOrId: string): Promise<Track> {
-  const cachedIds = await getCachedSharedOfflineIds();
-  const resp = await fetch(`/api/shared-offline/${encodeURIComponent(tokenOrId)}/extend`, {
-    method: 'POST',
-  });
-  if (!resp.ok) {
-    throw new Error(await extractErrorMessage(resp, '有効期限の延長に失敗しました'));
-  }
-  const data = await resp.json();
-  if (!data?.track) {
-    throw new Error('サーバーからの応答が不正です');
-  }
-  const updated = mapServerItemToTrack(data.track, cachedIds);
-  try {
-    const existingCatalog =
-      (await getOfflineMeta<ServerSharedOfflineItem[]>(SHARED_CATALOG_META_KEY)) || [];
-    await saveOfflineMeta(
-      SHARED_CATALOG_META_KEY,
-      existingCatalog.map((item) => (item.id === data.track.id ? data.track : item))
-    );
-  } catch {}
-  notifySharedOfflineChanged();
-  return updated;
-}
-
-/**
- * Upload an audio/video file to Shared Offline so anyone can access, download & cache it for offline playback.
+ * Upload an audio/video file to Shared Offline (persisted indefinitely with no expiration).
  * Uses 1 MiB chunked upload (begin -> chunk -> complete, with abort cleanup) for files > 1 MiB.
- * Server stores file data with fixed-key XOR obfuscation and automatic retention expiry.
  */
 export async function uploadSharedOfflineFile(
   file: File | Blob,
@@ -295,8 +198,6 @@ export async function uploadSharedOfflineFile(
     uploadedBy?: string;
     durationSeconds?: number;
     duration?: string;
-    retentionMinutes?: number | null;
-    allowExtension?: boolean;
     signal?: AbortSignal;
     onProgress?: (percent: number, stageLabel?: string) => void;
   }
@@ -326,8 +227,6 @@ export async function uploadSharedOfflineFile(
   const finalArtist = options?.artist?.trim() || defaultArtist;
   const finalAlbum = options?.album?.trim() || '共有オフライン';
   const finalUploadedBy = options?.uploadedBy?.trim() || 'ゲスト';
-  const retentionMinutes = options?.retentionMinutes ?? null;
-  const allowExtension = Boolean(options?.allowExtension);
 
   options?.onProgress?.(2, '準備中…');
 
@@ -341,7 +240,6 @@ export async function uploadSharedOfflineFile(
   let serverTrack: ServerSharedOfflineItem;
 
   if (standaloneBlob.size <= CHUNK_THRESHOLD_BYTES) {
-    // Fast single-request upload for files <= 1 MiB
     const qs = new URLSearchParams({
       filename,
       title: finalTitle,
@@ -349,11 +247,7 @@ export async function uploadSharedOfflineFile(
       album: finalAlbum,
       uploadedBy: finalUploadedBy,
       mime: mimeType,
-      allowExtension: String(allowExtension),
     });
-    if (retentionMinutes !== null && retentionMinutes > 0) {
-      qs.set('retentionMinutes', String(retentionMinutes));
-    }
     if (durationSeconds > 0) qs.set('durationSeconds', String(durationSeconds));
     if (duration) qs.set('duration', duration);
 
@@ -379,7 +273,6 @@ export async function uploadSharedOfflineFile(
     serverTrack = data.track;
     options?.onProgress?.(94, '仕上げ処理中…');
   } else {
-    // Chunked upload lifecycle (begin -> 1 MiB chunks -> complete, abort on error/cancel)
     let uploadId: string | null = null;
     try {
       const beginResp = await fetch('/api/shared-offline/upload-begin', {
@@ -389,8 +282,6 @@ export async function uploadSharedOfflineFile(
           filename,
           mimeType,
           fileSize: standaloneBlob.size,
-          retentionMinutes,
-          allowExtension,
           title: finalTitle,
           artist: finalArtist,
           album: finalAlbum,
@@ -457,8 +348,6 @@ export async function uploadSharedOfflineFile(
           totalChunks,
           filename,
           mimeType,
-          retentionMinutes,
-          allowExtension,
           title: finalTitle,
           artist: finalArtist,
           album: finalAlbum,
@@ -494,7 +383,6 @@ export async function uploadSharedOfflineFile(
     }
   }
 
-  // Cache locally in IndexedDB for instant offline playback
   let blobUrl = `/api/shared-offline/file/${encodeURIComponent(serverTrack.id)}`;
   let isCachedOffline = false;
   try {
@@ -537,7 +425,6 @@ export async function uploadSharedOfflineFile(
 
   return {
     id: serverTrack.id,
-    shareToken: serverTrack.shareToken,
     title: serverTrack.title,
     artist: serverTrack.artist,
     album: serverTrack.album,
@@ -550,8 +437,8 @@ export async function uploadSharedOfflineFile(
     uploadedBy: serverTrack.uploadedBy,
     uploadedAt: serverTrack.uploadedAt,
     fileSize: serverTrack.fileSize,
-    expiresAt: serverTrack.expiresAt ?? null,
-    allowExtension: Boolean(serverTrack.allowExtension),
+    fileName: serverTrack.fileName,
+    fileExt: (serverTrack.fileExt || 'mp3').replace(/^\./, '').toLowerCase(),
     audioUrl: blobUrl,
   };
 }
@@ -561,8 +448,7 @@ export async function uploadSharedOfflineFile(
  */
 export async function publishOfflineTrackToShared(
   track: Track,
-  uploadedBy?: string,
-  options?: { retentionMinutes?: number | null; allowExtension?: boolean }
+  uploadedBy?: string
 ): Promise<Track> {
   const record = await getStoredOfflineTrackRecord(track.id);
   if (!record?.blob) {
@@ -576,14 +462,11 @@ export async function publishOfflineTrackToShared(
     uploadedBy: uploadedBy || 'ゲスト',
     durationSeconds: record.durationSeconds,
     duration: record.duration,
-    retentionMinutes: options?.retentionMinutes ?? 24 * 60,
-    allowExtension: options?.allowExtension ?? true,
   });
 }
 
 /**
  * Automatically cache all (or uncached) Shared Offline tracks into IndexedDB while online
- * so everyone can listen to uploaded tracks even when offline.
  */
 export async function syncSharedTracksForOffline(
   tracksInput?: Track[],
@@ -628,6 +511,8 @@ export async function syncSharedTracksForOffline(
               duration: track.duration,
               durationSeconds: track.durationSeconds,
               thumbnail: track.thumbnail,
+              fileName: track.fileName || `${track.title}.${track.fileExt || 'mp3'}`,
+              fileType: blob.type || undefined,
               fileSize: track.fileSize || blob.size,
               uploadedBy: track.uploadedBy,
               uploadedAt: track.uploadedAt,
@@ -649,6 +534,95 @@ export async function syncSharedTracksForOffline(
   return activeSyncPromise;
 }
 
+export function getSharedOfflineDownloadUrl(trackId: string): string {
+  return `/api/shared-offline/file/${encodeURIComponent(trackId)}?download=1`;
+}
+
+export function buildSharedDownloadFilename(track: Track, headerFilename?: string | null): string {
+  if (headerFilename) {
+    try {
+      const decoded = decodeURIComponent(headerFilename).trim();
+      if (decoded) return decoded;
+    } catch {}
+  }
+  const rawExt =
+    track.fileExt ||
+    track.fileName?.split('.').pop() ||
+    'mp3';
+  const ext = rawExt.replace(/^\./, '').toLowerCase() || 'mp3';
+  const baseRaw =
+    track.artist && track.artist !== '共有アップロード'
+      ? `${track.artist} - ${track.title}`
+      : track.title || 'shared_audio';
+  const cleanBase =
+    baseRaw
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120) || 'shared_audio';
+  return cleanBase.toLowerCase().endsWith(`.${ext}`) ? cleanBase : `${cleanBase}.${ext}`;
+}
+
+/**
+ * Download a Shared Offline track directly as an audio file to the user's device.
+ * Uses local IndexedDB cache when available (works offline), or fetches from the server and caches it.
+ */
+export async function downloadSharedOfflineTrack(
+  track: Track
+): Promise<{ filename: string; fromCache: boolean }> {
+  const cached = await getCachedSharedOfflineTrack(track.id);
+  if (cached?.blob && cached.blob.size > 0) {
+    const filename = buildSharedDownloadFilename({
+      ...track,
+      fileName: track.fileName || cached.fileName,
+    });
+    if (isIosStandalonePwa()) {
+      const shared = await shareBlobFile(cached.blob, filename);
+      if (shared) return { filename, fromCache: true };
+    }
+    triggerBlobDownload(cached.blob, filename);
+    return { filename, fromCache: true };
+  }
+
+  const resp = await fetch(getSharedOfflineDownloadUrl(track.id));
+  if (!resp.ok) {
+    throw new Error(await extractErrorMessage(resp, '音声ファイルのダウンロードに失敗しました'));
+  }
+
+  const headerName = resp.headers.get('X-Shared-Offline-Filename');
+  const filename = buildSharedDownloadFilename(track, headerName);
+  const blob = await resp.blob();
+  if (!blob || blob.size < 32) {
+    throw new Error('取得した音声ファイルが空でした');
+  }
+
+  // Also cache in IndexedDB so it stays playable offline
+  saveSharedOfflineBlob(
+    {
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      durationSeconds: track.durationSeconds,
+      thumbnail: track.thumbnail,
+      fileName: filename,
+      fileType: blob.type || resp.headers.get('Content-Type') || 'audio/mpeg',
+      fileSize: track.fileSize || blob.size,
+      uploadedBy: track.uploadedBy,
+      uploadedAt: track.uploadedAt,
+    },
+    blob
+  ).catch(() => {});
+
+  if (isIosStandalonePwa()) {
+    const shared = await shareBlobFile(blob, filename);
+    if (shared) return { filename, fromCache: false };
+  }
+  triggerBlobDownload(blob, filename);
+  return { filename, fromCache: false };
+}
+
 /**
  * Copy a Shared Offline track into the user's own My Offline library as well
  */
@@ -660,6 +634,15 @@ export async function copySharedTrackToMyOffline(track: Track): Promise<Track> {
     if (!resp.ok) throw new Error('音源の取得に失敗しました');
     blob = await resp.blob();
   }
+  const fileExt = (
+    track.fileExt ||
+    cached?.fileName?.split('.').pop() ||
+    track.fileName?.split('.').pop() ||
+    'mp3'
+  )
+    .replace(/^\./, '')
+    .toLowerCase();
+
   return saveOfflineTrack(
     blob,
     track.title,
@@ -667,6 +650,7 @@ export async function copySharedTrackToMyOffline(track: Track): Promise<Track> {
     '共有オフラインから保存',
     track.durationSeconds || 180,
     track.duration || '3:00',
-    track.thumbnail
+    track.thumbnail,
+    fileExt
   );
 }

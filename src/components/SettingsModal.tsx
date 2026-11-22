@@ -11,7 +11,6 @@ import {
   Volume2,
   AudioLines,
   Radio,
-  Sliders,
   Download,
   User,
   FolderHeart,
@@ -42,7 +41,6 @@ export const SettingsModal: React.FC = () => {
     backgroundPlaybackEnabled,
     toggleBackgroundPlayback,
     setBgGuideOpen,
-    setEqModalOpen,
     openFreemakeModal,
     currentTrack,
     currentUser,
@@ -389,38 +387,21 @@ export const SettingsModal: React.FC = () => {
               </button>
             </div>
 
-            {/* Freemake Equalizer & Download */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => closeAndRun(() => setEqModalOpen(true))}
-                className="p-3.5 rounded-xl bg-neutral-900/70 hover:bg-neutral-800/80 border border-neutral-800 flex items-center justify-between gap-2 transition-colors text-left cursor-pointer"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <Sliders className="w-4 h-4 text-amber-400 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-white truncate">Freemake イコライザー</p>
-                    <p className="text-[11px] text-neutral-400 truncate">10バンド音質補正</p>
-                  </div>
+            {/* Freemake Download & Converter */}
+            <button
+              type="button"
+              onClick={() => closeAndRun(() => openFreemakeModal(currentTrack))}
+              className="w-full p-3.5 rounded-xl bg-neutral-900/70 hover:bg-neutral-800/80 border border-neutral-800 flex items-center justify-between gap-2 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Download className="w-4 h-4 text-sky-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-white truncate">Freemake 保存・変換</p>
+                  <p className="text-[11px] text-neutral-400 truncate">MP3 / M4A / FLAC / MP4</p>
                 </div>
-                <ChevronRight className="w-4 h-4 text-neutral-500 shrink-0" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => closeAndRun(() => openFreemakeModal(currentTrack))}
-                className="p-3.5 rounded-xl bg-neutral-900/70 hover:bg-neutral-800/80 border border-neutral-800 flex items-center justify-between gap-2 transition-colors text-left cursor-pointer"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <Download className="w-4 h-4 text-sky-400 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-white truncate">Freemake 保存・変換</p>
-                    <p className="text-[11px] text-neutral-400 truncate">MP3 / M4A / FLAC / MP4</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-neutral-500 shrink-0" />
-              </button>
-            </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-neutral-500 shrink-0" />
+            </button>
           </section>
 
           {/* Section 3: アカウント・データ・規約 */}

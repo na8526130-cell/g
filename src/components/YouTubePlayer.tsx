@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
-import { equalizer } from '../services/equalizer';
 import {
   X,
   Tv,
@@ -132,8 +131,6 @@ export const YouTubePlayer: React.FC = () => {
     if (!audio) return;
 
     if (currentTrack?.isLocal && currentTrack.audioUrl) {
-      equalizer.connectLocalAudio(audio);
-
       if (playerRef.current && typeof playerRef.current.pauseVideo === 'function') {
         playerRef.current.pauseVideo();
       }

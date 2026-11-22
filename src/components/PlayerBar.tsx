@@ -20,7 +20,6 @@ import {
   Sun,
   HelpCircle,
   Radio,
-  Sliders,
   Sparkles,
   ListPlus,
   Share2,
@@ -92,8 +91,6 @@ export const PlayerBar: React.FC = () => {
     digestRemainingSec,
     trackTimestamps,
     openAddToPlaylistModal,
-    eqModalOpen,
-    setEqModalOpen,
     openShareModal,
     floatingPlayerVisible,
     setFloatingPlayerVisible,
@@ -540,21 +537,6 @@ export const PlayerBar: React.FC = () => {
                     {upcomingCount > 99 ? '99+' : upcomingCount}
                   </span>
                 )}
-              </button>
-
-              {/* Equalizer */}
-              <button
-                type="button"
-                onClick={() => setEqModalOpen((prev) => !prev)}
-                title="イコライザー & 重低音"
-                aria-label="イコライザー"
-                className={`hidden sm:inline-flex p-2 rounded-lg transition-colors shrink-0 cursor-pointer ${
-                  eqModalOpen
-                    ? 'bg-red-600/20 text-red-400'
-                    : 'text-neutral-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <Sliders className="w-4 h-4" />
               </button>
 
               {/* Download */}

@@ -8,7 +8,6 @@ import {
   SkipForward,
   Heart,
   FileText,
-  Sliders,
   Share2,
   X,
   Minimize2,
@@ -35,7 +34,6 @@ export const MiniFloatingPlayer: React.FC = () => {
     activeSyncedLyricText,
     currentLyrics,
     setLyricsOpen,
-    setEqModalOpen,
     openShareModal,
     setCommentsModalOpen,
     floatingPlayerVisible,
@@ -292,14 +290,6 @@ export const MiniFloatingPlayer: React.FC = () => {
             title="YouTube ミュージックビデオ（MV）を見る"
           >
             <Tv className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setEqModalOpen(true)}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-amber-400 hover:bg-white/5 transition-colors"
-            title="イコライザー & 重低音ブースト"
-          >
-            <Sliders className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"

@@ -43,8 +43,9 @@ export interface StoredSharedOfflineTrack {
 const DEFAULT_OFFLINE_THUMB =
   'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces';
 
-// Active blob URLs cache to prevent memory leaks and reuse existing URLs
+// Active blob URLs and Blob references cache to prevent memory leaks and enable synchronous offline downloads
 const activeBlobUrls = new Map<string, string>();
+const activeBlobs = new Map<string, Blob>();
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -62,6 +63,10 @@ export function notifySharedOfflineChanged() {
 
 export function getActiveOfflineBlobUrl(id: string): string | undefined {
   return activeBlobUrls.get(id);
+}
+
+export function getActiveOfflineBlob(id: string): Blob | undefined {
+  return activeBlobs.get(id);
 }
 
 export function openOfflineDB(): Promise<IDBDatabase> {
@@ -180,6 +185,7 @@ export async function saveOfflineTrack(
     req.onsuccess = () => {
       const audioUrl = URL.createObjectURL(file);
       activeBlobUrls.set(id, audioUrl);
+      activeBlobs.set(id, file);
       notifyOfflineTracksChanged();
 
       resolve({
@@ -325,6 +331,7 @@ export async function saveSharedOfflineBlob(
         url = URL.createObjectURL(safeBlob);
         activeBlobUrls.set(meta.id, url);
       }
+      activeBlobs.set(meta.id, safeBlob);
       notifySharedOfflineChanged();
       resolve(url);
     };
@@ -378,6 +385,9 @@ export async function getAllCachedSharedTracks(): Promise<Track[]> {
         );
         resolve(
           list.map((s) => {
+            if (s.blob) {
+              activeBlobs.set(s.id, s.blob);
+            }
             let audioUrl = activeBlobUrls.get(s.id);
             if (!audioUrl) {
               try {
@@ -401,6 +411,8 @@ export async function getAllCachedSharedTracks(): Promise<Track[]> {
               uploadedBy: s.uploadedBy,
               uploadedAt: s.uploadedAt,
               fileSize: s.fileSize || s.blob?.size || 0,
+              fileName: s.fileName,
+              fileExt: (s.fileName?.split('.').pop() || '').toLowerCase() || undefined,
               audioUrl,
             };
           })
@@ -413,6 +425,32 @@ export async function getAllCachedSharedTracks(): Promise<Track[]> {
   }
 }
 
+export async function warmSharedOfflineBlobUrls(): Promise<void> {
+  try {
+    const db = await openOfflineDB();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction([STORE_SHARED], 'readonly');
+      const store = tx.objectStore(STORE_SHARED);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = (req.result as StoredSharedOfflineTrack[]) || [];
+        for (const s of list) {
+          if (s?.id && s?.blob) {
+            activeBlobs.set(s.id, s.blob);
+            if (!activeBlobUrls.has(s.id)) {
+              try {
+                activeBlobUrls.set(s.id, URL.createObjectURL(s.blob));
+              } catch {}
+            }
+          }
+        }
+        resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  } catch {}
+}
+
 export async function deleteCachedSharedOfflineTrack(id: string): Promise<void> {
   try {
     const db = await openOfflineDB();
@@ -422,6 +460,7 @@ export async function deleteCachedSharedOfflineTrack(id: string): Promise<void> 
       } catch {}
       activeBlobUrls.delete(id);
     }
+    activeBlobs.delete(id);
     await new Promise<void>((resolve) => {
       const tx = db.transaction([STORE_SHARED], 'readwrite');
       const store = tx.objectStore(STORE_SHARED);
@@ -448,6 +487,7 @@ export async function getPlayableOfflineTrack(track: Track): Promise<Track> {
   if (track.isSharedOffline || track.id.startsWith('shared_')) {
     const cached = await getCachedSharedOfflineTrack(track.id);
     if (cached?.blob) {
+      activeBlobs.set(track.id, cached.blob);
       let url = activeBlobUrls.get(track.id);
       if (!url) {
         url = URL.createObjectURL(cached.blob);
@@ -538,6 +578,7 @@ export async function deleteOfflineTrack(id: string): Promise<void> {
     } catch {}
     activeBlobUrls.delete(id);
   }
+  activeBlobs.delete(id);
 
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_TRACKS], 'readwrite');

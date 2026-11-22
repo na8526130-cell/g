@@ -65,10 +65,14 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^\/api\/shared-offline\/file\/.*/i,
+              urlPattern: /^\/api\/shared-offline\/file\/[^?#]+\?(?:.*&)?(?:download|dl)=1(?:&|$)/i,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^\/api\/shared-offline\/file\/[^?#]+$/i,
               handler: 'CacheFirst',
               options: {
-                cacheName: 'shared-offline-audio-cache',
+                cacheName: 'shared-offline-audio-v2',
                 cacheableResponse: {
                   statuses: [0, 200],
                 },

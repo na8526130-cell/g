@@ -1,4 +1,3 @@
-import { equalizer, EqualizerSettings } from './equalizer';
 import { saveOfflineTrack } from './offlineStorage';
 import { Track } from '../types/music';
 
@@ -21,19 +20,41 @@ export interface FreemakeFormatOption {
   bitrateLabel: string;
 }
 
+export interface FreemakeDownloadSiteInfo {
+  id: string;
+  name: string;
+  category: 'youtube-mirror' | 'full-track-search';
+  supportsVideo: boolean;
+  badge: string;
+  description: string;
+}
+
+export interface FreemakeProbeSiteMatch {
+  siteId: string;
+  siteName: string;
+  title: string;
+  durationSec: number;
+  score: number;
+}
+
 export interface FreemakeFormatsResponse {
   engine: string;
   ffmpegAvailable: boolean;
   ffmpegVersion: string;
+  isVercel?: boolean;
+  downloadSites?: FreemakeDownloadSiteInfo[];
   formats: FreemakeFormatOption[];
 }
 
 export interface FreemakeProbeResponse {
   videoId: string | null;
+  thumbnailUrl?: string | null;
+  album?: string | null;
   fullTrackAvailable?: boolean;
   fullTrackSource?: string | null;
   fullTrackTitle?: string | null;
   fullTrackDurationSec?: number | null;
+  matchedSites?: FreemakeProbeSiteMatch[];
   officialPreviewAvailable: boolean;
   officialPreviewSource: string | null;
   hasServerCookie: boolean;
@@ -87,6 +108,7 @@ const INITIAL_PROGRESS_STATE: FreemakeProgressState = {
 
 let currentProgressState: FreemakeProgressState = { ...INITIAL_PROGRESS_STATE };
 const progressListeners = new Set<(state: FreemakeProgressState) => void>();
+let cachedEngineCaps: { ffmpegAvailable: boolean; isVercel: boolean } | null = null;
 
 function updateFreemakeProgress(patch: Partial<FreemakeProgressState>) {
   currentProgressState = {
@@ -149,7 +171,12 @@ export function saveFreemakeAdvancedConfig(cfg: FreemakeAdvancedConfig) {
 export async function fetchFreemakeFormats(): Promise<FreemakeFormatsResponse> {
   const res = await fetch('/api/freemake/formats');
   if (!res.ok) throw new Error('Freemakeエンジン情報の取得に失敗しました');
-  return res.json();
+  const data = (await res.json()) as FreemakeFormatsResponse;
+  cachedEngineCaps = {
+    ffmpegAvailable: Boolean(data.ffmpegAvailable),
+    isVercel: Boolean(data.isVercel),
+  };
+  return data;
 }
 
 export async function probeFreemakeTrack(params: {
@@ -187,15 +214,143 @@ function extractFilenameFromDisposition(headerVal: string | null, fallbackName: 
   return fallbackName;
 }
 
+export function isIosDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+export function isIosStandalonePwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  const nav = window.navigator as Navigator & { standalone?: boolean };
+  return (
+    isIosDevice() &&
+    (Boolean(nav.standalone) || window.matchMedia?.('(display-mode: standalone)').matches)
+  );
+}
+
+export async function shareBlobFile(blob: Blob, filename: string): Promise<boolean> {
+  if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
+    return false;
+  }
+  try {
+    const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
+    if (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] })) {
+      return false;
+    }
+    await navigator.share({
+      files: [file],
+      title: filename,
+    });
+    return true;
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      return true;
+    }
+    return false;
+  }
+}
+
 export function triggerBlobDownload(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = blobUrl;
   a.download = filename;
+  a.rel = 'noopener';
+  a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+}
+
+export async function createSquareArtworkBlob(imageUrl: string, targetSize = 720): Promise<Blob | null> {
+  const cleanUrl = String(imageUrl || '').trim();
+  if (!cleanUrl) return null;
+
+  try {
+    const fetchUrl = /^https?:\/\//i.test(cleanUrl)
+      ? `/api/freemake/artwork?url=${encodeURIComponent(cleanUrl)}`
+      : cleanUrl;
+
+    const resp = await fetch(fetchUrl);
+    if (!resp.ok) return null;
+    const rawBlob = await resp.blob();
+    if (!rawBlob || rawBlob.size < 64) return null;
+
+    if (typeof document === 'undefined' || typeof Image === 'undefined') {
+      return rawBlob;
+    }
+
+    const objUrl = URL.createObjectURL(rawBlob);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Image decode failed'));
+        el.src = objUrl;
+      });
+
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return rawBlob;
+
+      const side = Math.min(iw, ih);
+      const sx = Math.floor((iw - side) / 2);
+      const sy = Math.floor((ih - side) / 2);
+      const outSize = Math.min(targetSize, Math.max(side, 512));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = outSize;
+      canvas.height = outSize;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return rawBlob;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
+
+      const croppedBlob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9);
+      });
+      return croppedBlob || rawBlob;
+    } finally {
+      URL.revokeObjectURL(objUrl);
+    }
+  } catch {
+    return null;
+  }
+}
+
+export async function cacheSquareArtworkDataUrl(imageUrl?: string): Promise<string | undefined> {
+  if (!imageUrl) return undefined;
+  const blob = await createSquareArtworkBlob(imageUrl, 640);
+  if (!blob) {
+    return imageUrl.startsWith('data:image/') || imageUrl.startsWith('/') ? imageUrl : undefined;
+  }
+  return await new Promise<string | undefined>((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      resolve(typeof reader.result === 'string' ? reader.result : undefined);
+    };
+    reader.onerror = () => resolve(undefined);
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function downloadArtworkImageFile(imageUrl: string, filenameBase: string): Promise<boolean> {
+  const blob = await createSquareArtworkBlob(imageUrl, 1000);
+  if (!blob) return false;
+  const cleanBase =
+    filenameBase
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100) || 'artwork';
+  triggerBlobDownload(blob, `${cleanBase}_cover.jpg`);
+  return true;
 }
 
 export interface FreemakeDownloadResult {
@@ -204,7 +359,9 @@ export interface FreemakeDownloadResult {
   sourceKind: string;
   sourceLabel: string;
   durationSec?: number;
-  eqApplied: boolean;
+  passthrough?: boolean;
+  artworkUrl?: string;
+  album?: string;
   savedOfflineTrack?: Track;
 }
 
@@ -224,6 +381,13 @@ interface ServerJobProgress {
   error?: string;
 }
 
+class FreemakeStatelessFallbackError extends Error {
+  constructor() {
+    super('STATELESS_SERVER_FALLBACK');
+    this.name = 'FreemakeStatelessFallbackError';
+  }
+}
+
 function waitForServerJobCompletion(
   jobId: string,
   onServerUpdate: (p: ServerJobProgress) => void
@@ -232,6 +396,7 @@ function waitForServerJobCompletion(
     let settled = false;
     let pollTimer: number | null = null;
     let es: EventSource | null = null;
+    let consecutive404 = 0;
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -259,8 +424,14 @@ function waitForServerJobCompletion(
       try {
         const r = await fetch(`/api/freemake/jobs/${encodeURIComponent(jobId)}`);
         if (r.ok) {
+          consecutive404 = 0;
           const data = (await r.json()) as ServerJobProgress;
           handleUpdate(data);
+        } else if (r.status === 404) {
+          consecutive404++;
+          if (consecutive404 >= 2) {
+            finish(() => reject(new FreemakeStatelessFallbackError()));
+          }
         }
       } catch {}
     };
@@ -323,7 +494,34 @@ interface FetchedJobFile {
   sourceKind: string;
   sourceLabel: string;
   durationSec: number;
-  eqApplied: boolean;
+  passthrough: boolean;
+  artworkUrl?: string;
+  album?: string;
+}
+
+function decodeHeaderParam(val: string | null): string {
+  if (!val) return '';
+  try {
+    return decodeURIComponent(val);
+  } catch {
+    return val;
+  }
+}
+
+function parseDownloadHeaders(
+  headers: Headers,
+  fallbackFilename: string,
+  fallbackMimeType = 'application/octet-stream'
+) {
+  const filename = extractFilenameFromDisposition(headers.get('Content-Disposition'), fallbackFilename);
+  const sourceKind = headers.get('X-Freemake-Source-Kind') || 'youtube-direct';
+  const sourceLabel = decodeHeaderParam(headers.get('X-Freemake-Source-Label')) || sourceKind;
+  const durationSec = Number(headers.get('X-Freemake-Duration-Sec') || 0) || 0;
+  const passthrough = headers.get('X-Freemake-Passthrough') === '1';
+  const artworkUrl = decodeHeaderParam(headers.get('X-Freemake-Artwork-Url')) || undefined;
+  const album = decodeHeaderParam(headers.get('X-Freemake-Album')) || undefined;
+  const mimeType = headers.get('Content-Type') || fallbackMimeType;
+  return { filename, sourceKind, sourceLabel, durationSec, passthrough, artworkUrl, album, mimeType };
 }
 
 async function fetchJobFileWithProgress(params: {
@@ -335,17 +533,6 @@ async function fetchJobFileWithProgress(params: {
 }): Promise<FetchedJobFile> {
   const { jobId, knownTotalBytes = 0, fallbackFilename, fallbackMimeType = 'application/octet-stream', onBytes } = params;
   const fileUrl = `/api/freemake/jobs/${encodeURIComponent(jobId)}/file`;
-
-  const parseMeta = (headers: Headers) => {
-    const filename = extractFilenameFromDisposition(headers.get('Content-Disposition'), fallbackFilename);
-    const sourceKind = headers.get('X-Freemake-Source-Kind') || 'youtube-direct';
-    const rawLabel = headers.get('X-Freemake-Source-Label') || '';
-    const sourceLabel = rawLabel ? decodeURIComponent(rawLabel) : sourceKind;
-    const durationSec = Number(headers.get('X-Freemake-Duration-Sec') || 0) || 0;
-    const eqApplied = headers.get('X-Freemake-Eq-Applied') === '1';
-    const mimeType = headers.get('Content-Type') || fallbackMimeType;
-    return { filename, sourceKind, sourceLabel, durationSec, eqApplied, mimeType };
-  };
 
   let totalBytes = knownTotalBytes;
   if (totalBytes <= 0) {
@@ -361,7 +548,7 @@ async function fetchJobFileWithProgress(params: {
     const partBlobs: Blob[] = [];
     let offset = 0;
     let total = expectedTotal;
-    let meta: ReturnType<typeof parseMeta> | null = null;
+    let meta: ReturnType<typeof parseDownloadHeaders> | null = null;
 
     while (total <= 0 || offset < total) {
       const end = total > 0 ? Math.min(offset + RANGE_CHUNK_SIZE - 1, total - 1) : offset + RANGE_CHUNK_SIZE - 1;
@@ -369,7 +556,7 @@ async function fetchJobFileWithProgress(params: {
         headers: { Range: `bytes=${offset}-${end}` },
       });
       if (!chunkResp.ok && chunkResp.status !== 206) {
-        let errMsg = '変換済みファイルの分割受信に失敗しました';
+        let errMsg = 'ファイルの分割受信に失敗しました';
         try {
           const errJson = await chunkResp.json();
           if (errJson?.error) errMsg = errJson.error;
@@ -378,7 +565,7 @@ async function fetchJobFileWithProgress(params: {
       }
 
       if (!meta) {
-        meta = parseMeta(chunkResp.headers);
+        meta = parseDownloadHeaders(chunkResp.headers, fallbackFilename, fallbackMimeType);
       }
 
       const contentRange = chunkResp.headers.get('Content-Range') || '';
@@ -411,7 +598,9 @@ async function fetchJobFileWithProgress(params: {
       sourceKind: 'youtube-direct',
       sourceLabel: '',
       durationSec: 0,
-      eqApplied: false,
+      passthrough: false,
+      artworkUrl: undefined,
+      album: undefined,
       mimeType: fallbackMimeType,
     };
 
@@ -421,7 +610,9 @@ async function fetchJobFileWithProgress(params: {
       sourceKind: resolvedMeta.sourceKind,
       sourceLabel: resolvedMeta.sourceLabel,
       durationSec: resolvedMeta.durationSec,
-      eqApplied: resolvedMeta.eqApplied,
+      passthrough: resolvedMeta.passthrough,
+      artworkUrl: resolvedMeta.artworkUrl,
+      album: resolvedMeta.album,
     };
   };
 
@@ -446,7 +637,7 @@ async function fetchJobFileWithProgress(params: {
       return downloadViaRanges(headerLen);
     }
 
-    const meta = parseMeta(fileResp.headers);
+    const meta = parseDownloadHeaders(fileResp.headers, fallbackFilename, fallbackMimeType);
     const blob = await readResponseBlobWithProgress(fileResp, meta.mimeType, onBytes);
     if (headerLen > 0 && blob.size < headerLen) {
       return downloadViaRanges(headerLen);
@@ -458,7 +649,9 @@ async function fetchJobFileWithProgress(params: {
       sourceKind: meta.sourceKind,
       sourceLabel: meta.sourceLabel,
       durationSec: meta.durationSec,
-      eqApplied: meta.eqApplied,
+      passthrough: meta.passthrough,
+      artworkUrl: meta.artworkUrl,
+      album: meta.album,
     };
   } catch (err) {
     if (totalBytes > 0) {
@@ -466,6 +659,94 @@ async function fetchJobFileWithProgress(params: {
     }
     throw err;
   }
+}
+
+async function executeDirectDownloadRequest(
+  payload: Record<string, any>,
+  fallbackName: string,
+  emit: (patch: Partial<FreemakeProgressState>) => void
+): Promise<FetchedJobFile> {
+  emit({
+    stage: 'fetching',
+    percent: 24,
+    message: 'サーバーからフル尺音源をダイレクト取得中...',
+  });
+
+  const resp = await fetch('/api/freemake/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    let errMsg = 'ダウンロードに失敗しました';
+    let previewAvailable = false;
+    let requiresCookieOrCobalt = false;
+    try {
+      const errJson = await resp.json();
+      if (errJson?.error) errMsg = errJson.error;
+      previewAvailable = Boolean(errJson?.previewAvailable);
+      requiresCookieOrCobalt = Boolean(errJson?.requiresCookieOrCobalt);
+    } catch {}
+    const err = new Error(errMsg) as Error & {
+      previewAvailable?: boolean;
+      requiresCookieOrCobalt?: boolean;
+    };
+    err.previewAvailable = previewAvailable;
+    err.requiresCookieOrCobalt = requiresCookieOrCobalt;
+    throw err;
+  }
+
+  const meta = parseDownloadHeaders(resp.headers, fallbackName);
+  emit({
+    stage: 'downloading',
+    percent: 48,
+    sourceLabel: meta.sourceLabel,
+    durationSec: meta.durationSec || undefined,
+    message: meta.passthrough
+      ? '音源を受信中 (FFmpegレス・ダイレクト)...'
+      : 'ファイルを受信中...',
+  });
+
+  const blob = await readResponseBlobWithProgress(resp, meta.mimeType, (receivedBytes, totalBytes) => {
+    const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.5;
+    emit({
+      stage: 'downloading',
+      percent: 48 + ratio * 46,
+      receivedBytes,
+      totalBytes: totalBytes || undefined,
+      message: meta.passthrough ? '音源を受信中 (ダイレクト)...' : 'ファイルを受信中...',
+    });
+  });
+
+  return {
+    blob,
+    filename: meta.filename,
+    sourceKind: meta.sourceKind,
+    sourceLabel: meta.sourceLabel,
+    durationSec: meta.durationSec,
+    passthrough: meta.passthrough,
+    artworkUrl: meta.artworkUrl,
+    album: meta.album,
+  };
+}
+
+const KNOWN_MEDIA_EXTS = new Set([
+  'mp3',
+  'm4a',
+  'aac',
+  'flac',
+  'wav',
+  'ogg',
+  'opus',
+  'webm',
+  'mp4',
+  'ts',
+]);
+
+function resolveActualExtension(filename: string, fallbackExt: string): string {
+  const raw = filename.split('.').pop()?.toLowerCase().trim() || '';
+  return KNOWN_MEDIA_EXTS.has(raw) ? raw : fallbackExt;
 }
 
 export async function downloadWithFreemake(params: {
@@ -478,28 +759,17 @@ export async function downloadWithFreemake(params: {
   duration?: string;
   durationSeconds?: number;
   format: FreemakeFormatId;
-  applyEq: boolean;
-  eqOverride?: EqualizerSettings;
   saveTarget: 'device' | 'offline' | 'both';
   allowPreviewFallback?: boolean;
+  enabledSites?: string[];
   onProgress?: (state: FreemakeProgressState) => void;
 }): Promise<FreemakeDownloadResult> {
   const adv = loadFreemakeAdvancedConfig();
-  const eqSettings = params.eqOverride || equalizer.getSettings();
   const ext = params.format.startsWith('mp3')
     ? 'mp3'
     : params.format.startsWith('m4a')
     ? 'm4a'
     : params.format;
-
-  const eqPayload = params.applyEq
-    ? {
-        enabled: true,
-        gains: eqSettings.gains,
-        bassBoost: eqSettings.bassBoost,
-        normalize: Boolean(eqSettings.freemakeNormalize),
-      }
-    : { enabled: false };
 
   const emit = (patch: Partial<FreemakeProgressState>) => {
     updateFreemakeProgress(patch);
@@ -514,8 +784,8 @@ export async function downloadWithFreemake(params: {
     artist: params.artist || '',
     formatExt: ext,
     stage: 'resolving',
-    percent: 3,
-    message: 'ダウンロードジョブを開始しています...',
+    percent: 4,
+    message: '音源情報を照合中...',
     receivedBytes: undefined,
     totalBytes: undefined,
     processedSec: undefined,
@@ -524,77 +794,119 @@ export async function downloadWithFreemake(params: {
     error: undefined,
   });
 
-  try {
-    const startResp = await fetch('/api/freemake/download/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        videoId: params.videoId,
-        url: params.url,
-        title: params.title,
-        artist: params.artist,
-        album: params.album || '',
-        duration: params.duration || '',
-        durationSeconds: params.durationSeconds || 0,
-        format: params.format,
-        eq: eqPayload,
-        cobaltApiUrl: adv.cobaltApiUrl || undefined,
-        youtubeCookie: adv.youtubeCookie || undefined,
-        allowPreviewFallback: params.allowPreviewFallback !== false,
-      }),
-    });
+  const payload = {
+    videoId: params.videoId,
+    url: params.url,
+    title: params.title,
+    artist: params.artist,
+    album: params.album || '',
+    thumbnail: params.thumbnail || '',
+    duration: params.duration || '',
+    durationSeconds: params.durationSeconds || 0,
+    format: params.format,
+    cobaltApiUrl: adv.cobaltApiUrl || undefined,
+    youtubeCookie: adv.youtubeCookie || undefined,
+    allowPreviewFallback: Boolean(params.allowPreviewFallback),
+    ...(params.enabledSites && params.enabledSites.length > 0
+      ? { enabledSites: params.enabledSites }
+      : {}),
+  };
 
-    if (!startResp.ok) {
-      let errMsg = 'ダウンロードの開始に失敗しました';
+  const fallbackName = `${params.artist ? `${params.artist} - ` : ''}${params.title || 'track'}.${ext}`;
+
+  try {
+    if (!cachedEngineCaps) {
       try {
-        const errJson = await startResp.json();
-        if (errJson?.error) errMsg = errJson.error;
+        await fetchFreemakeFormats();
       } catch {}
-      throw new Error(errMsg);
     }
 
-    const { jobId } = (await startResp.json()) as { jobId: string };
-    emit({ jobId });
+    let fetched: FetchedJobFile;
 
-    const readyProgress = await waitForServerJobCompletion(jobId, (p) => {
-      emit({
-        stage: p.stage === 'ready' ? 'downloading' : p.stage,
-        percent: p.percent,
-        message: p.message,
-        receivedBytes: p.receivedBytes,
-        totalBytes: p.totalBytes,
-        processedSec: p.processedSec,
-        durationSec: p.durationSec,
-        sourceLabel: p.sourceLabel,
+    if (cachedEngineCaps?.isVercel) {
+      // Single-request mode for Vercel serverless (stateless functions)
+      fetched = await executeDirectDownloadRequest(payload, fallbackName, emit);
+    } else {
+      const startResp = await fetch('/api/freemake/download/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
-    });
 
-    emit({
-      stage: 'downloading',
-      percent: 90,
-      message: '変換済みファイルを端末へ受信中...',
-      receivedBytes: 0,
-      totalBytes: readyProgress.totalBytes,
-    });
+      if (!startResp.ok) {
+        let errMsg = 'ダウンロードの開始に失敗しました';
+        try {
+          const errJson = await startResp.json();
+          if (errJson?.error) errMsg = errJson.error;
+        } catch {}
+        throw new Error(errMsg);
+      }
 
-    const fallbackName = `${params.artist ? `${params.artist} - ` : ''}${params.title || 'track'}.${ext}`;
-    const fetched = await fetchJobFileWithProgress({
-      jobId,
-      knownTotalBytes: readyProgress.totalBytes,
-      fallbackFilename: fallbackName,
-      onBytes: (receivedBytes, totalBytes) => {
-        const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.5;
-        emit({
-          stage: 'downloading',
-          percent: 90 + ratio * 8,
-          receivedBytes,
-          totalBytes: totalBytes || undefined,
-          message: '変換済みファイルを端末へ受信中...',
-        });
-      },
-    });
+      const startJson = (await startResp.json()) as { jobId: string; isVercel?: boolean };
+      if (startJson.isVercel) {
+        if (cachedEngineCaps) cachedEngineCaps.isVercel = true;
+        fetched = await executeDirectDownloadRequest(payload, fallbackName, emit);
+      } else {
+        const jobId = startJson.jobId;
+        emit({ jobId });
+        try {
+          const readyProgress = await waitForServerJobCompletion(jobId, (p) => {
+            emit({
+              stage: p.stage === 'ready' ? 'downloading' : p.stage,
+              percent: p.percent,
+              message: p.message,
+              receivedBytes: p.receivedBytes,
+              totalBytes: p.totalBytes,
+              processedSec: p.processedSec,
+              durationSec: p.durationSec,
+              sourceLabel: p.sourceLabel,
+            });
+          });
 
-    const { blob, filename, sourceKind, sourceLabel, durationSec: headerDurSec, eqApplied } = fetched;
+          emit({
+            stage: 'downloading',
+            percent: 90,
+            message: 'ファイルを端末へ受信中...',
+            receivedBytes: 0,
+            totalBytes: readyProgress.totalBytes,
+          });
+
+          fetched = await fetchJobFileWithProgress({
+            jobId,
+            knownTotalBytes: readyProgress.totalBytes,
+            fallbackFilename: fallbackName,
+            onBytes: (receivedBytes, totalBytes) => {
+              const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.5;
+              emit({
+                stage: 'downloading',
+                percent: 90 + ratio * 8,
+                receivedBytes,
+                totalBytes: totalBytes || undefined,
+                message: 'ファイルを端末へ受信中...',
+              });
+            },
+          });
+        } catch (jobErr: any) {
+          if (jobErr instanceof FreemakeStatelessFallbackError) {
+            fetched = await executeDirectDownloadRequest(payload, fallbackName, emit);
+          } else {
+            throw jobErr;
+          }
+        }
+      }
+    }
+
+    const {
+      blob,
+      filename,
+      sourceKind,
+      sourceLabel,
+      durationSec: headerDurSec,
+      passthrough,
+      artworkUrl: headerArtworkUrl,
+      album: headerAlbum,
+    } = fetched;
+    const actualExt = resolveActualExtension(filename, ext);
 
     const resolvedDurSec =
       sourceKind === 'official-preview-30s'
@@ -603,12 +915,18 @@ export async function downloadWithFreemake(params: {
         ? Math.round(headerDurSec)
         : params.durationSeconds || 180;
 
+    const bestArtworkUrl = headerArtworkUrl || params.thumbnail || undefined;
+    const resolvedAlbum = headerAlbum || params.album || 'Freemake オフライン保存';
+
     emit({
       stage: 'saving',
-      percent: 98,
-      message: 'オフラインライブラリに保存中...',
+      percent: 97,
+      formatExt: actualExt,
+      message: 'ジャケット画像を正方形に最適化＆オフライン保存中...',
       sourceLabel,
     });
+
+    const cachedSquareThumb = await cacheSquareArtworkDataUrl(bestArtworkUrl);
 
     const formatDurationLabel = (sec: number): string => {
       const safe = Math.max(0, Math.round(sec));
@@ -629,15 +947,18 @@ export async function downloadWithFreemake(params: {
           : headerDurSec > 0
           ? formatDurationLabel(headerDurSec)
           : params.duration || formatDurationLabel(resolvedDurSec);
+      const fallbackTitle = filename.replace(/\.[^.]+$/, '') || 'Downloaded Track';
       savedOfflineTrack = await saveOfflineTrack(
         blob,
-        sourceKind === 'official-preview-30s' ? `${params.title} (プレビュー)` : params.title,
+        sourceKind === 'official-preview-30s'
+          ? `${params.title || fallbackTitle} (30秒プレビュー)`
+          : params.title || fallbackTitle,
         params.artist || 'Freemake保存',
-        params.album || 'Freemake オフライン保存',
+        resolvedAlbum,
         resolvedDurSec,
         durStr,
-        params.thumbnail,
-        ext
+        cachedSquareThumb || bestArtworkUrl,
+        actualExt
       );
     } catch (err) {
       console.warn('[Freemake] Auto-save to offline storage failed:', err);
@@ -647,6 +968,7 @@ export async function downloadWithFreemake(params: {
       active: false,
       stage: 'done',
       percent: 100,
+      formatExt: actualExt,
       message: `完了: ${filename}`,
       sourceLabel,
     });
@@ -657,7 +979,9 @@ export async function downloadWithFreemake(params: {
       sourceKind,
       sourceLabel,
       durationSec: resolvedDurSec,
-      eqApplied,
+      passthrough,
+      artworkUrl: cachedSquareThumb || bestArtworkUrl,
+      album: resolvedAlbum,
       savedOfflineTrack,
     };
   } catch (err: any) {
@@ -674,22 +998,11 @@ export async function downloadWithFreemake(params: {
 export async function convertLocalFileWithFreemake(params: {
   file: File;
   format: FreemakeFormatId;
-  applyEq: boolean;
   title?: string;
   artist?: string;
   saveTarget: 'device' | 'offline' | 'both';
   onProgress?: (state: FreemakeProgressState) => void;
 }): Promise<FreemakeDownloadResult> {
-  const eqSettings = equalizer.getSettings();
-  const eqPayload = params.applyEq
-    ? {
-        enabled: true,
-        gains: eqSettings.gains,
-        bassBoost: eqSettings.bassBoost,
-        normalize: Boolean(eqSettings.freemakeNormalize),
-      }
-    : { enabled: false };
-
   const ext = params.format.startsWith('mp3')
     ? 'mp3'
     : params.format.startsWith('m4a')
@@ -726,7 +1039,6 @@ export async function convertLocalFileWithFreemake(params: {
     format: params.format,
     title: baseName,
     artist: params.artist || 'ローカル音源',
-    eq: JSON.stringify(eqPayload),
     allowRangeResult: '1',
   });
 
@@ -761,14 +1073,12 @@ export async function convertLocalFileWithFreemake(params: {
           filename: string;
           mimeType: string;
           durationSec: number;
-          eqApplied: boolean;
         }
       | {
           useJobFile: false;
           blob: Blob;
           disposition: string | null;
           durationSec: number;
-          eqApplied: boolean;
         }
     >((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -793,7 +1103,7 @@ export async function convertLocalFileWithFreemake(params: {
         emit({
           stage: 'converting',
           percent: 45,
-          message: `FFmpeg で .${ext.toUpperCase()} へ変換・EQ焼き込み中...`,
+          message: `FFmpeg で .${ext.toUpperCase()} へ変換中...`,
         });
       };
 
@@ -827,7 +1137,6 @@ export async function convertLocalFileWithFreemake(params: {
                     filename: parsed.filename || `${baseName}_freemake.${ext}`,
                     mimeType: parsed.mimeType || 'application/octet-stream',
                     durationSec: Number(parsed.durationSec) || 180,
-                    eqApplied: Boolean(parsed.eqApplied),
                   });
                 } else {
                   reject(new Error(parsed?.error || '変換に失敗しました'));
@@ -841,7 +1150,6 @@ export async function convertLocalFileWithFreemake(params: {
             blob: respBlob,
             disposition: xhr.getResponseHeader('Content-Disposition'),
             durationSec: Number(xhr.getResponseHeader('X-Freemake-Duration-Sec') || 0) || 180,
-            eqApplied: xhr.getResponseHeader('X-Freemake-Eq-Applied') === '1',
           });
         } else {
           const blob = xhr.response as Blob;
@@ -875,7 +1183,6 @@ export async function convertLocalFileWithFreemake(params: {
 
     let finalBlob: Blob;
     let filename: string;
-    let eqApplied: boolean;
     let durationSec: number;
 
     if (xhrResult.useJobFile) {
@@ -897,12 +1204,10 @@ export async function convertLocalFileWithFreemake(params: {
       });
       finalBlob = fetched.blob;
       filename = fetched.filename || xhrResult.filename;
-      eqApplied = xhrResult.eqApplied;
       durationSec = fetched.durationSec || xhrResult.durationSec;
     } else {
       finalBlob = xhrResult.blob;
       filename = extractFilenameFromDisposition(xhrResult.disposition, `${baseName}_freemake.${ext}`);
-      eqApplied = xhrResult.eqApplied;
       durationSec = xhrResult.durationSec;
     }
 
@@ -933,7 +1238,7 @@ export async function convertLocalFileWithFreemake(params: {
         durationSec,
         formatDurationLabel(durationSec),
         undefined,
-        ext
+        resolveActualExtension(filename, ext)
       );
     } catch (err) {
       console.warn('[Freemake] Auto-save converted track failed:', err);
@@ -950,9 +1255,8 @@ export async function convertLocalFileWithFreemake(params: {
       blob: finalBlob,
       filename,
       sourceKind: 'local-convert',
-      sourceLabel: 'ローカル変換 (FFmpeg + Freemake EQ)',
+      sourceLabel: 'ローカル変換 (FFmpeg)',
       durationSec,
-      eqApplied,
       savedOfflineTrack,
     };
   } catch (err: any) {
