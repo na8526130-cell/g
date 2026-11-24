@@ -22,6 +22,16 @@ import { normalizeArtistName, isSameArtist } from './src/utils/artistNames.js';
 import { expandSearchQuery, getSearchConversions } from './src/utils/searchConverter.js';
 import { registerFreemakeRoutes } from './src/server/freemake.js';
 import { registerSharedOfflineRoutes } from './src/server/sharedOffline.js';
+import { registerAudioStreamRoutes } from './src/server/audioStream.js';
+import { registerAiPlaylistRoutes } from './src/server/aiPlaylist.js';
+import { registerPodcastRoutes } from './src/server/podcasts.js';
+import { registerConnectAndJamRoutes, CollabPlaylistRecord } from './src/server/connectAndJam.js';
+import { registerLyricsTranslateRoutes } from './src/server/lyricsTranslate.js';
+import {
+  registerDiscoveryProRoutes,
+  getInnertubeForRegion,
+  normalizeRegionCode,
+} from './src/server/discoveryPro.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -415,6 +425,32 @@ export async function createApp(options?: {
     return type === 'streaming' ? FALLBACK_ORICON_STREAMING : FALLBACK_ORICON_DIGITAL;
   }
 
+  async function getInnertubeWithTimeout(timeoutMs = process.env.VERCEL ? 6000 : 10000): Promise<any | null> {
+    try {
+      return await Promise.race([
+        getInnertube(),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+      ]);
+    } catch {
+      return null;
+    }
+  }
+
+  function mapRawOriconFallback(
+    rawEntries: Array<{ rank: number; title: string; artist: string; metric: string }>,
+    type: 'streaming' | 'digital'
+  ): OriconItem[] {
+    return rawEntries.slice(0, 10).map((raw) => ({
+      id: `oricon_${type}_${raw.rank}`,
+      rank: raw.rank,
+      title: raw.title,
+      artist: raw.artist,
+      metric: raw.metric,
+      thumbnail: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&h=300&fit=crop',
+      rankType: type,
+    }));
+  }
+
   async function getOriconChart(type: 'streaming' | 'digital' = 'streaming'): Promise<OriconItem[]> {
     const cacheKey = `oricon:${type}`;
     const cachedItems = kvCache.get<OriconItem[]>(cacheKey);
@@ -423,40 +459,37 @@ export async function createApp(options?: {
     }
 
     const rawEntries = await fetchOriconRawChart(type);
-    let yt: any = null;
-    try {
-      yt = await getInnertube();
-    } catch {
-      // ignore
+    const yt = await getInnertubeWithTimeout(process.env.VERCEL ? 4500 : 8000);
+
+    if (!yt) {
+      return mapRawOriconFallback(rawEntries, type);
     }
 
     const items: OriconItem[] = await Promise.all(
       rawEntries.slice(0, 10).map(async (raw) => {
-        if (yt) {
-          try {
-            const searchQuery = `${raw.title} ${raw.artist}`.trim();
-            const searchPromise = yt.music.search(searchQuery, { type: 'song' });
-            const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), 2500));
-            const searchRes: any = await Promise.race([searchPromise, timeoutPromise]);
-            const topSong = getSearchShelfContents(searchRes, 'songs')[0];
+        try {
+          const searchQuery = `${raw.title} ${raw.artist}`.trim();
+          const searchPromise = yt.music.search(searchQuery, { type: 'song' });
+          const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), 2500));
+          const searchRes: any = await Promise.race([searchPromise, timeoutPromise]);
+          const topSong = getSearchShelfContents(searchRes, 'songs')[0];
 
-            if (topSong && topSong.id) {
-              return {
-                id: topSong.id,
-                rank: raw.rank,
-                title: raw.title,
-                artist: normalizeArtistName(raw.artist || (topSong as any).artists?.[0]?.name || 'Artist'),
-                artistId: (topSong as any).artists?.[0]?.id,
-                metric: raw.metric,
-                thumbnail: getBestThumbnail((topSong as any).thumbnails || []),
-                duration: (topSong as any).duration?.text || '',
-                durationSeconds: parseDurationToSeconds((topSong as any).duration?.text || ''),
-                rankType: type,
-              };
-            }
-          } catch {
-            // fallback
+          if (topSong && topSong.id) {
+            return {
+              id: topSong.id,
+              rank: raw.rank,
+              title: raw.title,
+              artist: normalizeArtistName(raw.artist || (topSong as any).artists?.[0]?.name || 'Artist'),
+              artistId: (topSong as any).artists?.[0]?.id,
+              metric: raw.metric,
+              thumbnail: getBestThumbnail((topSong as any).thumbnails || []),
+              duration: (topSong as any).duration?.text || '',
+              durationSeconds: parseDurationToSeconds((topSong as any).duration?.text || ''),
+              rankType: type,
+            };
           }
+        } catch {
+          // fallback
         }
         return {
           id: `oricon_${type}_${raw.rank}`,
@@ -470,7 +503,7 @@ export async function createApp(options?: {
       })
     );
 
-    if (items.length > 0) {
+    if (items.length > 0 && items.some((x) => !x.id.startsWith('oricon_'))) {
       kvCache.set(cacheKey, items, 6 * 3600); // 6 hours persistent cache
     }
 
@@ -493,129 +526,176 @@ export async function createApp(options?: {
     }
   });
 
-  // Explore: Home feed, Trending, New Releases, Moods & Genres, Oricon Rankings
-  app.get('/api/music/explore', async (_req, res) => {
-    const cachedExplore = kvCache.get<any>('explore:home_feed_ja_v2');
+  // Explore: Home feed, Trending, New Releases, Moods & Genres, Oricon Rankings (supports ?gl=JP|US|KR|GB|GLOBAL)
+  app.get('/api/music/explore', async (req, res) => {
+    const region = normalizeRegionCode(req.query.gl);
+    const cacheKey = `explore:home_feed_v3_${region}`;
+    const cachedExplore = kvCache.get<any>(cacheKey);
     if (cachedExplore) {
       return res.json({ ...cachedExplore, fromCache: true });
     }
 
     const startTime = Date.now();
+    const isVercel = Boolean(process.env.VERCEL);
+    const innertubeTimeoutMs = isVercel ? 7000 : 12000;
+
+    const trendingSongs: any[] = [];
+    const newReleases: any[] = [];
+    const moodsAndGenres: any[] = [];
+    const musicVideos: any[] = [];
+    let innertubeOk = false;
+
     try {
-      const yt = await getInnertube();
-      const explore = await yt.music.getExplore();
+      const exploreTask = (async () => {
+        const yt = await getInnertubeForRegion(region, getInnertube);
+        const explore = await yt.music.getExplore();
+        return { yt, explore };
+      })();
 
-      const trendingSongs: any[] = [];
-      const newReleases: any[] = [];
-      const moodsAndGenres: any[] = [];
-      const musicVideos: any[] = [];
+      const exploreResult = await Promise.race([
+        exploreTask,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), innertubeTimeoutMs)),
+      ]);
 
-      for (const section of (explore as any).sections || []) {
-        const title = (section.header?.title?.toString?.() || section.title?.toString?.() || '').toLowerCase();
-        const rawItems = section.contents || [];
+      if (exploreResult?.explore) {
+        innertubeOk = true;
+        const { yt, explore } = exploreResult;
 
-        if (title.includes('trending') || title.includes('急上昇')) {
-          for (const item of rawItems) {
-            trendingSongs.push({
-              id: item.id || item.video_id,
-              title: item.title?.toString?.() || 'Unknown Title',
-              artist: extractItemArtist(item, 'YouTube Music'),
-              artistId: (item.artists && item.artists[0]?.id) || item.author?.id,
-              album: item.album?.name,
-              albumId: item.album?.id,
-              duration: item.duration?.text || '',
-              durationSeconds: parseDurationToSeconds(item.duration?.text || ''),
-              thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
-              views: item.views?.text || '',
-            });
-          }
-        } else if (title.includes('video') || title.includes('ビデオ') || title.includes('動画')) {
-          for (const item of rawItems) {
-            musicVideos.push({
-              id: item.id || item.video_id,
-              title: item.title?.toString?.() || 'Unknown Video',
-              artist: extractItemArtist(item, 'YouTube Music'),
-              views: item.views?.text || '',
-              thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
-            });
-          }
-        } else if (title.includes('new') || title.includes('新作') || title.includes('アルバム') || title.includes('新着') || title.includes('リリース')) {
-          for (const item of rawItems) {
-            newReleases.push({
-              id: item.id,
-              title: item.title?.toString?.() || 'Unknown Title',
-              artist: extractItemArtist(item, 'Artist'),
-              artistId: (item.artists && item.artists[0]?.id) || item.author?.id,
-              year: item.year || '',
-              type: item.item_type || 'Album',
-              thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
-            });
-          }
-        } else if (title.includes('mood') || title.includes('genre') || title.includes('ムード') || title.includes('気分') || title.includes('ジャンル')) {
-          for (const item of rawItems) {
-            if (item.button_text) {
-              moodsAndGenres.push({
-                title: item.button_text?.toString?.() || 'Mood',
-                params: item.endpoint?.payload?.params || '',
+        for (const section of (explore as any).sections || []) {
+          const title = (section.header?.title?.toString?.() || section.title?.toString?.() || '').toLowerCase();
+          const rawItems = section.contents || [];
+
+          if (title.includes('trending') || title.includes('急上昇')) {
+            for (const item of rawItems) {
+              trendingSongs.push({
+                id: item.id || item.video_id,
+                title: item.title?.toString?.() || 'Unknown Title',
+                artist: extractItemArtist(item, 'YouTube Music'),
+                artistId: (item.artists && item.artists[0]?.id) || item.author?.id,
+                album: item.album?.name,
+                albumId: item.album?.id,
+                duration: item.duration?.text || '',
+                durationSeconds: parseDurationToSeconds(item.duration?.text || ''),
+                thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
+                views: item.views?.text || '',
               });
+            }
+          } else if (title.includes('video') || title.includes('ビデオ') || title.includes('動画')) {
+            for (const item of rawItems) {
+              musicVideos.push({
+                id: item.id || item.video_id,
+                title: item.title?.toString?.() || 'Unknown Video',
+                artist: extractItemArtist(item, 'YouTube Music'),
+                views: item.views?.text || '',
+                thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
+              });
+            }
+          } else if (title.includes('new') || title.includes('新作') || title.includes('アルバム') || title.includes('新着') || title.includes('リリース')) {
+            for (const item of rawItems) {
+              newReleases.push({
+                id: item.id,
+                title: item.title?.toString?.() || 'Unknown Title',
+                artist: extractItemArtist(item, 'Artist'),
+                artistId: (item.artists && item.artists[0]?.id) || item.author?.id,
+                year: item.year || '',
+                type: item.item_type || 'Album',
+                thumbnail: getBestThumbnail(item.thumbnails || [item.thumbnail]),
+              });
+            }
+          } else if (title.includes('mood') || title.includes('genre') || title.includes('ムード') || title.includes('気分') || title.includes('ジャンル')) {
+            for (const item of rawItems) {
+              if (item.button_text) {
+                moodsAndGenres.push({
+                  title: item.button_text?.toString?.() || 'Mood',
+                  params: item.endpoint?.payload?.params || '',
+                });
+              }
             }
           }
         }
-      }
 
-      // If trending is empty in explore, fetch a quick default search for trending hits
-      if (trendingSongs.length === 0) {
-        const fallbackSearch = await yt.music.search('J-POP ヒット チャート', { type: 'song' });
-        for (const item of getSearchShelfContents(fallbackSearch, 'songs').slice(0, 15)) {
-          trendingSongs.push({
-            id: item.id,
-            title: (item as any).title?.toString?.() || 'Track',
-            artist: normalizeArtistName((item as any).artists?.[0]?.name || 'Artist'),
-            artistId: (item as any).artists?.[0]?.id,
-            album: (item as any).album?.name,
-            duration: (item as any).duration?.text || '',
-            durationSeconds: parseDurationToSeconds((item as any).duration?.text || ''),
-            thumbnail: getBestThumbnail((item as any).thumbnails || []),
-          });
+        // If trending is empty in explore, fetch a quick default search for trending hits
+        if (trendingSongs.length === 0) {
+          try {
+            const fallbackSearch = await Promise.race([
+              yt.music.search('J-POP ヒット チャート', { type: 'song' }),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+            ]);
+            if (fallbackSearch) {
+              for (const item of getSearchShelfContents(fallbackSearch, 'songs').slice(0, 15)) {
+                trendingSongs.push({
+                  id: item.id,
+                  title: (item as any).title?.toString?.() || 'Track',
+                  artist: normalizeArtistName((item as any).artists?.[0]?.name || 'Artist'),
+                  artistId: (item as any).artists?.[0]?.id,
+                  album: (item as any).album?.name,
+                  duration: (item as any).duration?.text || '',
+                  durationSeconds: parseDurationToSeconds((item as any).duration?.text || ''),
+                  thumbnail: getBestThumbnail((item as any).thumbnails || []),
+                });
+              }
+            }
+          } catch {
+            // ignore fallback search failure
+          }
         }
       }
-
-      const durationMs = Date.now() - startTime;
-      recordLog({
-        endpoint: 'music.getExplore',
-        params: {},
-        durationMs,
-        status: 'success',
-        itemCount: trendingSongs.length + newReleases.length,
-      });
-
-      const [oriconRanking, oriconDigital] = await Promise.all([
-        getOriconChart('streaming').catch(() => []),
-        getOriconChart('digital').catch(() => []),
-      ]);
-
-      const payload = {
-        trending: trendingSongs,
-        newReleases,
-        moodsAndGenres: moodsAndGenres.slice(0, 16),
-        musicVideos,
-        oriconRanking,
-        oriconDigital,
-      };
-
-      kvCache.set('explore:home_feed_ja_v2', payload, 2 * 3600);
-      res.json(payload);
     } catch (err: any) {
-      const durationMs = Date.now() - startTime;
-      recordLog({
-        endpoint: 'music.getExplore',
-        params: {},
-        durationMs,
-        status: 'error',
-        error: err.message,
-      });
-      res.status(500).json({ error: err.message });
+      console.warn('[Explore] InnerTube explore fallback activated:', err?.message || err);
     }
+
+    const [oriconRanking, oriconDigital] = await Promise.all([
+      Promise.race([
+        getOriconChart('streaming').catch(() => mapRawOriconFallback(FALLBACK_ORICON_STREAMING, 'streaming')),
+        new Promise<OriconItem[]>((resolve) =>
+          setTimeout(() => resolve(mapRawOriconFallback(FALLBACK_ORICON_STREAMING, 'streaming')), isVercel ? 5000 : 9000)
+        ),
+      ]),
+      Promise.race([
+        getOriconChart('digital').catch(() => mapRawOriconFallback(FALLBACK_ORICON_DIGITAL, 'digital')),
+        new Promise<OriconItem[]>((resolve) =>
+          setTimeout(() => resolve(mapRawOriconFallback(FALLBACK_ORICON_DIGITAL, 'digital')), isVercel ? 5000 : 9000)
+        ),
+      ]),
+    ]);
+
+    if (trendingSongs.length === 0 && oriconRanking.length > 0) {
+      for (const item of oriconRanking) {
+        trendingSongs.push({
+          id: item.id,
+          title: item.title,
+          artist: item.artist,
+          duration: item.duration || '',
+          durationSeconds: item.durationSeconds || 0,
+          thumbnail: item.thumbnail,
+          views: item.metric || '',
+        });
+      }
+    }
+
+    const durationMs = Date.now() - startTime;
+    recordLog({
+      endpoint: 'music.getExplore',
+      params: { innertubeOk },
+      durationMs,
+      status: innertubeOk ? 'success' : 'error',
+      itemCount: trendingSongs.length + newReleases.length,
+    });
+
+    const payload = {
+      trending: trendingSongs,
+      newReleases,
+      moodsAndGenres: moodsAndGenres.slice(0, 16),
+      musicVideos,
+      oriconRanking,
+      oriconDigital,
+      region,
+    };
+
+    if (innertubeOk && trendingSongs.length > 0) {
+      kvCache.set(cacheKey, payload, 2 * 3600);
+    }
+    res.json(payload);
   });
 
   // Search autocomplete suggestions + instant Romaji/Kana/Alias conversions (6h cached)
@@ -680,13 +760,14 @@ export async function createApp(options?: {
     }
   });
 
-  // Search with filters (songs, videos, albums, artists, playlists) & fuzzy normalization
+  // Search with filters (songs, videos, albums, artists, playlists, unofficial) & region selector (?gl=)
   app.get('/api/music/search', async (req, res) => {
     const rawQuery = String(req.query.q || '').trim();
     const type = (req.query.type as string) || 'all';
+    const region = normalizeRegionCode(req.query.gl);
     const skipConversion = req.query.raw === '1' || req.query.raw === 'true';
     if (!rawQuery) {
-      return res.json({ results: [], type });
+      return res.json({ results: [], type, region });
     }
 
     const { effectiveQuery, matchedAlias } = skipConversion
@@ -695,7 +776,7 @@ export async function createApp(options?: {
     const query = effectiveQuery;
 
     const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
-    const cacheKey = `search_ja_v3:${type}:${query.toLowerCase()}`;
+    const cacheKey = `search_v4:${region}:${type}:${query.toLowerCase()}`;
     const cachedSearch = !forceRefresh ? kvCache.get<any>(cacheKey) : null;
     if (cachedSearch) {
       return res.json({
@@ -704,12 +785,58 @@ export async function createApp(options?: {
         originalQuery: rawQuery,
         effectiveQuery,
         matchedAlias,
+        region,
       });
     }
 
     const startTime = Date.now();
     try {
-      const yt = await getInnertube();
+      const yt = await getInnertubeForRegion(region, getInnertube);
+
+      if (type === 'unofficial') {
+        const hasTag = /(歌ってみた|cover|カバー|live|ライブ|弾き語り|remix|acoustic|session|karaoke|arrange)/i.test(query);
+        const unofficialQ = hasTag ? query : `${query} 歌ってみた OR ライブ OR cover`;
+        const [videoRes, coverRes] = await Promise.all([
+          yt.music.search(unofficialQ, { type: 'video' }).catch(() => null),
+          yt.music.search(`${query} live cover acoustic`, { type: 'video' }).catch(() => null),
+        ]);
+        const merged = [
+          ...getSearchShelfContents(videoRes, 'videos'),
+          ...getSearchShelfContents(coverRes, 'videos'),
+        ];
+        const seen = new Set<string>();
+        const formattedItems: any[] = [];
+        for (const item of merged) {
+          const vid = item?.id || item?.video_id;
+          if (!vid || seen.has(vid)) continue;
+          seen.add(vid);
+          const title = item?.title?.toString?.() || '';
+          const lowerT = title.toLowerCase();
+          const unofficialKind = /live|ライブ|武道館|arena|dome|tour|fes/.test(lowerT)
+            ? 'ライブ音源'
+            : /弾き語り|acoustic|piano/.test(lowerT)
+            ? '弾き語り・アコースティック'
+            : /remix|mashup|arrange|アレンジ/.test(lowerT)
+            ? 'リミックス・アレンジ'
+            : '歌ってみた・カバー';
+          formattedItems.push({
+            type: 'video',
+            id: vid,
+            title,
+            artist: extractItemArtist(item),
+            views: item?.views?.text || '',
+            duration: item?.duration?.text || '',
+            durationSeconds: parseDurationToSeconds(item?.duration?.text || ''),
+            thumbnail: getBestThumbnail(item?.thumbnails || []),
+            isUnofficial: true,
+            unofficialKind,
+          });
+          if (formattedItems.length >= 25) break;
+        }
+        const payload = { results: formattedItems, type: 'unofficial', region };
+        kvCache.set(cacheKey, payload, 6 * 3600);
+        return res.json(payload);
+      }
 
       if (type === 'all') {
         const [songRes, artistRes, albumRes, playlistRes, videoRes] = await Promise.all([
@@ -1118,12 +1245,14 @@ export async function createApp(options?: {
     }
   });
 
-  // Spotify / Clean Official Catalog Search bridge to InnerTube
+  // Spotify / Clean Official Catalog Search bridge to InnerTube (supports ?gl=)
   app.get('/api/music/spotify/search', async (req, res) => {
     const rawQuery = String(req.query.q || '').trim();
+    const region = normalizeRegionCode(req.query.gl);
+    const countryParam = region === 'GLOBAL' ? 'us' : region.toLowerCase();
     const skipConversion = req.query.raw === '1' || req.query.raw === 'true';
     if (!rawQuery) {
-      return res.json({ tracks: [], query: '' });
+      return res.json({ tracks: [], query: '', region });
     }
 
     const { effectiveQuery, matchedAlias } = skipConversion
@@ -1131,7 +1260,7 @@ export async function createApp(options?: {
       : expandSearchQuery(rawQuery);
     const query = effectiveQuery;
     const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
-    const cacheKey = `spotify_search_ja_v3:${query.toLowerCase()}`;
+    const cacheKey = `spotify_search_v4:${region}:${query.toLowerCase()}`;
     const cached = !forceRefresh ? kvCache.get<any>(cacheKey) : null;
     if (cached) {
       return res.json({
@@ -1140,14 +1269,15 @@ export async function createApp(options?: {
         originalQuery: rawQuery,
         effectiveQuery,
         matchedAlias,
+        region,
       });
     }
 
     const startTime = Date.now();
     try {
-      // 1. Fetch clean official catalog via Japanese streaming index (ISRC, 600x600 artwork, clean titles)
+      // 1. Fetch clean official catalog via streaming index (ISRC, 600x600 artwork, clean titles)
       const catRes = await fetch(
-        `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&country=jp&entity=song&limit=12`
+        `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&country=${countryParam}&entity=song&limit=12`
       );
       if (!catRes.ok) {
         throw new Error('Catalog service temporarily unavailable');
@@ -1156,11 +1286,11 @@ export async function createApp(options?: {
       const rawResults = catData.results || [];
 
       if (rawResults.length === 0) {
-        return res.json({ tracks: [], query, matchedAlias });
+        return res.json({ tracks: [], query, matchedAlias, region });
       }
 
       // 2. Map top candidates to InnerTube IDs in parallel batches of 4
-      const yt = await getInnertube();
+      const yt = await getInnertubeForRegion(region, getInnertube);
       const BATCH_SIZE = 4;
       const candidates = rawResults.slice(0, 10);
       const resolvedTracks: any[] = [];
@@ -3540,6 +3670,8 @@ export async function createApp(options?: {
     isPlaying: boolean;
     positionSec: number;
     updatedAt: number;
+    queue?: any[];
+    allowGuestControl?: boolean;
     participants: {
       username: string;
       joinedAt: string;
@@ -3596,6 +3728,7 @@ export async function createApp(options?: {
     notifications: StoredNotification[];
     trackOffsets: Record<string, { offsetSec: number; title?: string; updatedAt: string }>;
     sharedPlaylists: Record<string, StoredSharedPlaylist>;
+    collabPlaylists?: Record<string, CollabPlaylistRecord>;
     trackComments: Record<string, TrackComment[]>;
     directMessages: DirectMessage[];
     listeningRooms: Record<string, ListeningPartyRoom>;
@@ -3781,6 +3914,7 @@ export async function createApp(options?: {
           notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
           trackOffsets: parsed.trackOffsets && typeof parsed.trackOffsets === 'object' ? parsed.trackOffsets : {},
           sharedPlaylists: parsed.sharedPlaylists && typeof parsed.sharedPlaylists === 'object' ? parsed.sharedPlaylists : {},
+          collabPlaylists: parsed.collabPlaylists && typeof parsed.collabPlaylists === 'object' ? parsed.collabPlaylists : {},
           trackComments: parsed.trackComments && typeof parsed.trackComments === 'object' ? parsed.trackComments : {},
           directMessages: Array.isArray(parsed.directMessages) ? parsed.directMessages : [],
           listeningRooms: parsed.listeningRooms && typeof parsed.listeningRooms === 'object' && Object.keys(parsed.listeningRooms).length > 0
@@ -3809,6 +3943,7 @@ export async function createApp(options?: {
       notifications: [],
       trackOffsets: {},
       sharedPlaylists: {},
+      collabPlaylists: {},
       trackComments: {},
       directMessages: [],
       listeningRooms: defaultListeningRooms(),
@@ -4663,12 +4798,23 @@ export async function createApp(options?: {
     sessionId?: string;
     currentRoomId?: string;
     currentVideoId?: string;
+    deviceId?: string;
+    pairingCode?: string;
+    collabCode?: string;
     nowPlaying?: { title: string; artist: string; videoId: string };
   }
 
   interface RealtimeEventItem {
     seq: number;
-    target: { all?: boolean; roomId?: string; videoId?: string; username?: string };
+    target: {
+      all?: boolean;
+      roomId?: string;
+      videoId?: string;
+      username?: string;
+      deviceId?: string;
+      pairingCode?: string;
+      collabCode?: string;
+    };
     event: any;
     ts: number;
   }
@@ -4678,15 +4824,34 @@ export async function createApp(options?: {
   let realtimeSeq = 0;
 
   function pushRealtimeEvent(
-    target: { all?: boolean; roomId?: string; videoId?: string; username?: string },
+    target: {
+      all?: boolean;
+      roomId?: string;
+      videoId?: string;
+      username?: string;
+      deviceId?: string;
+      pairingCode?: string;
+      collabCode?: string;
+    },
     event: any
   ): number {
     realtimeSeq += 1;
     realtimeQueue.push({ seq: realtimeSeq, target, event, ts: Date.now() });
-    if (realtimeQueue.length > 150) {
-      realtimeQueue.splice(0, realtimeQueue.length - 150);
+    if (realtimeQueue.length > 250) {
+      realtimeQueue.splice(0, realtimeQueue.length - 250);
     }
     return realtimeSeq;
+  }
+
+  function sendWsToMatching(predicate: (meta: WsClientMeta) => boolean, data: any) {
+    const msg = JSON.stringify(data);
+    for (const [client, meta] of wsClients.entries()) {
+      if (client.readyState === WebSocket.OPEN && predicate(meta)) {
+        try {
+          client.send(msg);
+        } catch {}
+      }
+    }
   }
 
   function broadcast(data: any) {
@@ -4764,6 +4929,9 @@ export async function createApp(options?: {
     const roomId = String(req.query.roomId || '');
     const videoId = String(req.query.videoId || '');
     const username = String(req.query.username || '').toLowerCase();
+    const deviceId = String(req.query.deviceId || '');
+    const pairingCode = String(req.query.pairingCode || '').toUpperCase();
+    const collabCode = String(req.query.collabCode || '').toUpperCase();
 
     const events = realtimeQueue
       .filter((item) => {
@@ -4773,7 +4941,10 @@ export async function createApp(options?: {
           t.all ||
             (t.roomId && t.roomId === roomId) ||
             (t.videoId && t.videoId === videoId) ||
-            (t.username && username && t.username.toLowerCase() === username)
+            (t.username && username && t.username.toLowerCase() === username) ||
+            (t.deviceId && deviceId && t.deviceId === deviceId) ||
+            (t.pairingCode && pairingCode && t.pairingCode.toUpperCase() === pairingCode) ||
+            (t.collabCode && collabCode && t.collabCode.toUpperCase() === collabCode)
         );
       })
       .map((item) => item.event);
@@ -4873,8 +5044,70 @@ export async function createApp(options?: {
         broadcastToRoom(payload.roomId, ev);
         events.push(ev);
       }
+    } else if (payload.type === 'party:queue_add' && payload.roomId && payload.track) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room) {
+        if (!Array.isArray(room.queue)) room.queue = [];
+        const addedBy = payload.username || 'ゲスト';
+        if (!room.queue.some((t: any) => t.id === payload.track.id)) {
+          room.queue.push({ ...payload.track, addedBy });
+          room.chatMessages.push({
+            id: `qa_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+            username: addedBy,
+            text: `➕ Jamキューに追加: ${payload.track.title} - ${payload.track.artist}`,
+            timestamp: new Date().toISOString(),
+            type: 'system',
+          });
+          if (room.chatMessages.length > 200) room.chatMessages.splice(0, room.chatMessages.length - 200);
+          saveStorage();
+        }
+        const ev = { type: 'party:room_state', room };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'party:queue_remove' && payload.roomId && payload.trackId) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room && Array.isArray(room.queue)) {
+        room.queue = room.queue.filter((t: any) => t.id !== payload.trackId);
+        saveStorage();
+        const ev = { type: 'party:room_state', room };
+        broadcastToRoom(payload.roomId, ev);
+        events.push(ev);
+      }
+    } else if (payload.type === 'party:queue_play' && payload.roomId && payload.track) {
+      const room = appState.listeningRooms[payload.roomId];
+      if (room) {
+        room.currentTrack = payload.track;
+        room.isPlaying = true;
+        room.positionSec = 0;
+        room.updatedAt = Date.now();
+        if (Array.isArray(room.queue)) {
+          room.queue = room.queue.filter((t: any) => t.id !== payload.track.id);
+        }
+        room.chatMessages.push({
+          id: `tc_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          username: payload.username || room.hostUsername,
+          text: `🎵 Jam再生: ${payload.track.title} - ${payload.track.artist}`,
+          timestamp: new Date().toISOString(),
+          type: 'track_change',
+        });
+        saveStorage();
+        broadcastToRoom(payload.roomId, { type: 'party:room_state', room });
+        const ev = {
+          type: 'party:playback_sync',
+          currentTrack: room.currentTrack,
+          isPlaying: room.isPlaying,
+          positionSec: 0,
+          updatedAt: room.updatedAt,
+          sender: payload.username,
+        };
+        broadcastToRoom(payload.roomId, ev);
+        events.push({ type: 'party:room_state', room }, ev);
+      }
     } else if (payload.type === 'dm:typing' && payload.recipient) {
       broadcastToUser(payload.recipient, { type: 'dm:typing', sender: payload.username });
+    } else if (payload.type === 'connect:bind' || payload.type === 'collab:subscribe') {
+      // Bound metadata is transmitted on subsequent /api/realtime/poll query params
     }
 
     res.json({ success: true, seq: realtimeSeq, events });
@@ -5026,6 +5259,86 @@ export async function createApp(options?: {
                 message: chatMsg,
               });
             }
+            break;
+          }
+
+          case 'party:queue_add': {
+            const roomId = meta.currentRoomId || payload.roomId;
+            const room = appState.listeningRooms[roomId];
+            if (room && payload.track) {
+              if (!Array.isArray(room.queue)) room.queue = [];
+              const addedBy = meta.username || payload.username || 'ゲスト';
+              if (!room.queue.some((t: any) => t.id === payload.track.id)) {
+                room.queue.push({ ...payload.track, addedBy });
+                room.chatMessages.push({
+                  id: `qa_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+                  username: addedBy,
+                  text: `➕ Jamキューに追加: ${payload.track.title} - ${payload.track.artist}`,
+                  timestamp: new Date().toISOString(),
+                  type: 'system',
+                });
+                if (room.chatMessages.length > 200) room.chatMessages.splice(0, room.chatMessages.length - 200);
+                saveStorage();
+              }
+              broadcastToRoom(roomId, { type: 'party:room_state', room });
+            }
+            break;
+          }
+
+          case 'party:queue_remove': {
+            const roomId = meta.currentRoomId || payload.roomId;
+            const room = appState.listeningRooms[roomId];
+            if (room && Array.isArray(room.queue) && payload.trackId) {
+              room.queue = room.queue.filter((t: any) => t.id !== payload.trackId);
+              saveStorage();
+              broadcastToRoom(roomId, { type: 'party:room_state', room });
+            }
+            break;
+          }
+
+          case 'party:queue_play': {
+            const roomId = meta.currentRoomId || payload.roomId;
+            const room = appState.listeningRooms[roomId];
+            if (room && payload.track) {
+              room.currentTrack = payload.track;
+              room.isPlaying = true;
+              room.positionSec = 0;
+              room.updatedAt = Date.now();
+              if (Array.isArray(room.queue)) {
+                room.queue = room.queue.filter((t: any) => t.id !== payload.track.id);
+              }
+              room.chatMessages.push({
+                id: `tc_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+                username: meta.username || payload.username || room.hostUsername,
+                text: `🎵 Jam再生: ${payload.track.title} - ${payload.track.artist}`,
+                timestamp: new Date().toISOString(),
+                type: 'track_change',
+              });
+              saveStorage();
+              broadcastToRoom(roomId, { type: 'party:room_state', room });
+              broadcastToRoom(roomId, {
+                type: 'party:playback_sync',
+                currentTrack: room.currentTrack,
+                isPlaying: room.isPlaying,
+                positionSec: 0,
+                updatedAt: room.updatedAt,
+                sender: meta.username || payload.username,
+              });
+            }
+            break;
+          }
+
+          case 'connect:bind': {
+            if (payload.deviceId) meta.deviceId = String(payload.deviceId);
+            if (payload.pairingCode) meta.pairingCode = String(payload.pairingCode).toUpperCase();
+            if (payload.username) meta.username = String(payload.username);
+            wsClients.set(ws, meta);
+            break;
+          }
+
+          case 'collab:subscribe': {
+            if (payload.code) meta.collabCode = String(payload.code).toUpperCase();
+            wsClients.set(ws, meta);
             break;
           }
 
@@ -5446,6 +5759,8 @@ export async function createApp(options?: {
       isPlaying: !!initialTrack,
       positionSec: 0,
       updatedAt: Date.now(),
+      queue: [],
+      allowGuestControl: true,
       participants: [
         { username: cleanHost, joinedAt: new Date().toISOString(), isHost: true },
       ],
@@ -5726,6 +6041,34 @@ export async function createApp(options?: {
   registerSharedOfflineRoutes(app, DATA_DIR, (track) => {
     broadcast({ type: 'shared_offline:added', track });
   });
+
+  // --- Direct Audio Stream Proxy (Lossless/Hi-Res, Spatial Audio, Sing Vocal DSP, Dual-Deck Crossfade) ---
+  registerAudioStreamRoutes(app, getInnertube);
+
+  // --- AI Playlist & AI Radio Generator (Gemini + InnerTube) ---
+  registerAiPlaylistRoutes(app, getInnertube);
+
+  // --- Podcasts Directory, RSS Parser & Video Podcasts ---
+  registerPodcastRoutes(app, getInnertube);
+
+  // --- Zero Connect, Real-Time Collaborative Playlists & Friend Blend ---
+  registerConnectAndJamRoutes(app, {
+    getAccounts: () => appState.accounts,
+    getCollabPlaylists: () => {
+      if (!appState.collabPlaylists) appState.collabPlaylists = {};
+      return appState.collabPlaylists;
+    },
+    saveStorage,
+    broadcast,
+    pushRealtimeEvent,
+    sendWsToMatching,
+  });
+
+  // --- Lyrics Translation & Pronunciation Guide (Gemini) ---
+  registerLyricsTranslateRoutes(app);
+
+  // --- Classical Explorer, BPM/Mood Filtering & Overseas Regional Discovery ---
+  registerDiscoveryProRoutes(app, getInnertube);
 
   if (!options?.skipStatic) {
     // Explicitly serve static assets from public

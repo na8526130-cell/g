@@ -10,9 +10,15 @@ import {
   RepeatMode,
   LyricsData,
   TrackTimestampsData,
+  AudioQualityMode,
+  SpatialAudioPreset,
+  AudioStreamMetadata,
+  PodcastShow,
 } from '../types/music';
+import { ConnectDeviceInfo, ConnectCommandPayload } from '../types/social';
 import { api, SyncedAccountLibrary } from '../services/api';
 import { socialSocket } from '../services/socialSocket';
+import { audioDspEngine } from '../services/audioDspEngine';
 import { getPlayableOfflineTrack } from '../services/offlineStorage';
 import { syncSharedTracksForOffline } from '../services/sharedOffline';
 import { normalizeArtistName } from '../utils/artistNames';
@@ -59,7 +65,7 @@ export interface ZeroCodeTarget {
   trackId?: string;
 }
 
-export type LibraryTabType = 'liked' | 'history' | 'playlists' | 'local' | 'shared_offline';
+export type LibraryTabType = 'liked' | 'history' | 'playlists' | 'local' | 'shared_offline' | 'downloads';
 export type DeviceMode = 'mobile' | 'pc';
 
 export interface ToastAction {
@@ -100,8 +106,41 @@ interface PlayerContextType {
   shuffleMode: 'off' | 'on' | 'smart';
   cycleShuffleMode: () => void;
 
-  audioQuality: 'auto' | 'low' | 'normal' | 'high';
-  setAudioQuality: (q: 'auto' | 'low' | 'normal' | 'high') => void;
+  audioQuality: AudioQualityMode;
+  setAudioQuality: (q: AudioQualityMode) => void;
+
+  // Audio DSP (Lossless/Hi-Res, Spatial Audio, Apple Music Sing Vocal Control, DJ EQ Sweep)
+  vocalLevel: number;
+  setVocalLevel: (level: number) => void;
+  spatialAudio: SpatialAudioPreset;
+  setSpatialAudio: (preset: SpatialAudioPreset) => void;
+  djEqSweep: boolean;
+  setDjEqSweep: React.Dispatch<React.SetStateAction<boolean>>;
+  audioStreamMeta: AudioStreamMetadata | null;
+  setAudioStreamMeta: React.Dispatch<React.SetStateAction<AudioStreamMetadata | null>>;
+  shouldUseDirectDsp: boolean;
+  markDspFallback: (trackId: string) => void;
+  clearDspFallback: (trackId: string) => void;
+  dspModalOpen: boolean;
+  setDspModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  aiPlaylistModalOpen: boolean;
+  setAiPlaylistModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+
+  // Podcasts
+  subscribedPodcasts: PodcastShow[];
+  toggleSubscribePodcast: (show: PodcastShow) => void;
+  isPodcastSubscribed: (showId: string) => boolean;
+  skipBySeconds: (delta: number) => void;
+
+  // Zero Connect (Multi-device remote control)
+  deviceId: string;
+  deviceName: string;
+  setDeviceName: (name: string) => void;
+  pairingCode: string;
+  setPairingCode: (code: string) => void;
+  connectDevices: ConnectDeviceInfo[];
+  refreshConnectDevices: () => Promise<void>;
+  sendRemoteCommand: (payload: Omit<ConnectCommandPayload, 'fromDeviceId'>) => Promise<void>;
 
   wrappedModalOpen: boolean;
   setWrappedModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -210,7 +249,7 @@ interface PlayerContextType {
       isPinned?: boolean;
     }
   ) => UserPlaylist | null;
-  saveTracksAsPlaylist: (name: string, tracks: Track[]) => void;
+  saveTracksAsPlaylist: (name: string, tracks: Track[], description?: string) => void;
   addToUserPlaylist: (playlistId: string, trackTrack: Track) => void;
   removeFromUserPlaylist: (playlistId: string, trackId: string) => void;
   deleteUserPlaylist: (playlistId: string) => void;
@@ -228,6 +267,7 @@ interface PlayerContextType {
       name?: string;
       description?: string;
       coverImage?: string;
+      tracks?: Track[];
       isPinned?: boolean;
       isCollab?: boolean;
       collabCode?: string;
@@ -403,6 +443,13 @@ const STORAGE_KEYS = {
   CANVAS_ENABLED: 'yt_music_canvas_enabled_v1',
   PINNED_BEST4: 'yt_music_pinned_best4_v1',
   LAST_CLOUD_SYNC_PREFIX: 'yt_music_last_cloud_sync_v1:',
+  VOCAL_LEVEL: 'zero_vocal_level_v1',
+  SPATIAL_AUDIO: 'zero_spatial_audio_v1',
+  DJ_EQ_SWEEP: 'zero_dj_eq_sweep_v1',
+  SUBSCRIBED_PODCASTS: 'zero_subscribed_podcasts_v1',
+  CONNECT_DEVICE_ID: 'zero_connect_device_id_v1',
+  CONNECT_DEVICE_NAME: 'zero_connect_device_name_v1',
+  CONNECT_PAIRING_CODE: 'zero_connect_pairing_code_v1',
 };
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -496,13 +543,136 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [playbackRate, setPlaybackRateState] = useState<number>(1.0);
   const [shuffleMode, setShuffleMode] = useState<'off' | 'on' | 'smart'>('off');
 
-  const [audioQuality, setAudioQualityState] = useState<'auto' | 'low' | 'normal' | 'high'>(() => {
+  const [audioQuality, setAudioQualityState] = useState<AudioQualityMode>(() => {
     try {
-      return (localStorage.getItem('yt_audio_quality') as any) || 'high';
+      return (localStorage.getItem('yt_audio_quality') as AudioQualityMode) || 'high';
     } catch {
       return 'high';
     }
   });
+
+  const [vocalLevel, setVocalLevelState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.VOCAL_LEVEL);
+      return saved !== null ? Math.max(0, Math.min(100, Number(saved))) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  const [spatialAudio, setSpatialAudioState] = useState<SpatialAudioPreset>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.SPATIAL_AUDIO);
+      if (saved === 'studio' || saved === 'cinema' || saved === 'concert' || saved === 'off') return saved;
+    } catch {}
+    return 'off';
+  });
+
+  const [djEqSweep, setDjEqSweep] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.DJ_EQ_SWEEP);
+      return saved === 'false' ? false : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [audioStreamMeta, setAudioStreamMeta] = useState<AudioStreamMetadata | null>(null);
+  const [dspFallbackIds, setDspFallbackIds] = useState<Set<string>>(() => new Set());
+
+  const markDspFallback = useCallback((trackId: string) => {
+    if (!trackId) return;
+    setDspFallbackIds((prev) => {
+      if (prev.has(trackId)) return prev;
+      const next = new Set(prev);
+      next.add(trackId);
+      return next;
+    });
+  }, []);
+
+  const clearDspFallback = useCallback((trackId: string) => {
+    if (!trackId) return;
+    setDspFallbackIds((prev) => {
+      if (!prev.has(trackId)) return prev;
+      const next = new Set(prev);
+      next.delete(trackId);
+      return next;
+    });
+  }, []);
+
+  const shouldUseDirectDsp = useMemo(() => {
+    if (!currentTrack) return false;
+    if (dspFallbackIds.has(currentTrack.id)) return false;
+    if (currentTrack.isLocal) return true;
+    if (currentTrack.trackType === 'podcast' && Boolean(currentTrack.audioUrl)) return true;
+    if (
+      playerMode === 'cover' &&
+      (audioQuality === 'lossless' ||
+        audioQuality === 'hires' ||
+        vocalLevel < 100 ||
+        spatialAudio !== 'off' ||
+        djEqSweep ||
+        crossfadeDuration > 0)
+    ) {
+      return true;
+    }
+    return false;
+  }, [currentTrack, dspFallbackIds, playerMode, audioQuality, vocalLevel, spatialAudio, djEqSweep, crossfadeDuration]);
+
+  const shouldUseDirectDspRef = useRef<boolean>(shouldUseDirectDsp);
+  shouldUseDirectDspRef.current = shouldUseDirectDsp;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.DJ_EQ_SWEEP, String(djEqSweep));
+    } catch {}
+  }, [djEqSweep]);
+
+  const setVocalLevel = useCallback((level: number) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(level)));
+    setVocalLevelState(clamped);
+    audioDspEngine.setVocalLevel(clamped);
+    try {
+      localStorage.setItem(STORAGE_KEYS.VOCAL_LEVEL, String(clamped));
+    } catch {}
+  }, []);
+
+  const setSpatialAudio = useCallback((preset: SpatialAudioPreset) => {
+    setSpatialAudioState(preset);
+    audioDspEngine.setSpatialPreset(preset);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SPATIAL_AUDIO, preset);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    audioDspEngine.setVocalLevel(vocalLevel);
+    audioDspEngine.setSpatialPreset(spatialAudio);
+    audioDspEngine.setAudioQuality(audioQuality);
+    audioDspEngine.setVolume(volume, isMuted);
+    audioDspEngine.setPlaybackRate(playbackRate);
+  }, []);
+
+  const [subscribedPodcasts, setSubscribedPodcasts] = useState<PodcastShow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.SUBSCRIBED_PODCASTS);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.SUBSCRIBED_PODCASTS, JSON.stringify(subscribedPodcasts));
+    } catch {}
+  }, [subscribedPodcasts]);
+
+  const isPodcastSubscribed = useCallback(
+    (showId: string) => subscribedPodcasts.some((s) => s.id === showId),
+    [subscribedPodcasts]
+  );
 
   const [wrappedModalOpen, setWrappedModalOpen] = useState<boolean>(false);
   const [historyStats, setHistoryStats] = useState<Record<string, { track: Track; count: number; seconds: number }>>(() => {
@@ -1231,9 +1401,120 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setZeroCodeModalTarget(null);
   }, []);
   const [connectModalOpen, setConnectModalOpen] = useState<boolean>(false);
+  const [dspModalOpen, setDspModalOpen] = useState<boolean>(false);
+  const [aiPlaylistModalOpen, setAiPlaylistModalOpen] = useState<boolean>(false);
   const [quizModalOpen, setQuizModalOpen] = useState<boolean>(false);
   const [matchModalOpen, setMatchModalOpen] = useState<boolean>(false);
   const [collabModalOpen, setCollabModalOpen] = useState<boolean>(false);
+
+  const toggleSubscribePodcast = useCallback(
+    (show: PodcastShow) => {
+      setSubscribedPodcasts((prev) => {
+        const exists = prev.some((s) => s.id === show.id);
+        if (exists) {
+          showToast(`「${show.title}」のポッドキャスト登録を解除しました`, 'info', 2200);
+          return prev.filter((s) => s.id !== show.id);
+        }
+        showToast(`「${show.title}」をポッドキャスト登録しました`, 'success', 2400);
+        return [show, ...prev];
+      });
+    },
+    [showToast]
+  );
+
+  // Zero Connect (Multi-device & multi-tab remote control)
+  const [deviceId] = useState<string>(() => {
+    try {
+      const existingSession = sessionStorage.getItem(STORAGE_KEYS.CONNECT_DEVICE_ID);
+      if (existingSession) return existingSession;
+      const created = `dev_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+      sessionStorage.setItem(STORAGE_KEYS.CONNECT_DEVICE_ID, created);
+      return created;
+    } catch {
+      return `dev_${Math.random().toString(36).slice(2, 10)}`;
+    }
+  });
+
+  const [deviceName, setDeviceNameState] = useState<string>(() => {
+    try {
+      const tabSaved = sessionStorage.getItem(STORAGE_KEYS.CONNECT_DEVICE_NAME);
+      if (tabSaved) return tabSaved;
+      const saved = localStorage.getItem(STORAGE_KEYS.CONNECT_DEVICE_NAME);
+      if (saved) return saved;
+    } catch {}
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isMobileUa = /iPhone|iPad|iPod|Android|Mobile/i.test(ua);
+    const osLabel = /iPhone|iPad/i.test(ua)
+      ? 'iOS'
+      : /Android/i.test(ua)
+      ? 'Android'
+      : /Mac/i.test(ua)
+      ? 'Mac'
+      : /Windows/i.test(ua)
+      ? 'Windows'
+      : 'Web';
+    return `${isMobileUa ? 'スマホ' : 'PC'} (${osLabel})`;
+  });
+
+  const setDeviceName = useCallback((name: string) => {
+    const trimmed = name.trim().slice(0, 40) || 'Zero Player';
+    setDeviceNameState(trimmed);
+    try {
+      sessionStorage.setItem(STORAGE_KEYS.CONNECT_DEVICE_NAME, trimmed);
+      localStorage.setItem(STORAGE_KEYS.CONNECT_DEVICE_NAME, trimmed);
+    } catch {}
+  }, []);
+
+  const [pairingCode, setPairingCodeState] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.CONNECT_PAIRING_CODE);
+      if (saved && saved.trim()) return saved.trim().toUpperCase();
+      const code = `ZM-${Math.floor(1000 + Math.random() * 9000)}`;
+      localStorage.setItem(STORAGE_KEYS.CONNECT_PAIRING_CODE, code);
+      return code;
+    } catch {
+      return `ZM-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+  });
+
+  const setPairingCode = useCallback(
+    (code: string) => {
+      const trimmed = code.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+      const clean =
+        (/^\d{4}$/.test(trimmed) ? `ZM-${trimmed}` : trimmed.slice(0, 16)) ||
+        `ZM-${Math.floor(1000 + Math.random() * 9000)}`;
+      setPairingCodeState(clean);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CONNECT_PAIRING_CODE, clean);
+      } catch {}
+      socialSocket.bindDevice(deviceId, clean, currentUser?.username);
+    },
+    [deviceId, currentUser?.username]
+  );
+
+  const [connectDevices, setConnectDevices] = useState<ConnectDeviceInfo[]>([]);
+
+  const refreshConnectDevices = useCallback(async () => {
+    try {
+      const res = await api.getConnectDevices({ username: currentUser?.username, pairingCode });
+      if (Array.isArray(res.devices)) {
+        setConnectDevices(res.devices);
+      }
+    } catch {}
+  }, [currentUser?.username, pairingCode]);
+
+  const sendRemoteCommand = useCallback(
+    async (payload: Omit<ConnectCommandPayload, 'fromDeviceId'>) => {
+      await api.sendConnectCommand({
+        ...payload,
+        fromDeviceId: deviceId,
+        fromDeviceName: deviceName,
+        pairingCode: payload.pairingCode || pairingCode,
+        username: currentUser?.username,
+      });
+    },
+    [deviceId, deviceName, pairingCode, currentUser?.username]
+  );
 
   const openDmWithUser = useCallback(
     (username?: string) => {
@@ -1328,7 +1609,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return '';
   }, [currentLyrics, progress, currentTrack?.id, trackOffsets]);
 
-  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx)
+  // URL parameters handler on mount (?track=xxx, ?share_pl=xxx, ?artist=xxx, ?collab=xxx, ?connect=ZM-XXXX)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -1336,8 +1617,18 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const sharePlId = params.get('share_pl');
     const artistParam = params.get('artist');
     const collabParam = params.get('collab');
+    const connectParam = params.get('connect');
 
-    if (trackId) {
+    if (connectParam) {
+      const norm = connectParam.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+      const cleanConnect = /^\d{4}$/.test(norm) ? `ZM-${norm}` : norm.slice(0, 16);
+      if (cleanConnect) {
+        setPairingCode(cleanConnect);
+        setConnectModalOpen(true);
+        showToast(`Zero Connect (${cleanConnect}) でペアリングしました`, 'success', 2600);
+      }
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (trackId) {
       api
         .getTrack(trackId)
         .then((res) => {
@@ -1431,8 +1722,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       blockedArtists,
       pinnedBestTracks: pinnedBestTracks.slice(0, 4),
       listeningHistory: listeningArr,
+      subscribedPodcasts,
       settings: {
         audioQuality,
+        vocalLevel,
+        spatialAudio,
+        djEqSweep,
         floatingLyricsOverlay,
         canvasEnabled,
         backgroundPlaybackEnabled,
@@ -1452,7 +1747,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     blockedArtists,
     pinnedBestTracks,
     historyStats,
+    subscribedPodcasts,
     audioQuality,
+    vocalLevel,
+    spatialAudio,
+    djEqSweep,
     floatingLyricsOverlay,
     canvasEnabled,
     backgroundPlaybackEnabled,
@@ -1535,12 +1834,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         localStorage.setItem('yt_listening_history_v1', JSON.stringify(nextHist));
       } catch {}
     }
+    if (Array.isArray(lib.subscribedPodcasts)) {
+      setSubscribedPodcasts(lib.subscribedPodcasts);
+    }
     if (lib.settings && typeof lib.settings === 'object') {
       if (lib.settings.audioQuality) {
         setAudioQualityState(lib.settings.audioQuality);
+        audioDspEngine.setAudioQuality(lib.settings.audioQuality);
         try {
           localStorage.setItem('yt_audio_quality', lib.settings.audioQuality);
         } catch {}
+      }
+      if (typeof lib.settings.vocalLevel === 'number') {
+        setVocalLevelState(lib.settings.vocalLevel);
+        audioDspEngine.setVocalLevel(lib.settings.vocalLevel);
+      }
+      if (lib.settings.spatialAudio) {
+        setSpatialAudioState(lib.settings.spatialAudio);
+        audioDspEngine.setSpatialPreset(lib.settings.spatialAudio);
+      }
+      if (typeof lib.settings.djEqSweep === 'boolean') {
+        setDjEqSweep(lib.settings.djEqSweep);
       }
       if (typeof lib.settings.floatingLyricsOverlay === 'boolean') {
         setFloatingLyricsOverlay(lib.settings.floatingLyricsOverlay);
@@ -1664,6 +1978,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         listeningHistory: Array.from(histMap.values())
           .sort((a, b) => (b.count || 0) - (a.count || 0))
           .slice(0, 150),
+        subscribedPodcasts: mergeById(cloudLib.subscribedPodcasts || [], localLib.subscribedPodcasts || []),
         settings: cloudLib.settings || localLib.settings,
       };
 
@@ -1915,7 +2230,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     blockedArtists,
     pinnedBestTracks,
     historyStats,
+    subscribedPodcasts,
     audioQuality,
+    vocalLevel,
+    spatialAudio,
+    djEqSweep,
     floatingLyricsOverlay,
     canvasEnabled,
     backgroundPlaybackEnabled,
@@ -1999,9 +2318,18 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     navigateTo('library');
   }, [navigateTo]);
 
-  // Send raw commands to player instance and iframe postMessage
+  // Send raw commands to active player engine (AudioDspEngine or YouTube iframe)
   const dispatchPlayCommand = useCallback(() => {
     const win = window as any;
+    if (shouldUseDirectDspRef.current) {
+      audioDspEngine.play();
+      if (win.__ytPlayer && typeof win.__ytPlayer.pauseVideo === 'function') {
+        try {
+          win.__ytPlayer.pauseVideo();
+        } catch {}
+      }
+      return;
+    }
     if (win.__localAudio) {
       try {
         win.__localAudio.play().catch(() => {});
@@ -2022,6 +2350,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const dispatchPauseCommand = useCallback(() => {
     const win = window as any;
+    audioDspEngine.pause();
     if (win.__localAudio) {
       try {
         win.__localAudio.pause();
@@ -2258,6 +2587,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (
         endlessRadioActive &&
         !resolvedTrack.isLocal &&
+        resolvedTrack.trackType !== 'podcast' &&
         navigator.onLine &&
         (!customQueue || customQueue.length <= 12)
       ) {
@@ -2305,21 +2635,29 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [dispatchPlayCommand]);
 
   const seekTo = useCallback((seconds: number) => {
-    setProgress(seconds);
+    const clamped = Math.max(0, seconds);
+    setProgress(clamped);
     if (digestStartPlaySecRef.current !== null) {
-      digestStartPlaySecRef.current = seconds;
+      digestStartPlaySecRef.current = clamped;
       setDigestRemainingSec(25);
     }
+    audioDspEngine.seekTo(clamped);
     const win = window as any;
     if (win.__localAudio) {
       try {
-        win.__localAudio.currentTime = seconds;
+        win.__localAudio.currentTime = clamped;
       } catch {}
     }
-    if (win.__ytPlayer && typeof win.__ytPlayer.seekTo === 'function') {
-      win.__ytPlayer.seekTo(seconds, true);
+    if (!shouldUseDirectDspRef.current && win.__ytPlayer && typeof win.__ytPlayer.seekTo === 'function') {
+      win.__ytPlayer.seekTo(clamped, true);
     }
   }, []);
+
+  const skipBySeconds = useCallback((delta: number) => {
+    const cur = audioDspEngine.getCurrentElement()?.currentTime ?? progressRef.current;
+    const maxDur = durationRef.current > 0 ? durationRef.current : 999999;
+    seekTo(Math.max(0, Math.min(maxDur, cur + delta)));
+  }, [seekTo]);
 
   const repeatCurrentTrack = useCallback(() => {
     if (!currentTrack) return;
@@ -2386,20 +2724,22 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         userIntendedPlayingRef.current = true;
         setIsPlaying(true);
 
-        if (rawNext.isLocal) {
+        if (rawNext.isLocal || rawNext.isSharedOffline) {
           getPlayableOfflineTrack(rawNext).then((resolved) => {
             setCurrentTrack(resolved);
             dispatchPlayCommand();
           });
         } else {
           setCurrentTrack(rawNext);
-          const win = window as any;
-          if (win.__ytPlayer) {
-            if (typeof win.__ytPlayer.setVolume === 'function') {
-              win.__ytPlayer.setVolume(targetVolumeRef.current);
-            }
-            if (typeof win.__ytPlayer.loadVideoById === 'function') {
-              win.__ytPlayer.loadVideoById(rawNext.id);
+          if (!shouldUseDirectDspRef.current) {
+            const win = window as any;
+            if (win.__ytPlayer) {
+              if (typeof win.__ytPlayer.setVolume === 'function') {
+                win.__ytPlayer.setVolume(targetVolumeRef.current);
+              }
+              if (typeof win.__ytPlayer.loadVideoById === 'function') {
+                win.__ytPlayer.loadVideoById(rawNext.podcastVideoId || rawNext.id);
+              }
             }
           }
           dispatchPlayCommand();
@@ -2411,28 +2751,36 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         userIntendedPlayingRef.current = true;
         setIsPlaying(true);
 
-        if (rawFirst.isLocal) {
+        if (rawFirst.isLocal || rawFirst.isSharedOffline) {
           getPlayableOfflineTrack(rawFirst).then((resolved) => {
             setCurrentTrack(resolved);
             dispatchPlayCommand();
           });
         } else {
           setCurrentTrack(rawFirst);
-          const win = window as any;
-          if (win.__ytPlayer) {
-            if (typeof win.__ytPlayer.setVolume === 'function') {
-              win.__ytPlayer.setVolume(targetVolumeRef.current);
-            }
-            if (typeof win.__ytPlayer.loadVideoById === 'function') {
-              win.__ytPlayer.loadVideoById(rawFirst.id);
-            } else if (typeof win.__ytPlayer.seekTo === 'function') {
-              win.__ytPlayer.seekTo(0, true);
-              win.__ytPlayer.playVideo();
+          if (!shouldUseDirectDspRef.current) {
+            const win = window as any;
+            if (win.__ytPlayer) {
+              if (typeof win.__ytPlayer.setVolume === 'function') {
+                win.__ytPlayer.setVolume(targetVolumeRef.current);
+              }
+              if (typeof win.__ytPlayer.loadVideoById === 'function') {
+                win.__ytPlayer.loadVideoById(rawFirst.podcastVideoId || rawFirst.id);
+              } else if (typeof win.__ytPlayer.seekTo === 'function') {
+                win.__ytPlayer.seekTo(0, true);
+                win.__ytPlayer.playVideo();
+              }
             }
           }
           dispatchPlayCommand();
         }
-      } else if (endlessRadioActive && currentTrack && !currentTrack.isLocal && navigator.onLine) {
+      } else if (
+        endlessRadioActive &&
+        currentTrack &&
+        !currentTrack.isLocal &&
+        currentTrack.trackType !== 'podcast' &&
+        navigator.onLine
+      ) {
         // Endless Emotion Radio: immediately fetch 18+ matching tracks when hitting queue end
         (async () => {
           try {
@@ -2494,16 +2842,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       userIntendedPlayingRef.current = true;
       setIsPlaying(true);
 
-      if (rawPrev.isLocal) {
+      if (rawPrev.isLocal || rawPrev.isSharedOffline) {
         getPlayableOfflineTrack(rawPrev).then((resolved) => {
           setCurrentTrack(resolved);
           dispatchPlayCommand();
         });
       } else {
         setCurrentTrack(rawPrev);
-        const win = window as any;
-        if (win.__ytPlayer && typeof win.__ytPlayer.setVolume === 'function') {
-          win.__ytPlayer.setVolume(targetVolumeRef.current);
+        if (!shouldUseDirectDspRef.current) {
+          const win = window as any;
+          if (win.__ytPlayer) {
+            if (typeof win.__ytPlayer.setVolume === 'function') {
+              win.__ytPlayer.setVolume(targetVolumeRef.current);
+            }
+            if (typeof win.__ytPlayer.loadVideoById === 'function') {
+              win.__ytPlayer.loadVideoById(rawPrev.podcastVideoId || rawPrev.id);
+            }
+          }
         }
         dispatchPlayCommand();
       }
@@ -2805,9 +3160,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const clamped = Math.max(0, Math.min(100, val));
     targetVolumeRef.current = clamped;
     setVolumeState(clamped);
+    const nextMuted = clamped > 0 ? false : isMuted;
     if (clamped > 0 && isMuted) {
       setIsMuted(false);
     }
+    audioDspEngine.setVolume(clamped, nextMuted);
     const win = window as any;
     if (win.__ytPlayer && typeof win.__ytPlayer.setVolume === 'function') {
       win.__ytPlayer.setVolume(clamped);
@@ -2817,6 +3174,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const toggleMute = useCallback(() => {
     setIsMuted((prev) => {
       const next = !prev;
+      audioDspEngine.setVolume(targetVolumeRef.current, next);
       const win = window as any;
       if (win.__ytPlayer) {
         if (next && typeof win.__ytPlayer.mute === 'function') {
@@ -2863,6 +3221,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const setPlaybackRate = useCallback((rate: number) => {
     setPlaybackRateState(rate);
+    audioDspEngine.setPlaybackRate(rate);
     try {
       const win = window as any;
       if (win.__ytPlayer && typeof win.__ytPlayer.setPlaybackRate === 'function') {
@@ -2876,19 +3235,191 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     showToast(`再生速度: ${rate}x`, 'info', 1500);
   }, [showToast]);
 
-  const setAudioQuality = useCallback((q: 'auto' | 'low' | 'normal' | 'high') => {
+  const setAudioQuality = useCallback((q: AudioQualityMode) => {
     setAudioQualityState(q);
+    audioDspEngine.setAudioQuality(q);
     try {
       localStorage.setItem('yt_audio_quality', q);
     } catch {}
-    const labels = {
+    const labels: Record<AudioQualityMode, string> = {
       auto: '自動',
       low: '低音質 (データ節約)',
       normal: '標準 (160kbps)',
-      high: '最高音質 (320kbps相当)',
+      high: '高音質 (256kbps AAC/Opus)',
+      lossless: 'ロスレス CD音質 (16bit/44.1kHz DSP)',
+      hires: 'ハイレゾ対応 (24bit/96kHz DSP)',
     };
-    showToast(`音質設定: ${labels[q]}`, 'success', 2000);
+    showToast(`音質設定: ${labels[q]}`, 'success', 2200);
   }, [showToast]);
+
+  // Zero Connect Device Registration Heartbeat & Remote Command Listener
+  const connectActionRefs = useRef({
+    playTrack,
+    pause,
+    resume,
+    togglePlay,
+    nextTrack,
+    prevTrack,
+    seekTo,
+    setVolume,
+    setQueue,
+    setQueueIndex,
+    currentTrack,
+    queue,
+    isPlaying,
+    progress,
+    duration,
+    volume,
+    deviceMode,
+    deviceName,
+    pairingCode,
+    username: currentUser?.username,
+  });
+  connectActionRefs.current = {
+    playTrack,
+    pause,
+    resume,
+    togglePlay,
+    nextTrack,
+    prevTrack,
+    seekTo,
+    setVolume,
+    setQueue,
+    setQueueIndex,
+    currentTrack,
+    queue,
+    isPlaying,
+    progress,
+    duration,
+    volume,
+    deviceMode,
+    deviceName,
+    pairingCode,
+    username: currentUser?.username,
+  };
+
+  const handledConnectCmdIdsRef = useRef<Set<string>>(new Set());
+
+  const pushConnectStateNow = useCallback(() => {
+    const snap = connectActionRefs.current;
+    api
+      .registerConnectDevice({
+        deviceId,
+        name: snap.deviceName,
+        deviceType: snap.deviceMode || 'pc',
+        username: snap.username,
+        pairingCode: snap.pairingCode,
+        isPlaying: snap.isPlaying,
+        positionSec: Math.floor(progressRef.current || snap.progress || 0),
+        durationSec: Math.floor(durationRef.current || snap.duration || snap.currentTrack?.durationSeconds || 0),
+        volume: snap.volume,
+        currentTrack: snap.currentTrack,
+        queue: snap.queue.slice(0, 25),
+      })
+      .then((res) => {
+        if (Array.isArray(res.devices)) setConnectDevices(res.devices);
+        if (Array.isArray(res.pendingCommands) && res.pendingCommands.length > 0) {
+          res.pendingCommands.forEach((cmd) => executeConnectCommandRef.current(cmd));
+        }
+      })
+      .catch(() => {});
+    socialSocket.bindDevice(deviceId, snap.pairingCode, snap.username);
+  }, [deviceId]);
+
+  const executeConnectCommandRef = useRef<(cmd: ConnectCommandPayload) => void>(() => {});
+  executeConnectCommandRef.current = (cmd: ConnectCommandPayload) => {
+    if (!cmd || (cmd.targetDeviceId && cmd.targetDeviceId !== deviceId)) return;
+    if (cmd.fromDeviceId === deviceId && !cmd.targetDeviceId) return;
+    if (cmd.cmdId) {
+      if (handledConnectCmdIdsRef.current.has(cmd.cmdId)) return;
+      handledConnectCmdIdsRef.current.add(cmd.cmdId);
+      if (handledConnectCmdIdsRef.current.size > 120) {
+        const first = handledConnectCmdIdsRef.current.values().next().value;
+        if (first) handledConnectCmdIdsRef.current.delete(first);
+      }
+    }
+
+    const snap = connectActionRefs.current;
+    const fromLabel = cmd.fromDeviceName || '別の端末';
+
+    if (cmd.action === 'play') {
+      snap.resume();
+      showToast(`${fromLabel} から再生を開始しました`, 'info', 2000);
+    } else if (cmd.action === 'pause') {
+      snap.pause();
+      showToast(`${fromLabel} から一時停止しました`, 'info', 2000);
+    } else if (cmd.action === 'toggle') {
+      snap.togglePlay();
+    } else if (cmd.action === 'next') {
+      snap.nextTrack(true);
+      showToast(`${fromLabel} から次の曲へスキップ`, 'info', 2000);
+    } else if (cmd.action === 'prev') {
+      snap.prevTrack();
+      showToast(`${fromLabel} から前の曲へ戻しました`, 'info', 2000);
+    } else if (cmd.action === 'seek') {
+      const targetSec = typeof cmd.positionSec === 'number' ? cmd.positionSec : cmd.seekSec;
+      if (typeof targetSec === 'number') snap.seekTo(targetSec);
+    } else if (cmd.action === 'volume' && typeof cmd.volume === 'number') {
+      snap.setVolume(cmd.volume);
+    } else if (cmd.action === 'playTrack' && cmd.track) {
+      snap.playTrack(cmd.track, cmd.queue, {
+        source: `Zero Connect (${fromLabel}から再生)`,
+        subtitle: cmd.track.artist,
+      });
+      showToast(`${fromLabel} から「${cmd.track.title}」を再生`, 'success', 2400);
+    } else if (cmd.action === 'transfer' && cmd.track) {
+      const seekTarget = typeof cmd.positionSec === 'number' ? cmd.positionSec : 0;
+      snap
+        .playTrack(cmd.track, cmd.queue, {
+          source: `${fromLabel}から引き継ぎ再生`,
+          subtitle: cmd.track.artist,
+        })
+        .then(() => {
+          if (seekTarget > 1) {
+            setTimeout(() => snap.seekTo(seekTarget), 500);
+          }
+        });
+      showToast(`${fromLabel} から「${cmd.track.title}」を引き継ぎました`, 'success', 2800);
+    }
+
+    // Push updated device snapshot quickly back to server so remote controller updates immediately
+    setTimeout(() => pushConnectStateNow(), 280);
+    setTimeout(() => pushConnectStateNow(), 950);
+  };
+
+  useEffect(() => {
+    pushConnectStateNow();
+    const intervalMs = connectModalOpen ? 3000 : 10000;
+    const timer = setInterval(pushConnectStateNow, intervalMs);
+    return () => clearInterval(timer);
+  }, [
+    pushConnectStateNow,
+    deviceName,
+    pairingCode,
+    currentUser?.username,
+    currentTrack?.id,
+    isPlaying,
+    volume,
+    connectModalOpen,
+  ]);
+
+  useEffect(() => {
+    const handleDevicesPayload = (payload: any) => {
+      if (Array.isArray(payload?.devices)) {
+        setConnectDevices(payload.devices);
+      }
+    };
+    const unsubDevices = socialSocket.on('connect:devices', handleDevicesPayload);
+    const unsubDevicesUpdate = socialSocket.on('connect:devices_update', handleDevicesPayload);
+    const unsubCmd = socialSocket.on('connect:command', (cmd: ConnectCommandPayload) => {
+      executeConnectCommandRef.current(cmd);
+    });
+    return () => {
+      unsubDevices();
+      unsubDevicesUpdate();
+      unsubCmd();
+    };
+  }, [deviceId]);
 
 
   // Calculate Spotify Wrapped listening stats
@@ -3394,11 +3925,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     []
   );
 
-  const saveTracksAsPlaylist = useCallback((name: string, tracks: Track[]) => {
+  const saveTracksAsPlaylist = useCallback((name: string, tracks: Track[], description?: string) => {
     if (!name.trim() || !tracks || tracks.length === 0) return;
     const newPl: UserPlaylist = {
       id: `pl_${Date.now()}`,
       name: name.trim(),
+      description: description?.trim() || undefined,
       createdAt: new Date().toISOString(),
       tracks: tracks.map(normalizeTrack),
     };
@@ -3437,6 +3969,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         name?: string;
         description?: string;
         coverImage?: string;
+        tracks?: Track[];
         isPinned?: boolean;
         isCollab?: boolean;
         collabCode?: string;
@@ -3455,6 +3988,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               updates.coverImage !== undefined
                 ? updates.coverImage.trim() || undefined
                 : pl.coverImage,
+            tracks: updates.tracks !== undefined ? updates.tracks.map(normalizeTrack) : pl.tracks,
             isPinned: updates.isPinned !== undefined ? updates.isPinned : pl.isPinned,
             isCollab: updates.isCollab !== undefined ? updates.isCollab : pl.isCollab,
             collabCode: updates.collabCode !== undefined ? updates.collabCode : pl.collabCode,
@@ -3726,8 +4260,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const targetVol = targetVolumeRef.current;
       const win = window as any;
 
-      // 1. Crossfade volume modulation
-      if (crossfadeDuration > 0 && total > crossfadeDuration * 2 && targetVol > 0 && !isMuted) {
+      // 1. Crossfade volume modulation (YT fallback only — audioDspEngine handles dual-deck crossfade directly)
+      if (!shouldUseDirectDspRef.current && crossfadeDuration > 0 && total > crossfadeDuration * 2 && targetVol > 0 && !isMuted) {
         // Fade in during initial seconds only during continuous playlist transition
         if (isTransitioningEarlyRef.current && current < crossfadeDuration) {
           const fadeInFactor = Math.min(1, Math.max(0.4, current / crossfadeDuration));
@@ -3777,8 +4311,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
-      // 3. Early gapless transition trigger
-      const earlyCutoff = crossfadeDuration > 0 ? Math.min(1.0, crossfadeDuration * 0.25) : 0.4;
+      // 3. Early gapless / dual-deck crossfade trigger
+      const earlyCutoff = shouldUseDirectDspRef.current && crossfadeDuration > 1
+        ? Math.min(crossfadeDuration, Math.max(1.5, total * 0.18))
+        : crossfadeDuration > 0
+        ? Math.min(1.0, crossfadeDuration * 0.25)
+        : 0.4;
       if (
         total > 15 &&
         total - current <= earlyCutoff &&
@@ -3790,7 +4328,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       // 4. Endless Emotion Radio auto-replenish queue (keep 12-30+ upcoming tracks ready)
-      if (endlessRadioActive && currentTrack && !currentTrack.isLocal && !isFetchingRadioRef.current) {
+      if (
+        endlessRadioActive &&
+        currentTrack &&
+        !currentTrack.isLocal &&
+        currentTrack.trackType !== 'podcast' &&
+        !isFetchingRadioRef.current
+      ) {
         const remainingTracksInQueue = queue.length - 1 - queueIndex;
         if (remainingTracksInQueue < 12) {
           replenishQueueInternal(false);
@@ -3929,6 +4473,33 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setPlaybackRate,
         audioQuality,
         setAudioQuality,
+        vocalLevel,
+        setVocalLevel,
+        spatialAudio,
+        setSpatialAudio,
+        djEqSweep,
+        setDjEqSweep,
+        audioStreamMeta,
+        setAudioStreamMeta,
+        shouldUseDirectDsp,
+        markDspFallback,
+        clearDspFallback,
+        dspModalOpen,
+        setDspModalOpen,
+        aiPlaylistModalOpen,
+        setAiPlaylistModalOpen,
+        subscribedPodcasts,
+        toggleSubscribePodcast,
+        isPodcastSubscribed,
+        skipBySeconds,
+        deviceId,
+        deviceName,
+        setDeviceName,
+        pairingCode,
+        setPairingCode,
+        connectDevices,
+        refreshConnectDevices,
+        sendRemoteCommand,
         wrappedModalOpen,
         setWrappedModalOpen,
         listeningStats,

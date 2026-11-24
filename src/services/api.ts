@@ -1,4 +1,23 @@
-import { Track, Album, Artist, Playlist, LyricsData, ExploreData, InnerTubeLog, OriconTrack } from '../types/music';
+import {
+  Track,
+  Album,
+  Artist,
+  Playlist,
+  LyricsData,
+  ExploreData,
+  InnerTubeLog,
+  OriconTrack,
+  AudioQualityMode,
+  SpatialAudioPreset,
+  PodcastShow,
+  PodcastEpisode,
+  CatalogRegion,
+  BpmRangePreset,
+  ClassicalComposer,
+  LyricsTranslationLine,
+  ListeningLogEntry,
+} from '../types/music';
+import { CollabPlaylistRoom, ConnectCommandPayload, ConnectDeviceInfo } from '../types/social';
 import { toBase64Image } from '../utils/imageBase64';
 import { saveOfflineMeta } from './offlineStorage';
 import { getApiCacheEntry, setApiCacheEntry } from './apiCacheDb';
@@ -16,8 +35,14 @@ export interface SyncedAccountLibrary {
   blockedArtists?: string[];
   pinnedBestTracks?: Track[];
   listeningHistory?: any[];
+  listeningLogs?: ListeningLogEntry[];
+  subscribedPodcasts?: PodcastShow[];
+  catalogRegion?: CatalogRegion;
   settings?: {
-    audioQuality?: 'auto' | 'low' | 'normal' | 'high';
+    audioQuality?: AudioQualityMode;
+    vocalLevel?: number;
+    spatialAudio?: SpatialAudioPreset;
+    djEqSweep?: boolean;
     floatingLyricsOverlay?: boolean;
     canvasEnabled?: boolean;
     backgroundPlaybackEnabled?: boolean;
@@ -87,12 +112,13 @@ export const api = {
     return res.json();
   },
 
-  getExplore(): Promise<ExploreData> {
+  getExplore(gl: CatalogRegion = 'JP'): Promise<ExploreData> {
+    const region = gl || 'JP';
     return withApiMemo(
-      'explore',
+      `explore:${region}`,
       PERSIST_CACHE_TTL_MS,
       async () => {
-        const res = await fetch('/api/music/explore');
+        const res = await fetch(`/api/music/explore?gl=${encodeURIComponent(region)}`);
         if (!res.ok) throw new Error('Failed to fetch explore');
         return res.json();
       },
@@ -163,20 +189,22 @@ export const api = {
 
   search(
     query: string,
-    type: 'all' | 'song' | 'video' | 'album' | 'artist' | 'playlist' = 'all',
+    type: 'all' | 'song' | 'video' | 'album' | 'artist' | 'playlist' | 'unofficial' = 'all',
     raw = false,
-    forceRefresh = false
+    forceRefresh = false,
+    gl: CatalogRegion = 'JP'
   ) {
     const rawQs = raw ? '&raw=1' : '';
     const refreshQs = forceRefresh ? '&refresh=1' : '';
+    const region = gl || 'JP';
     const normQ = query.trim().toLowerCase();
-    const key = `search:${type}:${raw ? '1' : '0'}:${normQ}`;
+    const key = `search:${region}:${type}:${raw ? '1' : '0'}:${normQ}`;
     return withApiMemo(
       key,
       PERSIST_CACHE_TTL_MS,
       async () => {
         const res = await fetch(
-          `/api/music/search?q=${encodeURIComponent(query)}&type=${type}${rawQs}${refreshQs}`
+          `/api/music/search?q=${encodeURIComponent(query)}&type=${type}&gl=${encodeURIComponent(region)}${rawQs}${refreshQs}`
         );
         if (!res.ok) throw new Error('Failed to execute search');
         return res.json();
@@ -234,7 +262,8 @@ export const api = {
   searchSpotify(
     query: string,
     raw = false,
-    forceRefresh = false
+    forceRefresh = false,
+    gl: CatalogRegion = 'JP'
   ): Promise<{
     tracks: Track[];
     query: string;
@@ -247,13 +276,14 @@ export const api = {
     if (!normQ) return Promise.resolve({ tracks: [], query });
     const rawQs = raw ? '&raw=1' : '';
     const refreshQs = forceRefresh ? '&refresh=1' : '';
+    const region = gl || 'JP';
     return withApiMemo(
-      `spotify-search:${raw ? '1' : '0'}:${normQ}`,
+      `spotify-search:${region}:${raw ? '1' : '0'}:${normQ}`,
       PERSIST_CACHE_TTL_MS,
       async () => {
         try {
           const res = await fetch(
-            `/api/music/spotify/search?q=${encodeURIComponent(query)}${rawQs}${refreshQs}`
+            `/api/music/spotify/search?q=${encodeURIComponent(query)}&gl=${encodeURIComponent(region)}${rawQs}${refreshQs}`
           );
           if (!res.ok) return { tracks: [], query };
           return res.json();
@@ -1282,5 +1312,301 @@ export const api = {
     }
     return res.json();
   },
+
+  // --- Audio Stream Info (Lossless / Hi-Res / DSP) ---
+  async getAudioStreamInfo(videoId: string, quality: AudioQualityMode = 'high'): Promise<{
+    available: boolean;
+    codec?: string;
+    bitrateKbps?: number;
+    sampleRateHz?: number;
+    mimeType?: string;
+    sourceLabel?: string;
+  }> {
+    try {
+      const res = await fetch(
+        `/api/music/audio-stream/info/${encodeURIComponent(videoId)}?quality=${encodeURIComponent(quality)}`
+      );
+      if (!res.ok) return { available: false };
+      return res.json();
+    } catch {
+      return { available: false };
+    }
+  },
+
+  // --- AI Playlist & AI Radio ---
+  async generateAiPlaylist(payload: {
+    prompt: string;
+    mode?: 'playlist' | 'radio';
+    trackCount?: number;
+    seedTrack?: Track | null;
+    contextArtists?: string[];
+    likedTitles?: string[];
+  }): Promise<{
+    success: boolean;
+    playlistTitle: string;
+    description: string;
+    moodTag: string;
+    aiPowered: boolean;
+    coverUrl: string;
+    tracks: Track[];
+  }> {
+    const res = await fetch('/api/ai/playlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'AIプレイリストの生成に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Podcasts (Audio RSS + YouTube Video Podcasts) ---
+  async discoverPodcasts(): Promise<{ shows: PodcastShow[]; videoEpisodes: PodcastEpisode[] }> {
+    const res = await fetch('/api/podcasts/discover');
+    if (!res.ok) return { shows: [], videoEpisodes: [] };
+    return res.json();
+  },
+
+  async searchPodcasts(q: string): Promise<{ shows: PodcastShow[]; videoEpisodes: PodcastEpisode[] }> {
+    const res = await fetch(`/api/podcasts/search?q=${encodeURIComponent(q)}`);
+    if (!res.ok) return { shows: [], videoEpisodes: [] };
+    return res.json();
+  },
+
+  async getPodcastShow(show: PodcastShow): Promise<{ show: PodcastShow; episodes: PodcastEpisode[] }> {
+    const params = new URLSearchParams({
+      feedUrl: show.feedUrl || '',
+      showId: show.id,
+      title: show.title,
+      author: show.author,
+      thumbnail: show.thumbnail,
+    });
+    const res = await fetch(`/api/podcasts/show?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'エピソードの取得に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Zero Connect (Cross-Device Remote Control) ---
+  async registerConnectDevice(payload: {
+    deviceId: string;
+    name: string;
+    deviceType: 'mobile' | 'pc' | 'tablet';
+    username?: string;
+    pairingCode: string;
+    currentTrack?: Track | null;
+    queue?: Track[];
+    isPlaying?: boolean;
+    positionSec?: number;
+    durationSec?: number;
+    volume?: number;
+  }): Promise<{
+    success: boolean;
+    device: ConnectDeviceInfo;
+    devices: ConnectDeviceInfo[];
+    pendingCommands?: ConnectCommandPayload[];
+  }> {
+    const res = await fetch('/api/connect/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return { success: false, device: payload as any, devices: [], pendingCommands: [] };
+    return res.json();
+  },
+
+  async getConnectDevices(params: {
+    username?: string;
+    pairingCode?: string;
+  }): Promise<{ devices: ConnectDeviceInfo[] }> {
+    const qs = new URLSearchParams();
+    if (params.username) qs.set('username', params.username);
+    if (params.pairingCode) qs.set('pairingCode', params.pairingCode);
+    const res = await fetch(`/api/connect/devices?${qs.toString()}`);
+    if (!res.ok) return { devices: [] };
+    return res.json();
+  },
+
+  async sendConnectCommand(payload: ConnectCommandPayload) {
+    const res = await fetch('/api/connect/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('端末への操作送信に失敗しました');
+    return res.json();
+  },
+
+  // --- Real-Time Collaborative Playlists & Friend Blend ---
+  async getCollabPlaylist(code: string): Promise<{ success: boolean; playlist: CollabPlaylistRoom } | null> {
+    const res = await fetch(`/api/collab/playlists/${encodeURIComponent(code)}`);
+    if (!res.ok) return null;
+    return res.json();
+  },
+
+  async mutateCollabPlaylist(
+    code: string,
+    payload: {
+      action: 'create' | 'join' | 'rename' | 'add_track' | 'remove_track' | 'reorder' | 'sync_all';
+      title?: string;
+      description?: string;
+      username?: string;
+      track?: Track;
+      trackId?: string;
+      fromIndex?: number;
+      toIndex?: number;
+      seedTracks?: Track[];
+      tracks?: Track[];
+    }
+  ): Promise<{ success: boolean; playlist: CollabPlaylistRoom }> {
+    const res = await fetch(`/api/collab/playlists/${encodeURIComponent(code)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('共同プレイリストの同期に失敗しました');
+    return res.json();
+  },
+
+  async createFriendBlend(payload: {
+    userAName: string;
+    userATracks: Track[];
+    friendUsername?: string;
+    userBName?: string;
+  }): Promise<{
+    success: boolean;
+    blendTitle: string;
+    userA: string;
+    userB: string;
+    tasteMatchPercent: number;
+    sharedArtistsCount: number;
+    friendFoundInCloud: boolean;
+    tracks: Track[];
+  }> {
+    const res = await fetch('/api/blend/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Blendの作成に失敗しました');
+    }
+    return res.json();
+  },
+
+  async translateLyricsGuide(params: {
+    videoId?: string;
+    trackTitle?: string;
+    artist?: string;
+    lines: string[];
+    targetLang: 'ja' | 'en' | 'ko' | 'zh';
+    pronunciationMode: 'romaji' | 'furigana' | 'katakana';
+  }): Promise<{
+    lines: LyricsTranslationLine[];
+    targetLang: string;
+    pronunciationMode: string;
+    fromCache?: boolean;
+  }> {
+    const res = await fetch('/api/lyrics/translate-guide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '歌詞翻訳・発音ガイドの取得に失敗しました');
+    }
+    return res.json();
+  },
+
+  getClassicalCatalog(params?: {
+    era?: string;
+    composer?: string;
+    q?: string;
+    gl?: CatalogRegion;
+  }): Promise<{
+    era: string;
+    composers: ClassicalComposer[];
+    activeComposer: ClassicalComposer | null;
+    tracks: Track[];
+    region: CatalogRegion;
+    error?: string;
+    fromCache?: boolean;
+  }> {
+    const era = params?.era || 'all';
+    const composer = params?.composer || '';
+    const q = (params?.q || '').trim();
+    const gl = params?.gl || 'JP';
+    const key = `classical:${gl}:${era}:${composer}:${q.toLowerCase()}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const qs = new URLSearchParams();
+        if (era) qs.set('era', era);
+        if (composer) qs.set('composer', composer);
+        if (q) qs.set('q', q);
+        if (gl) qs.set('gl', gl);
+        const res = await fetch(`/api/music/classical?${qs.toString()}`);
+        if (!res.ok) throw new Error('クラシック楽曲の取得に失敗しました');
+        return res.json();
+      },
+      { persist: true, shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0 }
+    );
+  },
+
+  searchByMoodBpm(params?: {
+    mood?: string;
+    bpmRange?: BpmRangePreset;
+    minBpm?: number;
+    maxBpm?: number;
+    q?: string;
+    gl?: CatalogRegion;
+    forceRefresh?: boolean;
+  }): Promise<{
+    mood: string;
+    moodLabel: string;
+    bpmRange: BpmRangePreset;
+    minBpm: number;
+    maxBpm: number;
+    region: CatalogRegion;
+    tracks: Track[];
+    fromCache?: boolean;
+  }> {
+    const mood = params?.mood || 'all';
+    const bpmRange = params?.bpmRange || 'all';
+    const minBpm = params?.minBpm || 0;
+    const maxBpm = params?.maxBpm || 0;
+    const q = (params?.q || '').trim();
+    const gl = params?.gl || 'JP';
+    const key = `mood-bpm:${gl}:${mood}:${bpmRange}:${minBpm}:${maxBpm}:${q.toLowerCase()}`;
+    return withApiMemo(
+      key,
+      PERSIST_CACHE_TTL_MS,
+      async () => {
+        const qs = new URLSearchParams();
+        if (mood) qs.set('mood', mood);
+        if (bpmRange) qs.set('bpmRange', bpmRange);
+        if (minBpm > 0) qs.set('minBpm', String(minBpm));
+        if (maxBpm > 0) qs.set('maxBpm', String(maxBpm));
+        if (q) qs.set('q', q);
+        if (gl) qs.set('gl', gl);
+        const res = await fetch(`/api/music/mood-bpm?${qs.toString()}`);
+        if (!res.ok) throw new Error('BPM・ムード検索に失敗しました');
+        return res.json();
+      },
+      {
+        bypass: Boolean(params?.forceRefresh),
+        persist: true,
+        shouldPersist: (d) => Array.isArray(d?.tracks) && d.tracks.length > 0,
+      }
+    );
+  },
 };
+
 

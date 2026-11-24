@@ -17,6 +17,7 @@ import {
   FileText,
   ChevronRight,
   HelpCircle,
+  Sliders,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 
@@ -38,6 +39,9 @@ export const SettingsModal: React.FC = () => {
     setAudioQuality,
     crossfadeDuration,
     setCrossfadeDuration,
+    djEqSweep,
+    setDjEqSweep,
+    setDspModalOpen,
     backgroundPlaybackEnabled,
     toggleBackgroundPlayback,
     setBgGuideOpen,
@@ -280,31 +284,32 @@ export const SettingsModal: React.FC = () => {
               再生・音質・Freemake
             </h3>
 
-            {/* Audio Quality */}
+            {/* Audio Quality (including Lossless & Hi-Res) */}
             <div className="p-3.5 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-2.5">
-              <div className="flex items-center gap-2.5">
-                <Volume2 className="w-4 h-4 text-red-400 shrink-0" />
-                <div>
-                  <p className="text-sm font-bold text-white">ストリーミング音質</p>
-                  <p className="text-xs text-neutral-400">回線状況や好みに合わせて音質を選択</p>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <Volume2 className="w-4 h-4 text-red-400 shrink-0" />
+                  <div>
+                    <p className="text-sm font-bold text-white">ストリーミング音質・ロスレス</p>
+                    <p className="text-xs text-neutral-400">CD音質ロスレス / ハイレゾ対応DSPを選択可能</p>
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
                 {(
                   [
                     { id: 'auto', label: '自動' },
                     { id: 'low', label: '節約' },
                     { id: 'normal', label: '標準' },
                     { id: 'high', label: '高音質' },
+                    { id: 'lossless', label: 'ロスレス' },
+                    { id: 'hires', label: 'ハイレゾ' },
                   ] as const
                 ).map((q) => (
                   <button
                     key={q.id}
                     type="button"
-                    onClick={() => {
-                      setAudioQuality(q.id);
-                      showToast(`音質を「${q.label}」に変更しました`, 'success', 1800);
-                    }}
+                    onClick={() => setAudioQuality(q.id)}
                     className={`py-2 px-2 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
                       audioQuality === q.id
                         ? 'bg-red-600 text-white border-red-400 shadow-sm shadow-red-600/20'
@@ -317,14 +322,34 @@ export const SettingsModal: React.FC = () => {
               </div>
             </div>
 
-            {/* Crossfade */}
+            {/* DSP Studio Quick Launcher */}
+            <button
+              type="button"
+              onClick={() => closeAndRun(() => setDspModalOpen(true))}
+              className="w-full p-3.5 rounded-xl bg-gradient-to-r from-sky-950/40 to-purple-950/30 hover:from-sky-950/60 hover:to-purple-950/50 border border-sky-500/30 flex items-center justify-between gap-2 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Sliders className="w-4 h-4 text-sky-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-white truncate">
+                    空間オーディオ・カラオケ（Sing）DSPスタジオ
+                  </p>
+                  <p className="text-[11px] text-neutral-400 truncate">
+                    立体音響プリセット・ボーカル音量調整・DJクロスフェード設定
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0" />
+            </button>
+
+            {/* Crossfade & DJ EQ Sweep */}
             <div className="p-3.5 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-2.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
                   <AudioLines className="w-4 h-4 text-purple-400 shrink-0" />
                   <div>
-                    <p className="text-sm font-bold text-white">クロスフェード</p>
-                    <p className="text-xs text-neutral-400">曲の切り替えを滑らかにフェード</p>
+                    <p className="text-sm font-bold text-white">DJ風クロスフェード</p>
+                    <p className="text-xs text-neutral-400">曲のつなぎ目をデュアルデッキでオーバーラップ</p>
                   </div>
                 </div>
                 <span className="text-xs font-mono font-bold text-purple-300">
@@ -346,6 +371,26 @@ export const SettingsModal: React.FC = () => {
                     {sec === 0 ? 'OFF' : `${sec}s`}
                   </button>
                 ))}
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-neutral-800/80">
+                <span className="text-xs font-semibold text-neutral-300">
+                  DJ ハイパスEQスイープ遷移
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={djEqSweep}
+                  onClick={() => setDjEqSweep((v) => !v)}
+                  className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                    djEqSweep ? 'bg-purple-500' : 'bg-neutral-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                      djEqSweep ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
             </div>
 

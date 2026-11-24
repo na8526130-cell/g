@@ -25,6 +25,8 @@ import {
   Download,
   Settings,
   Globe,
+  Podcast,
+  Sliders,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { IOSInstallGuideModal } from './PWAInstallBanner';
@@ -63,6 +65,11 @@ export const TopNavbar: React.FC = () => {
     currentTrack,
     queue,
     playTrack,
+    setDspModalOpen,
+    setAiPlaylistModalOpen,
+    vocalLevel,
+    spatialAudio,
+    audioQuality,
     setWrappedModalOpen,
     deviceMode,
     setDeviceMode,
@@ -328,6 +335,40 @@ export const TopNavbar: React.FC = () => {
         >
           <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
           <span>同時聴きラウンジ</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => navigateTo('podcasts')}
+          className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
+            activeView === 'podcasts'
+              ? 'text-emerald-400 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <Podcast className="w-3.5 h-3.5 text-emerald-400" />
+          <span>ポッドキャスト</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAiPlaylistModalOpen(true)}
+          className="text-amber-300/90 hover:text-amber-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 font-medium"
+          title="AIプレイリスト / AIラジオを生成"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+          <span>AI選曲</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDspModalOpen(true)}
+          className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
+            vocalLevel < 100 || spatialAudio !== 'off' || audioQuality === 'lossless' || audioQuality === 'hires'
+              ? 'text-sky-300 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+          title="ハイレゾ / 空間オーディオ / カラオケ(Sing) / DJクロスフェード"
+        >
+          <Sliders className="w-3.5 h-3.5 text-sky-400" />
+          <span>DSP</span>
         </button>
         {dmUiVisible && (
         <button

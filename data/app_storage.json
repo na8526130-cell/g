@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 129,
+  "totalAccessCount": 136,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -101,6 +101,27 @@
     }
   },
   "sharedPlaylists": {},
+  "collabPlaylists": {
+    "TEST-9999": {
+      "code": "TEST-9999",
+      "title": "共同編集プレイリスト",
+      "description": "友達とリアルタイム共同編集",
+      "hostUsername": "tester",
+      "members": [
+        "tester"
+      ],
+      "tracks": [
+        {
+          "id": "kLpH1nSLJS0",
+          "title": "Test Song",
+          "artist": "Test Artist",
+          "thumbnail": "https://i.ytimg.com/vi/kLpH1nSLJS0/hqdefault.jpg",
+          "addedBy": "tester"
+        }
+      ],
+      "updatedAt": "2026-11-24T05:27:08.088Z"
+    }
+  },
   "trackComments": {
     "test_video_123": [
       {
@@ -466,19 +487,21 @@
       "10": 7,
       "11": 25,
       "12": 2,
-      "13": 3
+      "13": 3,
+      "21": 5,
+      "22": 2
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 104,
+      "mobile": 111,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 104,
+      "Safari": 111,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 104,
+      "macOS": 111,
       "Other": 1
     },
     "lyricsStats": {

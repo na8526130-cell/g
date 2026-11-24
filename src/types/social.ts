@@ -11,7 +11,7 @@ export interface TrackComment {
   createdAt: string;
   likes: number;
   likedBy: string[];
-  color?: string; // Danmaku color e.g. '#FFFFFF', '#EF4444', '#38BDF8', '#FACC15', '#4ADE80', '#F472B6'
+  color?: string;
 }
 
 export interface DirectMessage {
@@ -37,7 +37,7 @@ export interface DirectMessage {
   };
   timestamp: string;
   read: boolean;
-  reactions: Record<string, string[]>; // { '❤️': ['user1'], '🔥': ['user2'] }
+  reactions: Record<string, string[]>;
 }
 
 export interface ConversationSummary {
@@ -62,6 +62,8 @@ export interface ListeningPartyRoom {
   isPlaying: boolean;
   positionSec: number;
   updatedAt: number;
+  queue?: Track[];
+  allowGuestControl?: boolean;
   participants: {
     username: string;
     joinedAt: string;
@@ -75,6 +77,46 @@ export interface ListeningPartyRoom {
     timestamp: string;
     type: 'chat' | 'system' | 'track_change';
   }[];
+}
+
+export interface ConnectDeviceInfo {
+  deviceId: string;
+  name: string;
+  deviceType: 'mobile' | 'pc' | 'tablet';
+  username?: string;
+  pairingCode: string;
+  lastSeen: number;
+  currentTrack?: Track | null;
+  queue?: Track[];
+  isPlaying?: boolean;
+  positionSec?: number;
+  durationSec?: number;
+  volume?: number;
+}
+
+export interface ConnectCommandPayload {
+  cmdId?: string;
+  targetDeviceId: string;
+  fromDeviceId?: string;
+  fromDeviceName?: string;
+  pairingCode?: string;
+  username?: string;
+  action: 'play' | 'pause' | 'toggle' | 'next' | 'prev' | 'seek' | 'volume' | 'playTrack' | 'transfer';
+  positionSec?: number;
+  seekSec?: number;
+  volume?: number;
+  track?: Track;
+  queue?: Track[];
+}
+
+export interface CollabPlaylistRoom {
+  code: string;
+  title: string;
+  description?: string;
+  hostUsername: string;
+  members: string[];
+  tracks: Track[];
+  updatedAt: string;
 }
 
 export interface SocialNotification {

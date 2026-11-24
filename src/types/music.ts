@@ -18,6 +18,22 @@ export interface CommentEmotionData {
   source?: string;
 }
 
+export type AudioQualityMode = 'auto' | 'low' | 'normal' | 'high' | 'lossless' | 'hires';
+export type SpatialAudioPreset = 'off' | 'cinema' | 'concert' | 'studio';
+
+export interface AudioStreamMetadata {
+  videoId?: string;
+  quality?: AudioQualityMode;
+  codec?: string;
+  bitrateKbps?: number;
+  sampleRateHz?: number;
+  channels?: number;
+  mimeType?: string;
+  qualityMode?: string;
+  sourceLabel?: string;
+  usingDirectDsp?: boolean;
+}
+
 export interface Track {
   id: string;
   title: string;
@@ -39,6 +55,83 @@ export interface Track {
   fileExt?: string;
   isCachedOffline?: boolean;
   commentEmotion?: CommentEmotionData;
+  // Podcast & AI & Jam extensions
+  trackType?: 'music' | 'podcast';
+  podcastShowId?: string;
+  podcastShowTitle?: string;
+  podcastFeedUrl?: string;
+  podcastVideoId?: string;
+  publishDate?: string;
+  description?: string;
+  audioMimeType?: string;
+  addedBy?: string;
+  aiReason?: string;
+  // Discovery & Catalog extensions
+  bpm?: number;
+  moodTag?: string;
+  isUnofficial?: boolean;
+  unofficialKind?: string;
+  composerName?: string;
+  era?: string;
+  opusNumber?: string;
+}
+
+export type CatalogRegion = 'JP' | 'US' | 'KR' | 'GB' | 'GLOBAL';
+export type BpmRangePreset = 'all' | 'slow' | 'mid' | 'upbeat' | 'fast';
+export type RecapPeriod = 'year' | 'season' | 'month';
+
+export interface LyricsTranslationLine {
+  original: string;
+  translation: string;
+  pronunciation: string;
+}
+
+export interface ClassicalComposer {
+  id: string;
+  name: string;
+  nameEn: string;
+  era: 'baroque' | 'classical' | 'romantic' | 'modern';
+  eraLabel: string;
+  years: string;
+  signatureQuery: string;
+  sampleWorks: Array<{ title: string; opus: string; query: string }>;
+}
+
+export interface ListeningLogEntry {
+  id: string;
+  track: Track;
+  timestamp: string;
+  seconds: number;
+}
+
+export interface PodcastEpisode {
+  id: string;
+  showId: string;
+  showTitle: string;
+  title: string;
+  artist: string;
+  description: string;
+  publishDate: string;
+  duration: string;
+  durationSeconds: number;
+  thumbnail: string;
+  audioUrl?: string;
+  videoId?: string;
+  isVideo: boolean;
+  feedUrl?: string;
+}
+
+export interface PodcastShow {
+  id: string;
+  title: string;
+  author: string;
+  description?: string;
+  thumbnail: string;
+  feedUrl?: string;
+  genre?: string;
+  episodeCount?: number;
+  isVideoShow?: boolean;
+  episodes?: PodcastEpisode[];
 }
 
 export interface Artist {
@@ -154,7 +247,7 @@ export interface ArtistLiveSetlist {
   tracks: (Track & { setlistIndex: number; timestampSec?: number })[];
 }
 
-export type ViewType = 'home' | 'search' | 'library' | 'artist' | 'album' | 'playlist' | 'party';
+export type ViewType = 'home' | 'search' | 'library' | 'artist' | 'album' | 'playlist' | 'party' | 'podcasts';
 export type PlayerMode = 'cover' | 'video';
 export type VideoLayout = 'theater' | 'pip';
 export type RepeatMode = 'off' | 'all' | 'one';

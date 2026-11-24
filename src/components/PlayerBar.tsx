@@ -33,6 +33,9 @@ import {
   Download,
   MoreHorizontal,
   X,
+  Sliders,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -104,6 +107,12 @@ export const PlayerBar: React.FC = () => {
     deviceMode,
     openTrackDetailModal,
     openFreemakeModal,
+    setDspModalOpen,
+    audioQuality,
+    spatialAudio,
+    vocalLevel,
+    audioStreamMeta,
+    skipBySeconds,
   } = usePlayer();
 
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -138,7 +147,11 @@ export const PlayerBar: React.FC = () => {
     endlessRadioActive ||
     crossfadeDuration > 0 ||
     playbackRate !== 1 ||
-    wakeLockActive;
+    wakeLockActive ||
+    vocalLevel < 100 ||
+    spatialAudio !== 'off' ||
+    audioQuality === 'lossless' ||
+    audioQuality === 'hires';
 
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -345,6 +358,22 @@ export const PlayerBar: React.FC = () => {
                       </button>
                     </>
                   )}
+                  {(audioQuality === 'hires' || audioQuality === 'lossless' || spatialAudio !== 'off' || vocalLevel < 100) && (
+                    <button
+                      type="button"
+                      onClick={() => setDspModalOpen(true)}
+                      className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-[10px] font-mono font-bold text-sky-300 shrink-0 cursor-pointer hover:bg-sky-500/25"
+                      title="Audio DSP設定を開く"
+                    >
+                      {vocalLevel < 100
+                        ? `Sing ${vocalLevel}%`
+                        : spatialAudio !== 'off'
+                        ? '空間3D'
+                        : audioQuality === 'hires'
+                        ? 'Hi-Res'
+                        : 'Lossless'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -395,6 +424,18 @@ export const PlayerBar: React.FC = () => {
                   )}
                 </button>
 
+                {currentTrack.trackType === 'podcast' && (
+                  <button
+                    type="button"
+                    onClick={() => skipBySeconds(-15)}
+                    title="15秒戻る"
+                    className="px-1.5 py-1 rounded text-[11px] font-mono font-bold text-emerald-300 hover:bg-emerald-500/15 flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>15</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={prevTrack}
@@ -428,6 +469,18 @@ export const PlayerBar: React.FC = () => {
                 >
                   <SkipForward className="w-4 h-4 md:w-5 md:h-5" />
                 </button>
+
+                {currentTrack.trackType === 'podcast' && (
+                  <button
+                    type="button"
+                    onClick={() => skipBySeconds(30)}
+                    title="30秒進む"
+                    className="px-1.5 py-1 rounded text-[11px] font-mono font-bold text-emerald-300 hover:bg-emerald-500/15 flex items-center gap-0.5 cursor-pointer"
+                  >
+                    <span>30</span>
+                    <RotateCw className="w-3.5 h-3.5" />
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -537,6 +590,21 @@ export const PlayerBar: React.FC = () => {
                     {upcomingCount > 99 ? '99+' : upcomingCount}
                   </span>
                 )}
+              </button>
+
+              {/* DSP Studio (Lossless / Spatial / Sing Vocal / Crossfade) */}
+              <button
+                type="button"
+                onClick={() => setDspModalOpen(true)}
+                title={audioStreamMeta ? `DSPスタジオ (${audioStreamMeta.codec})` : '高音質DSP / 空間 / カラオケ'}
+                aria-label="高音質DSP / カラオケ設定"
+                className={`hidden md:inline-flex p-2 rounded-lg transition-colors shrink-0 cursor-pointer ${
+                  vocalLevel < 100 || spatialAudio !== 'off' || audioQuality === 'lossless' || audioQuality === 'hires'
+                    ? 'bg-sky-500/20 text-sky-300'
+                    : 'text-neutral-400 hover:text-sky-300 hover:bg-white/5'
+                }`}
+              >
+                <Sliders className="w-4 h-4" />
               </button>
 
               {/* Download */}
@@ -848,6 +916,18 @@ export const PlayerBar: React.FC = () => {
                         >
                           <Radio className="w-3.5 h-3.5 shrink-0 text-red-400" />
                           <span className="truncate">類似曲ラジオ</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            setDspModalOpen(true);
+                          }}
+                          className="px-2.5 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 flex items-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <Sliders className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">高音質 / 空間 / Sing</span>
                         </button>
 
                         <button

@@ -57,6 +57,8 @@ import {
   getActiveOfflineBlob,
   getActiveOfflineBlobUrl,
   getAllOfflineTracks,
+  getCachedSharedOfflineTrack,
+  getStoredOfflineTrackRecord,
   deleteOfflineTrack,
   seedDemoOfflineTrack,
   OFFLINE_TRACKS_CHANGED_EVENT,
@@ -73,7 +75,23 @@ import {
   getSharedOfflineDownloadUrl,
   formatFileSizeLabel,
 } from '../services/sharedOffline';
-import { isIosStandalonePwa, shareBlobFile } from '../services/freemake';
+import {
+  clearDownloadHistory,
+  DOWNLOAD_HISTORY_CHANGED_EVENT,
+  DownloadHistoryItem,
+  formatDownloadTargetLabel,
+  formatDownloadTimestamp,
+  getDownloadHistory,
+  recordDownloadHistory,
+  removeDownloadHistoryItem,
+  syncInitialDownloadHistoryFromOffline,
+} from '../services/downloadHistory';
+import {
+  downloadArtworkImageFile,
+  isIosStandalonePwa,
+  shareBlobFile,
+  triggerBlobDownload,
+} from '../services/freemake';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { Track } from '../types/music';
 import { SafeImage } from '../components/SafeImage';
@@ -209,6 +227,10 @@ export const LibraryView: React.FC = () => {
   const sharedFileInputRef = useRef<HTMLInputElement>(null);
   const sharedUploadAbortRef = useRef<AbortController | null>(null);
 
+  // Download History (ダウンロード履歴) state
+  const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>(() => getDownloadHistory());
+  const [confirmClearDownloads, setConfirmClearDownloads] = useState(false);
+
   const refreshLocalTracks = () => {
     getAllOfflineTracks()
       .then((stored) => setLocalTracks(stored))
@@ -245,6 +267,17 @@ export const LibraryView: React.FC = () => {
     window.addEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
     return () => {
       window.removeEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
+    };
+  }, [freemakeModalOpen]);
+
+  // Load Download History & stay synced with new downloads across the app
+  useEffect(() => {
+    setDownloadHistory(getDownloadHistory());
+    syncInitialDownloadHistoryFromOffline().then(setDownloadHistory).catch(() => {});
+    const onHistoryChange = () => setDownloadHistory(getDownloadHistory());
+    window.addEventListener(DOWNLOAD_HISTORY_CHANGED_EVENT, onHistoryChange);
+    return () => {
+      window.removeEventListener(DOWNLOAD_HISTORY_CHANGED_EVENT, onHistoryChange);
     };
   }, [freemakeModalOpen]);
 
@@ -784,6 +817,24 @@ export const LibraryView: React.FC = () => {
           >
             <FolderDown className="w-3.5 h-3.5 text-cyan-400" />
             <span>オフライン ({localTracks.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('downloads');
+              setSubCategory('none');
+              setSelectedPlaylistId(null);
+              setConfirmClearDownloads(false);
+            }}
+            className={`px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
+              activeTab === 'downloads' && subCategory === 'none'
+                ? 'bg-sky-600 text-white shadow-sm shadow-sky-600/30'
+                : 'bg-neutral-900 hover:bg-neutral-800 text-sky-300 border border-sky-500/30'
+            }`}
+          >
+            <Download className="w-3.5 h-3.5 text-sky-400" />
+            <span className="tabular-nums">ダウンロード履歴 ({downloadHistory.length})</span>
           </button>
 
           <button
@@ -3496,6 +3547,22 @@ export const LibraryView: React.FC = () => {
                           href={syncDownloadHref}
                           download={downloadFilename}
                           onClick={(e) => {
+                            recordDownloadHistory({
+                              title: track.title,
+                              artist: track.artist,
+                              album: track.album || '共有オフライン',
+                              filename: downloadFilename,
+                              formatExt: (track.fileExt || downloadFilename.split('.').pop() || 'mp3')
+                                .replace(/^\./, '')
+                                .toLowerCase(),
+                              fileSize: track.fileSize,
+                              thumbnail: track.thumbnail,
+                              sourceLabel: isOnline ? '共有オフライン' : '共有オフライン (キャッシュ)',
+                              target: isOnline ? 'device' : 'offline',
+                              sharedTrackId: track.id,
+                              duration: track.duration,
+                              durationSeconds: track.durationSeconds,
+                            });
                             if (
                               isIosStandalonePwa() &&
                               cachedBlob &&
@@ -3596,6 +3663,313 @@ export const LibraryView: React.FC = () => {
                 })}
             </div>
           )}
+        </div>
+      )}
+      {/* Download History View */}
+      {subCategory === 'none' && activeTab === 'downloads' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 bg-gradient-to-r from-sky-950/45 via-neutral-900 to-indigo-950/45 border border-sky-500/25 rounded-2xl shadow-xl">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-xl bg-sky-600 flex items-center justify-center text-white shadow-lg shadow-sky-600/30 shrink-0">
+                <Download className="w-7 h-7" />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-xl font-bold text-white">ダウンロード履歴</h2>
+                <p className="text-xs text-neutral-300">
+                  これまでに保存・変換した楽曲、共有オフライン音源、ジャケット画像の履歴です
+                </p>
+                <div className="text-[11px] text-neutral-400 tabular-nums">
+                  記録件数: {downloadHistory.length}件
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => openFreemakeModal(currentTrack)}
+                className="min-h-[44px] px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-sky-600/25 cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>新しくダウンロード</span>
+              </button>
+
+              {downloadHistory.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!confirmClearDownloads) {
+                      setConfirmClearDownloads(true);
+                      return;
+                    }
+                    clearDownloadHistory();
+                    setConfirmClearDownloads(false);
+                    showToast('ダウンロード履歴をすべて削除しました', 'info');
+                  }}
+                  className={`min-h-[44px] px-3.5 py-2 text-xs font-semibold rounded-xl flex items-center gap-1.5 border transition-colors cursor-pointer ${
+                    confirmClearDownloads
+                      ? 'bg-rose-600 border-rose-500 text-white'
+                      : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-700 text-neutral-300 hover:text-rose-400'
+                  }`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{confirmClearDownloads ? '本当にすべて削除する' : '履歴をクリア'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {(() => {
+            const visibleHistory = downloadHistory.filter(
+              (item) =>
+                matchesQuery(item.title) ||
+                matchesQuery(item.artist) ||
+                matchesQuery(item.filename) ||
+                matchesQuery(item.sourceLabel)
+            );
+
+            if (visibleHistory.length === 0) {
+              return (
+                <div className="py-16 text-center space-y-3 text-neutral-400 bg-neutral-900/30 border border-neutral-800/70 rounded-2xl px-4">
+                  <History className="w-10 h-10 mx-auto text-neutral-600" />
+                  <p className="text-sm font-semibold text-neutral-300">
+                    {downloadHistory.length === 0
+                      ? 'ダウンロード履歴はまだありません'
+                      : '検索条件に一致する履歴が見つかりませんでした'}
+                  </p>
+                  <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                    Freemake Studioでの楽曲ダウンロード・ローカル変換、または「共有オフライン」からの音声保存を行うとここに記録されます。
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
+                {visibleHistory.map((item) => {
+                  const extLabel = item.formatExt ? `.${item.formatExt.toUpperCase()}` : '';
+                  const sizeLabel = item.fileSize ? formatFileSizeLabel(item.fileSize) : '';
+                  const timeLabel = formatDownloadTimestamp(item.downloadedAt);
+                  const targetLabel = formatDownloadTargetLabel(item.target);
+                  const canPlay =
+                    Boolean(item.offlineTrackId || item.sharedTrackId || item.videoId) &&
+                    item.target !== 'artwork';
+                  const syncSharedHref =
+                    item.sharedTrackId && isOnline
+                      ? getSharedOfflineDownloadUrl(item.sharedTrackId)
+                      : undefined;
+
+                  const handlePlayHistory = async () => {
+                    if (item.offlineTrackId) {
+                      const existingLocal = localTracks.find((t) => t.id === item.offlineTrackId);
+                      if (existingLocal) {
+                        playTrack(existingLocal, localTracks);
+                        return;
+                      }
+                      const rec = await getStoredOfflineTrackRecord(item.offlineTrackId).catch(() => null);
+                      if (rec?.blob) {
+                        const audioUrl = getActiveOfflineBlobUrl(rec.id) || URL.createObjectURL(rec.blob);
+                        playTrack({
+                          id: rec.id,
+                          title: rec.title,
+                          artist: rec.artist,
+                          album: rec.album,
+                          duration: rec.duration,
+                          durationSeconds: rec.durationSeconds,
+                          thumbnail: rec.thumbnail,
+                          isLocal: true,
+                          fileSize: rec.blob.size,
+                          audioUrl,
+                        });
+                        return;
+                      }
+                    }
+                    if (item.sharedTrackId) {
+                      const existingShared = sharedTracks.find((t) => t.id === item.sharedTrackId);
+                      if (existingShared) {
+                        playTrack(existingShared, sharedTracks);
+                        return;
+                      }
+                      const cached = await getCachedSharedOfflineTrack(item.sharedTrackId).catch(() => null);
+                      playTrack({
+                        id: item.sharedTrackId,
+                        title: item.title,
+                        artist: item.artist,
+                        album: item.album || '共有オフライン',
+                        duration: item.duration || '3:00',
+                        durationSeconds: item.durationSeconds || 180,
+                        thumbnail: item.thumbnail || '',
+                        isLocal: true,
+                        isSharedOffline: true,
+                        audioUrl: cached?.blob
+                          ? URL.createObjectURL(cached.blob)
+                          : `/api/shared-offline/file/${encodeURIComponent(item.sharedTrackId)}`,
+                      });
+                      return;
+                    }
+                    if (item.videoId) {
+                      playTrack({
+                        id: item.videoId,
+                        title: item.title,
+                        artist: item.artist,
+                        album: item.album,
+                        duration: item.duration || '3:00',
+                        durationSeconds: item.durationSeconds || 180,
+                        thumbnail: item.thumbnail || '',
+                      });
+                    } else {
+                      showToast('再生可能な音源が見つかりませんでした', 'warning');
+                    }
+                  };
+
+                  const handleRedownloadHistory = async () => {
+                    if (item.target === 'artwork' && item.thumbnail) {
+                      const ok = await downloadArtworkImageFile(item.thumbnail, item.title);
+                      showToast(
+                        ok ? 'ジャケット画像を再保存しました' : 'ジャケット画像の取得に失敗しました',
+                        ok ? 'success' : 'warning'
+                      );
+                      return;
+                    }
+                    if (item.offlineTrackId) {
+                      const rec = await getStoredOfflineTrackRecord(item.offlineTrackId).catch(() => null);
+                      if (rec?.blob) {
+                        if (isIosStandalonePwa()) {
+                          const shared = await shareBlobFile(rec.blob, item.filename);
+                          if (shared) return;
+                        }
+                        triggerBlobDownload(rec.blob, item.filename);
+                        showToast(`「${item.filename}」を端末に保存しました`, 'success');
+                        return;
+                      }
+                    }
+                    if (item.sharedTrackId) {
+                      const cached = await getCachedSharedOfflineTrack(item.sharedTrackId).catch(() => null);
+                      if (cached?.blob) {
+                        if (isIosStandalonePwa()) {
+                          const shared = await shareBlobFile(cached.blob, item.filename);
+                          if (shared) return;
+                        }
+                        triggerBlobDownload(cached.blob, item.filename);
+                        showToast(`「${item.filename}」を端末に保存しました`, 'success');
+                        return;
+                      }
+                    }
+                    openFreemakeModal({
+                      id: item.videoId || item.id,
+                      title: item.title,
+                      artist: item.artist,
+                      album: item.album,
+                      duration: item.duration || '',
+                      durationSeconds: item.durationSeconds || 0,
+                      thumbnail: item.thumbnail || '',
+                    });
+                  };
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/45 transition-colors"
+                    >
+                      <SafeImage
+                        src={item.thumbnail}
+                        alt={item.title}
+                        useBase64
+                        className="w-11 h-11 rounded-lg object-cover bg-neutral-800 shrink-0"
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        <p
+                          onClick={() => canPlay && handlePlayHistory()}
+                          className={`text-sm font-semibold text-white truncate ${
+                            canPlay ? 'cursor-pointer hover:underline' : ''
+                          }`}
+                        >
+                          {item.title}
+                        </p>
+                        <p className="text-xs text-neutral-400 truncate">
+                          {item.artist}
+                          {item.filename ? ` · ${item.filename}` : ''}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-neutral-500 mt-0.5 tabular-nums">
+                          {extLabel && (
+                            <span className="font-mono font-bold text-sky-400">{extLabel}</span>
+                          )}
+                          {sizeLabel && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{sizeLabel}</span>
+                            </>
+                          )}
+                          <span aria-hidden="true">·</span>
+                          <span>{item.sourceLabel}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{targetLabel}</span>
+                          {timeLabel && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{timeLabel}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {canPlay && (
+                          <button
+                            type="button"
+                            onClick={handlePlayHistory}
+                            className="min-w-[40px] min-h-[40px] rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 flex items-center justify-center cursor-pointer"
+                            title="再生"
+                            aria-label="再生"
+                          >
+                            <Play className="w-4 h-4 fill-current ml-0.5" />
+                          </button>
+                        )}
+
+                        {syncSharedHref ? (
+                          <a
+                            href={syncSharedHref}
+                            download={item.filename}
+                            onClick={() =>
+                              showToast(`「${item.filename}」の再ダウンロードを開始しました`, 'success')
+                            }
+                            className="min-h-[40px] px-2.5 py-2 rounded-lg bg-sky-600/20 hover:bg-sky-600/35 border border-sky-500/35 text-sky-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                            title="端末へ再保存"
+                            aria-label="端末へ再保存"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">再保存</span>
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleRedownloadHistory}
+                            className="min-h-[40px] px-2.5 py-2 rounded-lg bg-sky-600/20 hover:bg-sky-600/35 border border-sky-500/35 text-sky-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                            title="端末へ再保存"
+                            aria-label="端末へ再保存"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">再保存</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => removeDownloadHistoryItem(item.id)}
+                          className="min-w-[40px] min-h-[40px] rounded-lg text-neutral-500 hover:text-rose-400 hover:bg-neutral-800/70 flex items-center justify-center transition-colors cursor-pointer"
+                          title="履歴から削除"
+                          aria-label="履歴から削除"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

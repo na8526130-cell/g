@@ -24,7 +24,12 @@ import {
   Volume2,
   X,
   Trophy,
+  Search,
+  Trash2,
+  ListMusic,
+  Loader2,
 } from 'lucide-react';
+import { Track } from '../types/music';
 
 const CATEGORY_META = {
   rock: { label: '邦ロック', icon: Music, color: 'text-red-400', bg: 'bg-red-500/10' },
@@ -64,6 +69,9 @@ export const ListeningPartyView: React.FC = () => {
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [newRoomCategory, setNewRoomCategory] = useState<'rock' | 'chill' | 'vocaloid' | 'free' | 'custom'>('custom');
+  const [jamQuery, setJamQuery] = useState('');
+  const [jamResults, setJamResults] = useState<Track[]>([]);
+  const [jamSearching, setJamSearching] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   const scrollChatToBottom = () => {
@@ -200,6 +208,41 @@ export const ListeningPartyView: React.FC = () => {
       playTrack(activeRoom.currentTrack);
       seekTo(activeRoom.positionSec);
     }
+  };
+
+  const handleJamSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = jamQuery.trim();
+    if (!q) return;
+    setJamSearching(true);
+    try {
+      const res = await api.search(q, 'song');
+      setJamResults((res?.results || res?.songs || []).slice(0, 5));
+    } catch {
+      setJamResults([]);
+    } finally {
+      setJamSearching(false);
+    }
+  };
+
+  const handleAddJamTrack = (tr: Track) => {
+    if (!activeRoomId) return;
+    const uname = currentUser ? currentUser.username : '匿名リスナー';
+    socialSocket.addPartyQueueTrack(activeRoomId, tr, uname);
+    setJamResults([]);
+    setJamQuery('');
+  };
+
+  const handlePlayJamTrack = (tr: Track) => {
+    if (!activeRoomId) return;
+    const uname = currentUser ? currentUser.username : '匿名リスナー';
+    playTrack(tr);
+    socialSocket.playPartyQueueTrack(activeRoomId, tr.id, uname);
+  };
+
+  const handleRemoveJamTrack = (trackId: string) => {
+    if (!activeRoomId) return;
+    socialSocket.removePartyQueueTrack(activeRoomId, trackId);
   };
 
   const handleCreateRoom = async (e: React.FormEvent) => {
@@ -396,8 +439,109 @@ export const ListeningPartyView: React.FC = () => {
                 </div>
               )}
 
+              {/* Jam Shared Collaborative Queue */}
+              <div className="mt-6 pt-4 border-t border-neutral-800/80 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-neutral-300 flex items-center gap-1.5 uppercase tracking-wider">
+                    <ListMusic className="w-4 h-4 text-sky-400" />
+                    <span>Jam 共同再生キュー ({activeRoom.queue?.length || 0}曲)</span>
+                  </span>
+                  {currentTrack && (
+                    <button
+                      type="button"
+                      onClick={() => handleAddJamTrack(currentTrack)}
+                      className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-[11px] font-bold text-sky-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>再生中の曲をJamキューに追加</span>
+                    </button>
+                  )}
+                </div>
+
+                <form onSubmit={handleJamSearch} className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={jamQuery}
+                      onChange={(e) => setJamQuery(e.target.value)}
+                      placeholder="曲を検索してJamキューに追加（全員が追加可能）..."
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-neutral-900 border border-neutral-800 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={jamSearching}
+                    className="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold cursor-pointer shrink-0"
+                  >
+                    {jamSearching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : '検索'}
+                  </button>
+                </form>
+
+                {jamResults.length > 0 && (
+                  <div className="rounded-xl bg-neutral-950 border border-neutral-800 divide-y divide-neutral-800/70">
+                    {jamResults.map((tr) => (
+                      <div key={tr.id} className="px-3 py-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <SafeImage src={tr.thumbnail} alt={tr.title} className="w-8 h-8 rounded object-cover shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-white truncate">{tr.title}</p>
+                            <p className="text-[11px] text-neutral-400 truncate">{tr.artist}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleAddJamTrack(tr)}
+                          className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>キュー追加</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {activeRoom.queue && activeRoom.queue.length > 0 && (
+                  <div className="rounded-xl bg-neutral-900/60 border border-neutral-800 divide-y divide-neutral-800/70 max-h-48 overflow-y-auto">
+                    {activeRoom.queue.map((qt, qIdx) => (
+                      <div key={`${qt.id}-${qIdx}`} className="px-3 py-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <SafeImage src={qt.thumbnail} alt={qt.title} className="w-8 h-8 rounded object-cover shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-white truncate">{qt.title}</p>
+                            <p className="text-[11px] text-neutral-400 truncate">
+                              {qt.artist}
+                              {qt.addedBy ? ` · 追加: ${qt.addedBy}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handlePlayJamTrack(qt)}
+                            className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>流す</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveJamTrack(qt.id)}
+                            className="p-1.5 text-neutral-500 hover:text-red-400 cursor-pointer"
+                            title="キューから削除"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Participants list */}
-              <div className="mt-6 pt-4 border-t border-neutral-800/80">
+              <div className="mt-5 pt-4 border-t border-neutral-800/80">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-bold text-neutral-400 flex items-center gap-1.5 uppercase tracking-wider">
                     <Users className="w-4 h-4 text-emerald-400" />

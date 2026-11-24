@@ -1,4 +1,5 @@
 import { saveOfflineTrack } from './offlineStorage';
+import { recordDownloadHistory } from './downloadHistory';
 import { Track } from '../types/music';
 
 export type FreemakeFormatId =
@@ -9,7 +10,12 @@ export type FreemakeFormatId =
   | 'flac'
   | 'wav'
   | 'ogg'
-  | 'mp4';
+  | 'mp4'
+  | 'mkv'
+  | 'avi'
+  | 'webm';
+
+export type FreemakeVideoQualityId = 'best' | '2160' | '1080' | '720' | '480' | '360';
 
 export interface FreemakeFormatOption {
   id: FreemakeFormatId;
@@ -37,6 +43,15 @@ export interface FreemakeProbeSiteMatch {
   score: number;
 }
 
+export interface FreemakePlaylistItem {
+  videoId: string;
+  title: string;
+  artist: string;
+  thumbnail?: string;
+  duration?: string;
+  durationSeconds?: number;
+}
+
 export interface FreemakeFormatsResponse {
   engine: string;
   ffmpegAvailable: boolean;
@@ -48,8 +63,14 @@ export interface FreemakeFormatsResponse {
 
 export interface FreemakeProbeResponse {
   videoId: string | null;
+  resolvedSiteName?: string | null;
+  resolvedUrl?: string | null;
+  resolvedArtist?: string | null;
   thumbnailUrl?: string | null;
   album?: string | null;
+  playlistId?: string | null;
+  playlistTitle?: string | null;
+  playlistItems?: FreemakePlaylistItem[];
   fullTrackAvailable?: boolean;
   fullTrackSource?: string | null;
   fullTrackTitle?: string | null;
@@ -59,6 +80,13 @@ export interface FreemakeProbeResponse {
   officialPreviewSource: string | null;
   hasServerCookie: boolean;
   hasCobaltServer: boolean;
+}
+
+export interface FreemakeOneClickConfig {
+  enabled: boolean;
+  format: FreemakeFormatId;
+  quality: FreemakeVideoQualityId;
+  saveTarget: 'device' | 'offline' | 'shared';
 }
 
 export interface FreemakeAdvancedConfig {
@@ -147,6 +175,32 @@ export function resetFreemakeProgress() {
 }
 
 const ADV_CONFIG_KEY = 'zero_music_freemake_adv_v1';
+const ONE_CLICK_CONFIG_KEY = 'zero_music_freemake_oneclick_v1';
+
+export function loadFreemakeOneClickConfig(): FreemakeOneClickConfig {
+  try {
+    const raw = localStorage.getItem(ONE_CLICK_CONFIG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        enabled: Boolean(parsed.enabled),
+        format: typeof parsed.format === 'string' ? (parsed.format as FreemakeFormatId) : 'mp3_320',
+        quality: typeof parsed.quality === 'string' ? (parsed.quality as FreemakeVideoQualityId) : 'best',
+        saveTarget:
+          parsed.saveTarget === 'offline' || parsed.saveTarget === 'shared'
+            ? parsed.saveTarget
+            : 'device',
+      };
+    }
+  } catch {}
+  return { enabled: false, format: 'mp3_320', quality: 'best', saveTarget: 'device' };
+}
+
+export function saveFreemakeOneClickConfig(cfg: FreemakeOneClickConfig) {
+  try {
+    localStorage.setItem(ONE_CLICK_CONFIG_KEY, JSON.stringify(cfg));
+  } catch {}
+}
 
 export function loadFreemakeAdvancedConfig(): FreemakeAdvancedConfig {
   try {
@@ -197,7 +251,14 @@ export async function probeFreemakeTrack(params: {
     qs.set('durationSeconds', String(Math.round(params.durationSeconds)));
   }
   const res = await fetch(`/api/freemake/probe?${qs.toString()}`);
-  if (!res.ok) throw new Error('プローブに失敗しました');
+  if (!res.ok) {
+    let errMsg = 'プローブに失敗しました';
+    try {
+      const j = await res.json();
+      if (j?.error) errMsg = j.error;
+    } catch {}
+    throw new Error(errMsg);
+  }
   return res.json();
 }
 
@@ -349,7 +410,19 @@ export async function downloadArtworkImageFile(imageUrl: string, filenameBase: s
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 100) || 'artwork';
-  triggerBlobDownload(blob, `${cleanBase}_cover.jpg`);
+  const outName = `${cleanBase}_cover.jpg`;
+  triggerBlobDownload(blob, outName);
+  recordDownloadHistory({
+    title: filenameBase || 'ジャケット画像',
+    artist: 'アートワーク保存',
+    filename: outName,
+    formatExt: 'jpg',
+    mimeType: 'image/jpeg',
+    fileSize: blob.size,
+    thumbnail: imageUrl,
+    sourceLabel: 'ジャケット画像保存',
+    target: 'artwork',
+  });
   return true;
 }
 
@@ -741,6 +814,8 @@ const KNOWN_MEDIA_EXTS = new Set([
   'opus',
   'webm',
   'mp4',
+  'mkv',
+  'avi',
   'ts',
 ]);
 
@@ -759,9 +834,11 @@ export async function downloadWithFreemake(params: {
   duration?: string;
   durationSeconds?: number;
   format: FreemakeFormatId;
+  quality?: FreemakeVideoQualityId;
   saveTarget: 'device' | 'offline' | 'both';
   allowPreviewFallback?: boolean;
   enabledSites?: string[];
+  skipHistoryRecord?: boolean;
   onProgress?: (state: FreemakeProgressState) => void;
 }): Promise<FreemakeDownloadResult> {
   const adv = loadFreemakeAdvancedConfig();
@@ -780,12 +857,12 @@ export async function downloadWithFreemake(params: {
     active: true,
     mode: 'download',
     jobId: undefined,
-    title: params.title || 'YouTube Audio',
+    title: params.title || 'Freemake Media',
     artist: params.artist || '',
     formatExt: ext,
     stage: 'resolving',
     percent: 4,
-    message: '音源情報を照合中...',
+    message: 'メディア情報を照合中...',
     receivedBytes: undefined,
     totalBytes: undefined,
     processedSec: undefined,
@@ -804,6 +881,7 @@ export async function downloadWithFreemake(params: {
     duration: params.duration || '',
     durationSeconds: params.durationSeconds || 0,
     format: params.format,
+    quality: params.quality || 'best',
     cobaltApiUrl: adv.cobaltApiUrl || undefined,
     youtubeCookie: adv.youtubeCookie || undefined,
     allowPreviewFallback: Boolean(params.allowPreviewFallback),
@@ -962,6 +1040,34 @@ export async function downloadWithFreemake(params: {
       );
     } catch (err) {
       console.warn('[Freemake] Auto-save to offline storage failed:', err);
+    }
+
+    if (!params.skipHistoryRecord) {
+      const resolvedTitle =
+        sourceKind === 'official-preview-30s'
+          ? `${params.title || filename.replace(/\.[^.]+$/, '')} (30秒プレビュー)`
+          : params.title || filename.replace(/\.[^.]+$/, '') || 'Downloaded Track';
+      recordDownloadHistory({
+        title: resolvedTitle,
+        artist: params.artist || 'Freemake保存',
+        album: resolvedAlbum,
+        filename,
+        formatExt: actualExt,
+        mimeType: blob.type || undefined,
+        fileSize: blob.size,
+        thumbnail: cachedSquareThumb || bestArtworkUrl,
+        sourceLabel: sourceLabel || 'Freemake',
+        target: params.saveTarget,
+        videoId: params.videoId,
+        offlineTrackId: savedOfflineTrack?.id,
+        duration:
+          sourceKind === 'official-preview-30s'
+            ? '0:30'
+            : headerDurSec > 0
+            ? formatDurationLabel(headerDurSec)
+            : params.duration || formatDurationLabel(resolvedDurSec),
+        durationSeconds: resolvedDurSec,
+      });
     }
 
     emit({
@@ -1243,6 +1349,22 @@ export async function convertLocalFileWithFreemake(params: {
     } catch (err) {
       console.warn('[Freemake] Auto-save converted track failed:', err);
     }
+
+    const convExt = resolveActualExtension(filename, ext);
+    recordDownloadHistory({
+      title: `${baseName} (Freemake変換)`,
+      artist: params.artist || 'ローカル音源',
+      album: 'Freemake 変換ライブラリ',
+      filename,
+      formatExt: convExt,
+      mimeType: finalBlob.type || undefined,
+      fileSize: finalBlob.size,
+      sourceLabel: 'ローカル変換 (FFmpeg)',
+      target: params.saveTarget,
+      offlineTrackId: savedOfflineTrack?.id,
+      duration: formatDurationLabel(durationSec),
+      durationSeconds: durationSec,
+    });
 
     emit({
       active: false,

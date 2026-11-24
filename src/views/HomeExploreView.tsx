@@ -28,6 +28,10 @@ import {
   X,
   Download,
   Globe,
+  RefreshCw,
+  History,
+  Podcast,
+  Sliders,
 } from 'lucide-react';
 
 interface MadeForYouMix {
@@ -340,6 +344,11 @@ export const HomeExploreView: React.FC = () => {
     setSettingsModalOpen,
     openFreemakeModal,
     setLibraryTab,
+    setAiPlaylistModalOpen,
+    setDspModalOpen,
+    audioQuality,
+    spatialAudio,
+    vocalLevel,
   } = usePlayer();
 
   const [data, setData] = useState<ExploreData | null>(null);
@@ -354,6 +363,7 @@ export const HomeExploreView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFromCache, setIsFromCache] = useState(false);
+  const [exploreReloadSeq, setExploreReloadSeq] = useState(0);
 
   // Personalized Mixes (Daylist / Daily Mix / Release Radar)
   const [madeForYouMixes, setMadeForYouMixes] = useState<MadeForYouMix[]>([]);
@@ -457,10 +467,27 @@ export const HomeExploreView: React.FC = () => {
 
   useEffect(() => {
     let active = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setLoading(true);
+    setError(null);
+
+    const fetchExploreWithColdStartRetry = async (): Promise<ExploreData> => {
+      try {
+        return await api.getExplore();
+      } catch (firstErr) {
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          throw firstErr;
+        }
+        await new Promise((resolve) => {
+          retryTimer = setTimeout(resolve, 1200);
+        });
+        if (!active) throw firstErr;
+        return await api.getExplore();
+      }
+    };
 
     Promise.all([
-      api.getExplore(),
+      fetchExploreWithColdStartRetry(),
       api.getHigedanSpotlight().catch(() => null),
       api.getArtist(HIGEDAN_CHANNEL_ID).catch(() => null),
     ])
@@ -530,8 +557,9 @@ export const HomeExploreView: React.FC = () => {
 
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, []);
+  }, [exploreReloadSeq]);
 
   // Generate Personalized Auto-Mixes (Daylist / Daily Mix 1 & 2 / Release Radar)
   useEffect(() => {
@@ -948,20 +976,38 @@ export const HomeExploreView: React.FC = () => {
   }
 
   if (error && !data) {
+    const isBrowserOffline = typeof navigator !== 'undefined' && !navigator.onLine;
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center text-center p-6 space-y-4 max-w-sm mx-auto">
         <div className="w-12 h-12 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-red-500">
           <WifiOff className="w-6 h-6" />
         </div>
-        <p className="text-sm font-semibold text-white">ネットワークに接続できません</p>
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-white">
+            {isBrowserOffline ? 'ネットワークに接続できません' : 'サーバーに接続できませんでした'}
+          </p>
+          {!isBrowserOffline && (
+            <p className="text-xs text-neutral-400">
+              一時的な読み込みエラーが発生しました。再試行するかオフライン機能をご利用ください。
+            </p>
+          )}
+        </div>
         <div className="flex flex-wrap items-center justify-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setExploreReloadSeq((s) => s + 1)}
+            className="min-h-[44px] px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-bold rounded-xl border border-neutral-700 flex items-center gap-2 cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>再読み込み</span>
+          </button>
           <button
             type="button"
             onClick={() => {
               setLibraryTab('local');
               navigateTo('library');
             }}
-            className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
+            className="min-h-[44px] px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
           >
             <FolderDown className="w-4 h-4" />
             <span>オフライン曲</span>
@@ -972,10 +1018,21 @@ export const HomeExploreView: React.FC = () => {
               setLibraryTab('shared_offline');
               navigateTo('library');
             }}
-            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer"
+            className="min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer"
           >
             <Globe className="w-4 h-4" />
             <span>共有オフライン</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setLibraryTab('downloads');
+              navigateTo('library');
+            }}
+            className="min-h-[44px] px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-sky-300 text-xs font-bold rounded-xl border border-sky-500/35 flex items-center gap-2 cursor-pointer"
+          >
+            <History className="w-4 h-4" />
+            <span>ダウンロード履歴</span>
           </button>
         </div>
       </div>
@@ -1034,6 +1091,61 @@ export const HomeExploreView: React.FC = () => {
               <Settings className="w-5 h-5" />
             </button>
           </div>
+        </div>
+
+        {/* Compact Studio Launcher Row (Mobile & PC 1-tap access) */}
+        <div className="grid grid-cols-3 gap-2 pt-0.5">
+          <button
+            type="button"
+            onClick={() => setAiPlaylistModalOpen(true)}
+            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-amber-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 shrink-0">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">AI選曲</p>
+              <p className="text-[10px] text-neutral-400 truncate">プレイリスト/ラジオ</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => navigateTo('podcasts')}
+            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-emerald-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 shrink-0">
+              <Podcast className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">ポッドキャスト</p>
+              <p className="text-[10px] text-neutral-400 truncate">音声・動画番組</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDspModalOpen(true)}
+            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-sky-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center text-sky-400 shrink-0">
+              <Sliders className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">音質 / Sing</p>
+              <p className="text-[10px] text-neutral-400 truncate">
+                {vocalLevel < 100
+                  ? `Sing ${vocalLevel}%`
+                  : spatialAudio !== 'off'
+                  ? '空間オーディオ'
+                  : audioQuality === 'hires'
+                  ? 'ハイレゾDSP'
+                  : audioQuality === 'lossless'
+                  ? 'ロスレス'
+                  : '空間・カラオケ'}
+              </p>
+            </div>
+          </button>
         </div>
 
         <div className="flex items-center justify-between gap-2">

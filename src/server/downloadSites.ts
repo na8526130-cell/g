@@ -7,10 +7,12 @@ export type FreemakeDownloadSiteId =
   | 'piped'
   | 'invidious'
   | 'bilibili-full'
+  | 'niconico-full'
   | 'soundcloud-full'
+  | 'dailymotion-full'
+  | 'vimeo-full'
   | 'jiosaavn-full'
   | 'audius-full'
-  | 'dailymotion-full'
   | 'hearthis-full'
   | 'odysee-full'
   | 'peertube-full'
@@ -64,7 +66,15 @@ export const FREEMAKE_DOWNLOAD_SITES: FreemakeDownloadSiteSpec[] = [
     category: 'full-track-search',
     supportsVideo: true,
     badge: 'Music / MV',
-    description: '高音質 DASH 音声・公式 MV・分割アルバム対応',
+    description: '高音質 DASH 音声・公式 MV・URL直接解析対応',
+  },
+  {
+    id: 'niconico-full',
+    name: 'ニコニコ動画',
+    category: 'full-track-search',
+    supportsVideo: true,
+    badge: 'URL / Watch',
+    description: 'nicovideo.jp / nico.ms URLメタデータ＆音声・動画解決',
   },
   {
     id: 'soundcloud-full',
@@ -72,7 +82,23 @@ export const FREEMAKE_DOWNLOAD_SITES: FreemakeDownloadSiteSpec[] = [
     category: 'full-track-search',
     supportsVideo: false,
     badge: 'MP3 / HLS',
-    description: 'フル尺 Progressive / HLS オーディオ',
+    description: 'フル尺 Progressive / HLS オーディオ・URL直接取得',
+  },
+  {
+    id: 'dailymotion-full',
+    name: 'Dailymotion',
+    category: 'full-track-search',
+    supportsVideo: true,
+    badge: 'MV / HD MP4',
+    description: '公式 MV HD MP4 / HLS ストリーム・URL直接取得',
+  },
+  {
+    id: 'vimeo-full',
+    name: 'Vimeo',
+    category: 'full-track-search',
+    supportsVideo: true,
+    badge: 'URL / HD MP4',
+    description: 'Vimeo URL 直接解析・高画質 MP4 取得',
   },
   {
     id: 'jiosaavn-full',
@@ -89,14 +115,6 @@ export const FREEMAKE_DOWNLOAD_SITES: FreemakeDownloadSiteSpec[] = [
     supportsVideo: false,
     badge: 'MP3 Stream',
     description: 'オープン音楽プラットフォーム直接 MP3 配信',
-  },
-  {
-    id: 'dailymotion-full',
-    name: 'Dailymotion',
-    category: 'full-track-search',
-    supportsVideo: true,
-    badge: 'MV / HLS',
-    description: '公式 MV・ライブ動画 HLS ストリーム',
   },
   {
     id: 'hearthis-full',
@@ -340,11 +358,36 @@ const INVIDIOUS_INSTANCES = [
   'https://iv.datura.network',
 ];
 
+function extractStreamHeight(raw: any): number {
+  if (typeof raw?.height === 'number' && raw.height > 0) return raw.height;
+  const qStr = String(raw?.quality || raw?.qualityLabel || '');
+  const m = qStr.match(/(\d{3,4})p/i);
+  return m?.[1] ? Number(m[1]) || 0 : 0;
+}
+
+function sortVideoStreamsByHeight(streams: any[], maxVideoHeight = 0): any[] {
+  return [...streams].sort((a, b) => {
+    const ha = extractStreamHeight(a);
+    const hb = extractStreamHeight(b);
+    if (maxVideoHeight > 0) {
+      const aFits = ha > 0 && ha <= maxVideoHeight ? 0 : 1;
+      const bFits = hb > 0 && hb <= maxVideoHeight ? 0 : 1;
+      if (aFits !== bFits) return aFits - bFits;
+      if (aFits === 0 && ha !== hb) return hb - ha;
+      if (ha !== hb) return ha - hb;
+    } else if (ha !== hb) {
+      return hb - ha;
+    }
+    return (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
+  });
+}
+
 export async function resolveViaPipedPool(
   videoId: string,
   wantsVideo: boolean,
   probeRemoteStream: SearchHelpers['probeRemoteStream'],
-  isVercel: boolean
+  isVercel: boolean,
+  maxVideoHeight = 0
 ): Promise<{
   url: string;
   sourceKind: 'piped';
@@ -367,11 +410,13 @@ export async function resolveViaPipedPool(
       ? data.audioStreams.filter((s: any) => s.url)
       : [];
 
-    const sorted = [...streams].sort((a, b) =>
-      isVercel && !wantsVideo
-        ? (Number(a.bitrate) || 0) - (Number(b.bitrate) || 0)
-        : (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0)
-    );
+    const sorted = wantsVideo
+      ? sortVideoStreamsByHeight(streams, maxVideoHeight)
+      : [...streams].sort((a, b) =>
+          isVercel
+            ? (Number(a.bitrate) || 0) - (Number(b.bitrate) || 0)
+            : (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0)
+        );
 
     for (const st of sorted.slice(0, 3)) {
       const probe = await probeRemoteStream(st.url, { 'User-Agent': BROWSER_UA });
@@ -400,7 +445,8 @@ export async function resolveViaInvidiousPool(
   videoId: string,
   wantsVideo: boolean,
   probeRemoteStream: SearchHelpers['probeRemoteStream'],
-  isVercel: boolean
+  isVercel: boolean,
+  maxVideoHeight = 0
 ): Promise<{
   url: string;
   sourceKind: 'invidious';
@@ -423,13 +469,14 @@ export async function resolveViaInvidiousPool(
       ? data.adaptiveFormats.filter((f: any) => String(f?.type || '').startsWith('audio/'))
       : [];
 
-    const sorted = [...rawList]
-      .filter((f) => typeof f?.url === 'string' && f.url)
-      .sort((a, b) =>
-        isVercel && !wantsVideo
-          ? (Number(a.bitrate) || 0) - (Number(b.bitrate) || 0)
-          : (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0)
-      );
+    const filtered = rawList.filter((f) => typeof f?.url === 'string' && f.url);
+    const sorted = wantsVideo
+      ? sortVideoStreamsByHeight(filtered, maxVideoHeight)
+      : [...filtered].sort((a, b) =>
+          isVercel
+            ? (Number(a.bitrate) || 0) - (Number(b.bitrate) || 0)
+            : (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0)
+        );
 
     for (const fmt of sorted.slice(0, 3)) {
       const probe = await probeRemoteStream(fmt.url, { 'User-Agent': BROWSER_UA });

@@ -13,6 +13,7 @@ import {
   warmSharedOfflineBlobUrls,
 } from './offlineStorage';
 import { isIosStandalonePwa, shareBlobFile, triggerBlobDownload } from './freemake';
+import { recordDownloadHistory } from './downloadHistory';
 
 export interface ServerSharedOfflineItem {
   id: string;
@@ -576,6 +577,21 @@ export async function downloadSharedOfflineTrack(
       ...track,
       fileName: track.fileName || cached.fileName,
     });
+    recordDownloadHistory({
+      title: track.title,
+      artist: track.artist,
+      album: track.album || '共有オフライン',
+      filename,
+      formatExt: (track.fileExt || filename.split('.').pop() || 'mp3').replace(/^\./, '').toLowerCase(),
+      mimeType: cached.blob.type || undefined,
+      fileSize: track.fileSize || cached.blob.size,
+      thumbnail: track.thumbnail,
+      sourceLabel: '共有オフライン (キャッシュ)',
+      target: 'device',
+      sharedTrackId: track.id,
+      duration: track.duration,
+      durationSeconds: track.durationSeconds,
+    });
     if (isIosStandalonePwa()) {
       const shared = await shareBlobFile(cached.blob, filename);
       if (shared) return { filename, fromCache: true };
@@ -615,6 +631,22 @@ export async function downloadSharedOfflineTrack(
     blob
   ).catch(() => {});
 
+  recordDownloadHistory({
+    title: track.title,
+    artist: track.artist,
+    album: track.album || '共有オフライン',
+    filename,
+    formatExt: (track.fileExt || filename.split('.').pop() || 'mp3').replace(/^\./, '').toLowerCase(),
+    mimeType: blob.type || undefined,
+    fileSize: track.fileSize || blob.size,
+    thumbnail: track.thumbnail,
+    sourceLabel: '共有オフライン',
+    target: 'device',
+    sharedTrackId: track.id,
+    duration: track.duration,
+    durationSeconds: track.durationSeconds,
+  });
+
   if (isIosStandalonePwa()) {
     const shared = await shareBlobFile(blob, filename);
     if (shared) return { filename, fromCache: false };
@@ -643,7 +675,7 @@ export async function copySharedTrackToMyOffline(track: Track): Promise<Track> {
     .replace(/^\./, '')
     .toLowerCase();
 
-  return saveOfflineTrack(
+  const saved = await saveOfflineTrack(
     blob,
     track.title,
     track.artist,
@@ -653,4 +685,23 @@ export async function copySharedTrackToMyOffline(track: Track): Promise<Track> {
     track.thumbnail,
     fileExt
   );
+
+  recordDownloadHistory({
+    title: track.title,
+    artist: track.artist,
+    album: '共有オフラインから保存',
+    filename: buildSharedDownloadFilename(track),
+    formatExt: fileExt,
+    mimeType: blob.type || undefined,
+    fileSize: track.fileSize || blob.size,
+    thumbnail: track.thumbnail,
+    sourceLabel: '共有オフライン → マイ・オフライン',
+    target: 'offline',
+    offlineTrackId: saved.id,
+    sharedTrackId: track.id,
+    duration: track.duration || '3:00',
+    durationSeconds: track.durationSeconds || 180,
+  });
+
+  return saved;
 }

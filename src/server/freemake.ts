@@ -13,13 +13,14 @@ import {
   resolveViaInvidiousPool,
   searchMultiSiteCandidates,
   SearchHelpers,
-} from './downloadSites';
+} from './downloadSites.js';
 import {
+  assertSafePublicHttpUrl,
   CoverImageAsset,
   embedMetadataAndCoverFile,
   fetchBestCoverImage,
   fetchSafeExternalImage,
-} from './coverEmbed';
+} from './coverEmbed.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,7 +37,22 @@ export type FreemakeFormatId =
   | 'flac'
   | 'wav'
   | 'ogg'
-  | 'mp4';
+  | 'mp4'
+  | 'mkv'
+  | 'avi'
+  | 'webm';
+
+export type FreemakeVideoQualityId = 'best' | '2160' | '1080' | '720' | '480' | '360';
+
+function parseQualityMaxHeight(q?: string): number {
+  const clean = String(q || '').trim().toLowerCase();
+  if (clean === '2160' || clean === '4k') return 2160;
+  if (clean === '1080' || clean === '1080p') return 1080;
+  if (clean === '720' || clean === '720p') return 720;
+  if (clean === '480' || clean === '480p') return 480;
+  if (clean === '360' || clean === '360p') return 360;
+  return 0;
+}
 
 export interface FreemakeFormatSpec {
   id: FreemakeFormatId;
@@ -114,12 +130,39 @@ export const FREEMAKE_FORMATS: Record<FreemakeFormatId, FreemakeFormatSpec> = {
   },
   mp4: {
     id: 'mp4',
-    label: 'MP4 動画 / MV',
+    label: 'MP4 動画 / MV (汎用高画質)',
     ext: 'mp4',
     mimeType: 'video/mp4',
     isVideo: true,
     bitrateLabel: 'H.264 + AAC',
     ffmpegArgs: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'],
+  },
+  mkv: {
+    id: 'mkv',
+    label: 'MKV 動画 (Matroska HD)',
+    ext: 'mkv',
+    mimeType: 'video/x-matroska',
+    isVideo: true,
+    bitrateLabel: 'H.264 + AAC',
+    ffmpegArgs: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'aac', '-b:a', '192k'],
+  },
+  avi: {
+    id: 'avi',
+    label: 'AVI 動画 (互換フォーマット)',
+    ext: 'avi',
+    mimeType: 'video/x-msvideo',
+    isVideo: true,
+    bitrateLabel: 'MPEG-4 + MP3',
+    ffmpegArgs: ['-c:v', 'mpeg4', '-q:v', '4', '-c:a', 'libmp3lame', '-b:a', '192k'],
+  },
+  webm: {
+    id: 'webm',
+    label: 'WebM 動画 (VP8 / Vorbis)',
+    ext: 'webm',
+    mimeType: 'video/webm',
+    isVideo: true,
+    bitrateLabel: 'VP8 + Vorbis',
+    ffmpegArgs: ['-c:v', 'libvpx', '-deadline', 'realtime', '-cpu-used', '5', '-crf', '22', '-b:v', '1500k', '-c:a', 'libvorbis', '-q:a', '5'],
   },
 };
 
@@ -172,16 +215,112 @@ function extractYouTubeVideoId(input: string): string | null {
   if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
   try {
     const u = new URL(trimmed);
-    if (u.hostname.includes('youtu.be')) {
+    const host = u.hostname.toLowerCase();
+    if (host.includes('youtu.be')) {
       const id = u.pathname.replace(/^\//, '').slice(0, 11);
       return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
     }
-    const v = u.searchParams.get('v');
-    if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) return v;
-    const embedMatch = u.pathname.match(/\/(?:embed|shorts|live)\/([a-zA-Z0-9_-]{11})/);
-    if (embedMatch?.[1]) return embedMatch[1];
+    if (host.includes('youtube.com') || host.includes('youtube-nocookie.com')) {
+      const v = u.searchParams.get('v');
+      if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) return v;
+      const embedMatch = u.pathname.match(/\/(?:embed|shorts|live)\/([a-zA-Z0-9_-]{11})/);
+      if (embedMatch?.[1]) return embedMatch[1];
+    }
   } catch {}
   return null;
+}
+
+function extractYouTubePlaylistId(input: string): string | null {
+  const trimmed = input.trim();
+  try {
+    const u = new URL(trimmed);
+    const host = u.hostname.toLowerCase();
+    if (host.includes('youtube.com') || host.includes('youtu.be')) {
+      const list = u.searchParams.get('list');
+      if (list && /^[a-zA-Z0-9_-]{8,128}$/.test(list) && list !== 'WL' && list !== 'LL') {
+        return list;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+interface ResolvedPlaylistItem {
+  videoId: string;
+  title: string;
+  artist: string;
+  thumbnail?: string;
+  duration?: string;
+  durationSeconds?: number;
+}
+
+async function resolveYouTubePlaylist(
+  listId: string,
+  getInnertube: () => Promise<Innertube>
+): Promise<{ playlistTitle: string; items: ResolvedPlaylistItem[] } | null> {
+  try {
+    const yt = await getInnertube();
+    let playlistTitle = 'YouTube プレイリスト';
+    const out: ResolvedPlaylistItem[] = [];
+    const seen = new Set<string>();
+
+    const pushItem = (raw: any) => {
+      const id = String(raw?.id || raw?.video_id || '').trim();
+      if (!id || !/^[a-zA-Z0-9_-]{11}$/.test(id) || seen.has(id)) return;
+      seen.add(id);
+      const itemTitle = String(raw?.title?.toString?.() || raw?.title || '').trim();
+      if (!itemTitle) return;
+      const artist = String(
+        raw?.artists?.[0]?.name || raw?.author?.name || raw?.channel?.name || 'YouTube'
+      )
+        .replace(/\s*-\s*Topic$/i, '')
+        .trim();
+      const durSec = Number(raw?.duration?.seconds) || parseDurationTextToSec(raw?.duration?.text);
+      const durText =
+        typeof raw?.duration?.text === 'string' && raw.duration.text
+          ? raw.duration.text
+          : durSec > 0
+          ? formatSecLabel(durSec)
+          : undefined;
+      const thumb =
+        raw?.thumbnails?.[0]?.url ||
+        raw?.thumbnail?.contents?.[0]?.url ||
+        `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+      out.push({
+        videoId: id,
+        title: itemTitle,
+        artist,
+        thumbnail: thumb,
+        duration: durText,
+        durationSeconds: durSec > 0 ? durSec : undefined,
+      });
+    };
+
+    try {
+      const musicPl: any = await yt.music.getPlaylist(listId);
+      if (musicPl?.header?.title) {
+        playlistTitle = String(musicPl.header.title.toString?.() || musicPl.header.title).trim();
+      }
+      const items = Array.isArray(musicPl?.contents) ? musicPl.contents : [];
+      for (const item of items) pushItem(item);
+    } catch {}
+
+    if (out.length === 0) {
+      try {
+        const pl: any = await yt.getPlaylist(listId);
+        if (pl?.info?.title) {
+          playlistTitle = String(pl.info.title).trim();
+        }
+        const items = Array.isArray(pl?.items) ? pl.items : Array.isArray(pl?.videos) ? pl.videos : [];
+        for (const item of items) pushItem(item);
+      } catch {}
+    }
+
+    if (out.length === 0) return null;
+    return { playlistTitle, items: out.slice(0, 40) };
+  } catch {
+    return null;
+  }
 }
 
 function stripHtmlTags(s: string): string {
@@ -981,7 +1120,8 @@ async function probeRemoteStream(
 
 async function resolveBilibiliStreamForCandidate(
   candidate: BiliCandidate,
-  wantsVideo: boolean
+  wantsVideo: boolean,
+  maxVideoHeight = 0
 ): Promise<{
   url: string;
   headers: Record<string, string>;
@@ -1010,7 +1150,7 @@ async function resolveBilibiliStreamForCandidate(
       cid = viewJson?.data?.cid;
       realDuration = Number(viewJson?.data?.duration) || candidate.durationSec;
     }
-    if (!cid || realDuration < 45) return null;
+    if (!cid || realDuration < 15) return null;
 
     const streamHeaders = {
       'User-Agent': BROWSER_UA,
@@ -1078,36 +1218,26 @@ async function resolveBilibiliStreamForCandidate(
     };
 
     if (wantsVideo) {
-      const qn64 = await tryDurlQuality(64);
-      if (qn64 && (qn64.size === 0 || qn64.size <= 36 * 1024 * 1024)) {
-        return {
-          url: qn64.url,
-          headers: streamHeaders,
-          durationSec: realDuration,
-          title: candidate.title,
-          hasVideo: true,
-        };
-      }
+      const qnOrder =
+        maxVideoHeight > 0 && maxVideoHeight <= 360
+          ? [16, 32]
+          : maxVideoHeight > 0 && maxVideoHeight <= 480
+          ? [32, 16]
+          : maxVideoHeight > 0 && maxVideoHeight <= 720
+          ? [64, 32]
+          : [80, 64, 32];
 
-      const qn32 = await tryDurlQuality(32);
-      if (qn32) {
-        return {
-          url: qn32.url,
-          headers: streamHeaders,
-          durationSec: realDuration,
-          title: candidate.title,
-          hasVideo: true,
-        };
-      }
-
-      if (qn64) {
-        return {
-          url: qn64.url,
-          headers: streamHeaders,
-          durationSec: realDuration,
-          title: candidate.title,
-          hasVideo: true,
-        };
+      for (const qn of qnOrder) {
+        const picked = await tryDurlQuality(qn);
+        if (picked && (!IS_VERCEL || picked.size === 0 || picked.size <= 36 * 1024 * 1024)) {
+          return {
+            url: picked.url,
+            headers: streamHeaders,
+            durationSec: realDuration,
+            title: candidate.title,
+            hasVideo: true,
+          };
+        }
       }
 
       const dashAudioUrl = await tryDashAudio();
@@ -1332,7 +1462,697 @@ async function resolveSoundCloudStreamForCandidate(
   return null;
 }
 
+// ---------- SSRF-Safe Multi-Site External URL Resolver (Bilibili / Niconico / Dailymotion / SoundCloud / Vimeo / Cobalt / OG) ----------
+
+interface ResolvedExternalPage {
+  siteId: FreemakeDownloadSiteId;
+  siteName: string;
+  pageUrl: string;
+  title: string;
+  artist: string;
+  album?: string;
+  thumbnailUrl?: string;
+  durationSec: number;
+  directStreamUrl?: string;
+  directProtocol?: 'direct' | 'hls';
+  directHeaders?: Record<string, string>;
+  directHasVideo?: boolean;
+  directQualityLabel?: string;
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const cp = parseInt(hex, 16);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const cp = parseInt(dec, 10);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : '';
+    })
+    .trim();
+}
+
+function extractXmlTag(xml: string, tag: string): string {
+  const m = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+  return m?.[1] ? decodeHtmlEntities(m[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')) : '';
+}
+
+function extractHtmlMetaContent(html: string, names: string[]): string {
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const r1 = html.match(
+      new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`, 'i')
+    );
+    if (r1?.[1]) return decodeHtmlEntities(r1[1]);
+    const r2 = html.match(
+      new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`, 'i')
+    );
+    if (r2?.[1]) return decodeHtmlEntities(r2[1]);
+  }
+  return '';
+}
+
+async function fetchSafePublicWithRedirects(
+  rawUrl: string,
+  opts?: { headers?: Record<string, string>; timeoutMs?: number; maxBytes?: number }
+): Promise<{ finalUrl: string; contentType: string; text: string } | null> {
+  let current = rawUrl;
+  const timeoutMs = opts?.timeoutMs ?? 4800;
+  const maxBytes = opts?.maxBytes ?? 196 * 1024;
+  for (let hop = 0; hop <= 3; hop++) {
+    const safeUrl = await assertSafePublicHttpUrl(current);
+    const resp = await fetch(safeUrl.toString(), {
+      headers: { 'User-Agent': BROWSER_UA, ...(opts?.headers || {}) },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('location');
+      if (!loc || hop === 3) return null;
+      current = new URL(loc, safeUrl).toString();
+      continue;
+    }
+    if (!resp.ok) return null;
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      const txt = (await resp.text()).slice(0, maxBytes);
+      return { finalUrl: safeUrl.toString(), contentType: ct, text: txt };
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      while (total < maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          const take = value.subarray(0, Math.max(0, maxBytes - total));
+          chunks.push(Buffer.from(take));
+          total += take.byteLength;
+          if (total >= maxBytes) break;
+        }
+      }
+      await reader.cancel().catch(() => {});
+    } catch {}
+    return {
+      finalUrl: safeUrl.toString(),
+      contentType: ct,
+      text: Buffer.concat(chunks).toString('utf8'),
+    };
+  }
+  return null;
+}
+
+async function resolveCobaltUniversalUrl(
+  targetUrl: string,
+  wantsVideo: boolean,
+  maxVideoHeight: number,
+  cobaltApiUrl?: string
+): Promise<{ url: string; label: string } | null> {
+  const endpointRaw = (cobaltApiUrl || process.env.COBALT_API_URL || '').trim();
+  if (!endpointRaw) return null;
+  try {
+    await assertSafePublicHttpUrl(targetUrl);
+    const endpoint = endpointRaw.replace(/\/+$/, '');
+    const videoQuality =
+      maxVideoHeight >= 2160
+        ? '2160'
+        : maxVideoHeight >= 1080
+        ? '1080'
+        : maxVideoHeight >= 720
+        ? '720'
+        : maxVideoHeight >= 480
+        ? '480'
+        : maxVideoHeight >= 360
+        ? '360'
+        : '1080';
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url: targetUrl,
+        downloadMode: wantsVideo ? 'auto' : 'audio',
+        audioFormat: 'best',
+        videoQuality,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return null;
+    const data = (await r.json()) as any;
+    const outUrl =
+      typeof data?.url === 'string'
+        ? data.url
+        : Array.isArray(data?.picker)
+        ? data.picker.find((p: any) => typeof p?.url === 'string')?.url
+        : '';
+    if (outUrl) {
+      await assertSafePublicHttpUrl(outUrl);
+      const probe = await probeRemoteStream(outUrl, { 'User-Agent': BROWSER_UA });
+      if (probe.ok) {
+        return { url: outUrl, label: 'Cobalt ダイレクト抽出' };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+async function resolveExternalPageUrl(
+  rawUrl: string,
+  wantsVideo: boolean,
+  maxVideoHeight: number,
+  opts?: {
+    cobaltApiUrl?: string;
+    enabledSiteSet?: Set<string> | null;
+    resolveStreams?: boolean;
+  }
+): Promise<ResolvedExternalPage | null> {
+  const safeParsed = await assertSafePublicHttpUrl(rawUrl);
+  let targetUrl = safeParsed.toString();
+  let host = safeParsed.hostname.toLowerCase();
+  const resolveStreams = opts?.resolveStreams !== false;
+  const allowSite = (id: FreemakeDownloadSiteId) =>
+    !opts?.enabledSiteSet || opts.enabledSiteSet.has(id);
+
+  // Follow b23.tv / nico.ms / dai.ly short links safely (SSRF-checked per hop)
+  if (host === 'b23.tv' || host === 'nico.ms' || host === 'dai.ly') {
+    let cur = targetUrl;
+    for (let hop = 0; hop < 3; hop++) {
+      try {
+        const uCheck = await assertSafePublicHttpUrl(cur);
+        const r = await fetch(uCheck.toString(), {
+          method: 'GET',
+          headers: { 'User-Agent': BROWSER_UA },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(4000),
+        });
+        if (r.status >= 300 && r.status < 400) {
+          const loc = r.headers.get('location');
+          if (!loc) break;
+          cur = new URL(loc, uCheck).toString();
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
+    const resolvedParsed = await assertSafePublicHttpUrl(cur);
+    targetUrl = resolvedParsed.toString();
+    host = resolvedParsed.hostname.toLowerCase();
+  }
+
+  // 1. Bilibili URL (BV... / av...)
+  if (host.includes('bilibili.com') && allowSite('bilibili-full')) {
+    const bvMatch = targetUrl.match(/\/video\/(BV[a-zA-Z0-9]+)/i);
+    const avMatch = targetUrl.match(/\/video\/av(\d+)/i);
+    const paramQuery = bvMatch?.[1]
+      ? `bvid=${encodeURIComponent(bvMatch[1])}`
+      : avMatch?.[1]
+      ? `aid=${encodeURIComponent(avMatch[1])}`
+      : '';
+    if (paramQuery) {
+      try {
+        const buvid3 = await getBilibiliCookie();
+        const viewRes = await fetch(`https://api.bilibili.com/x/web-interface/view?${paramQuery}`, {
+          headers: {
+            'User-Agent': BROWSER_UA,
+            Referer: 'https://www.bilibili.com/',
+            ...(buvid3 ? { Cookie: `buvid3=${buvid3}` } : {}),
+          },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (viewRes.ok) {
+          const viewJson = (await viewRes.json()) as any;
+          const d = viewJson?.data;
+          if (d?.bvid && d?.cid) {
+            const pageTitle = String(d.title || '').trim();
+            const author = String(d.owner?.name || 'Bilibili').trim();
+            const thumb = typeof d.pic === 'string' ? d.pic.replace(/^http:\/\//i, 'https://') : undefined;
+            const durSec = Number(d.duration) || 0;
+            let directStreamUrl: string | undefined;
+            let directHeaders: Record<string, string> | undefined;
+            let directHasVideo = wantsVideo;
+            if (resolveStreams) {
+              const stream = await resolveBilibiliStreamForCandidate(
+                {
+                  bvid: d.bvid,
+                  cid: Number(d.cid),
+                  title: pageTitle,
+                  author,
+                  durationSec: durSec,
+                  playCount: Number(d.stat?.view) || 0,
+                  score: 100,
+                },
+                wantsVideo,
+                maxVideoHeight
+              );
+              if (stream) {
+                directStreamUrl = stream.url;
+                directHeaders = stream.headers;
+                directHasVideo = stream.hasVideo;
+              }
+            }
+            return {
+              siteId: 'bilibili-full',
+              siteName: 'Bilibili',
+              pageUrl: targetUrl,
+              title: pageTitle,
+              artist: author,
+              album: 'Bilibili URL取得',
+              thumbnailUrl: thumb,
+              durationSec: durSec,
+              directStreamUrl,
+              directProtocol: directStreamUrl ? 'direct' : undefined,
+              directHeaders,
+              directHasVideo,
+            };
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 2. Niconico URL (nicovideo.jp/watch/sm... or nm... or so...)
+  if ((host.includes('nicovideo.jp') || host === 'nico.ms') && allowSite('niconico-full')) {
+    const idMatch = targetUrl.match(/\/(?:watch\/)?((?:sm|nm|so)\d+)/i);
+    if (idMatch?.[1]) {
+      const nicoId = idMatch[1];
+      let title = '';
+      let artist = 'ニコニコ動画';
+      let thumbnailUrl: string | undefined;
+      let durationSec = 0;
+
+      try {
+        const xmlRes = await fetch(`https://ext.nicovideo.jp/api/getthumbinfo/${encodeURIComponent(nicoId)}`, {
+          headers: { 'User-Agent': BROWSER_UA },
+          signal: AbortSignal.timeout(4800),
+        });
+        if (xmlRes.ok) {
+          const xml = await xmlRes.text();
+          title = extractXmlTag(xml, 'title');
+          artist = extractXmlTag(xml, 'user_nickname') || extractXmlTag(xml, 'ch_name') || artist;
+          const rawThumb = extractXmlTag(xml, 'thumbnail_url');
+          if (rawThumb) thumbnailUrl = rawThumb.replace(/^http:\/\//i, 'https://');
+          const lenStr = extractXmlTag(xml, 'length');
+          if (lenStr) durationSec = parseDurationTextToSec(lenStr);
+        }
+      } catch {}
+
+      let directStreamUrl: string | undefined;
+      if (resolveStreams && allowSite('cobalt')) {
+        const cb = await resolveCobaltUniversalUrl(targetUrl, wantsVideo, maxVideoHeight, opts?.cobaltApiUrl);
+        if (cb) directStreamUrl = cb.url;
+      }
+
+      if (title) {
+        return {
+          siteId: 'niconico-full',
+          siteName: 'ニコニコ動画',
+          pageUrl: targetUrl,
+          title,
+          artist,
+          album: 'ニコニコ動画 URL取得',
+          thumbnailUrl,
+          durationSec,
+          directStreamUrl,
+          directProtocol: directStreamUrl ? 'direct' : undefined,
+          directHasVideo: wantsVideo,
+        };
+      }
+    }
+  }
+
+  // 3. Dailymotion URL (dailymotion.com/video/x...)
+  if (host.includes('dailymotion.com') && allowSite('dailymotion-full')) {
+    const dmMatch = targetUrl.match(/\/video\/([a-zA-Z0-9]+)/i);
+    if (dmMatch?.[1]) {
+      const dmId = dmMatch[1];
+      try {
+        const metaRes = await fetch(
+          `https://www.dailymotion.com/player/metadata/video/${encodeURIComponent(dmId)}`,
+          {
+            headers: { 'User-Agent': BROWSER_UA },
+            signal: AbortSignal.timeout(5000),
+          }
+        );
+        if (metaRes.ok) {
+          const data = (await metaRes.json()) as any;
+          const title = String(data?.title || '').trim();
+          const artist = String(data?.owner?.screenname || data?.owner?.username || 'Dailymotion').trim();
+          const durSec = Number(data?.duration) || 0;
+          const thumb =
+            data?.posters?.['720'] || data?.posters?.['480'] || data?.posters?.['360'] || undefined;
+
+          let directStreamUrl: string | undefined;
+          let directProtocol: 'direct' | 'hls' | undefined;
+          if (resolveStreams && data?.qualities && typeof data.qualities === 'object') {
+            const qKeys = Object.keys(data.qualities)
+              .map((k) => ({ key: k, num: k === 'auto' ? 0 : parseInt(k, 10) || 0 }))
+              .sort((a, b) => {
+                if (maxVideoHeight > 0) {
+                  const aOk = a.num > 0 && a.num <= maxVideoHeight ? 0 : 1;
+                  const bOk = b.num > 0 && b.num <= maxVideoHeight ? 0 : 1;
+                  if (aOk !== bOk) return aOk - bOk;
+                  if (aOk === 0) return b.num - a.num;
+                }
+                return b.num - a.num;
+              });
+
+            const candidates: Array<{ url: string; protocol: 'direct' | 'hls' }> = [];
+            for (const qk of qKeys) {
+              const list: any[] = Array.isArray(data.qualities[qk.key]) ? data.qualities[qk.key] : [];
+              for (const item of list) {
+                if (typeof item?.url === 'string' && item.url.startsWith('http')) {
+                  const isMp4 = String(item.type || '').includes('mp4') || item.url.includes('.mp4');
+                  candidates.push({ url: item.url, protocol: isMp4 ? 'direct' : 'hls' });
+                }
+              }
+            }
+            // Prefer direct MP4 if available, otherwise HLS
+            candidates.sort((a, b) => (a.protocol === 'direct' ? 0 : 1) - (b.protocol === 'direct' ? 0 : 1));
+            for (const c of candidates.slice(0, 4)) {
+              try {
+                await assertSafePublicHttpUrl(c.url);
+                const probe = await probeRemoteStream(c.url, { 'User-Agent': BROWSER_UA });
+                if (probe.ok) {
+                  directStreamUrl = c.url;
+                  directProtocol = c.protocol;
+                  break;
+                }
+              } catch {}
+            }
+          }
+
+          if (title) {
+            return {
+              siteId: 'dailymotion-full',
+              siteName: 'Dailymotion',
+              pageUrl: targetUrl,
+              title,
+              artist,
+              album: 'Dailymotion URL取得',
+              thumbnailUrl: thumb,
+              durationSec: durSec,
+              directStreamUrl,
+              directProtocol,
+              directHasVideo: true,
+            };
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 4. SoundCloud URL (soundcloud.com/artist/track)
+  if (host.includes('soundcloud.com') && allowSite('soundcloud-full')) {
+    try {
+      let clientId = await getSoundCloudClientId(false);
+      if (clientId) {
+        let res = await fetch(
+          `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(targetUrl)}&client_id=${encodeURIComponent(
+            clientId
+          )}`,
+          { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(5000) }
+        );
+        if (res.status === 401 || res.status === 403) {
+          clientId = await getSoundCloudClientId(true);
+          if (clientId) {
+            res = await fetch(
+              `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(targetUrl)}&client_id=${encodeURIComponent(
+                clientId
+              )}`,
+              { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(5000) }
+            );
+          }
+        }
+        if (res.ok) {
+          const t = (await res.json()) as any;
+          if (t?.kind === 'track' && t?.title) {
+            const durSec = Math.round((Number(t.duration) || 0) / 1000);
+            const thumb =
+              typeof t.artwork_url === 'string'
+                ? t.artwork_url.replace(/-large\./, '-t500x500.')
+                : typeof t.user?.avatar_url === 'string'
+                ? t.user.avatar_url
+                : undefined;
+            const transcodings: any[] = Array.isArray(t.media?.transcodings) ? t.media.transcodings : [];
+            const usable = transcodings
+              .filter((tr) => tr?.url && !tr.snipped && tr.format?.protocol !== 'encrypted-hls')
+              .sort((a, b) =>
+                (a.format?.protocol === 'progressive' ? 0 : 1) -
+                (b.format?.protocol === 'progressive' ? 0 : 1)
+              );
+            let directStreamUrl: string | undefined;
+            let directProtocol: 'direct' | 'hls' | undefined;
+            if (resolveStreams && usable.length > 0) {
+              const cand: ScCandidate = {
+                id: t.id,
+                title: String(t.title),
+                author: String(t.user?.username || ''),
+                durationSec: durSec,
+                transcodings: usable.map((tr) => ({
+                  url: String(tr.url),
+                  protocol: String(tr.format?.protocol || 'hls'),
+                  mimeType: String(tr.format?.mime_type || ''),
+                })),
+                score: 100,
+              };
+              const scStream = await resolveSoundCloudStreamForCandidate(cand, IS_VERCEL);
+              if (scStream) {
+                directStreamUrl = scStream.url;
+                directProtocol = scStream.protocol === 'progressive' ? 'direct' : 'hls';
+              }
+            }
+            return {
+              siteId: 'soundcloud-full',
+              siteName: 'SoundCloud',
+              pageUrl: targetUrl,
+              title: String(t.title),
+              artist: String(t.user?.username || 'SoundCloud'),
+              album: 'SoundCloud URL取得',
+              thumbnailUrl: thumb,
+              durationSec: durSec,
+              directStreamUrl,
+              directProtocol,
+              directHasVideo: false,
+            };
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 5. Vimeo URL (vimeo.com/123456)
+  if (host.includes('vimeo.com') && allowSite('vimeo-full')) {
+    const vmMatch = targetUrl.match(/vimeo\.com\/(?:video\/|channels\/[^/]+\/|)(\d{5,12})/);
+    if (vmMatch?.[1]) {
+      const vmId = vmMatch[1];
+      let title = '';
+      let artist = 'Vimeo';
+      let thumbnailUrl: string | undefined;
+      let durationSec = 0;
+      let directStreamUrl: string | undefined;
+
+      try {
+        const oeRes = await fetch(
+          `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(`https://vimeo.com/${vmId}`)}`,
+          { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(4500) }
+        );
+        if (oeRes.ok) {
+          const oe = (await oeRes.json()) as any;
+          title = String(oe?.title || '').trim();
+          artist = String(oe?.author_name || artist).trim();
+          thumbnailUrl = oe?.thumbnail_url || undefined;
+          durationSec = Number(oe?.duration) || 0;
+        }
+      } catch {}
+
+      if (resolveStreams) {
+        try {
+          const cfgRes = await fetch(`https://player.vimeo.com/video/${vmId}/config`, {
+            headers: { 'User-Agent': BROWSER_UA, Referer: 'https://vimeo.com/' },
+            signal: AbortSignal.timeout(4800),
+          });
+          if (cfgRes.ok) {
+            const cfg = (await cfgRes.json()) as any;
+            if (!title && cfg?.video?.title) title = String(cfg.video.title).trim();
+            if (!durationSec && cfg?.video?.duration) durationSec = Number(cfg.video.duration) || 0;
+            const prog: any[] = Array.isArray(cfg?.request?.files?.progressive)
+              ? cfg.request.files.progressive
+              : [];
+            const sortedProg = [...prog]
+              .filter((p) => typeof p?.url === 'string' && p.url.startsWith('http'))
+              .sort((a, b) => {
+                const ha = Number(a.height) || 0;
+                const hb = Number(b.height) || 0;
+                if (maxVideoHeight > 0) {
+                  const aOk = ha > 0 && ha <= maxVideoHeight ? 0 : 1;
+                  const bOk = hb > 0 && hb <= maxVideoHeight ? 0 : 1;
+                  if (aOk !== bOk) return aOk - bOk;
+                  if (aOk === 0) return hb - ha;
+                }
+                return hb - ha;
+              });
+            if (sortedProg[0]?.url) {
+              await assertSafePublicHttpUrl(sortedProg[0].url);
+              const probe = await probeRemoteStream(sortedProg[0].url, { 'User-Agent': BROWSER_UA });
+              if (probe.ok) {
+                directStreamUrl = sortedProg[0].url;
+              }
+            }
+          }
+        } catch {}
+
+        if (!directStreamUrl && allowSite('cobalt')) {
+          const cb = await resolveCobaltUniversalUrl(targetUrl, wantsVideo, maxVideoHeight, opts?.cobaltApiUrl);
+          if (cb) directStreamUrl = cb.url;
+        }
+      }
+
+      if (title || directStreamUrl) {
+        return {
+          siteId: 'vimeo-full',
+          siteName: 'Vimeo',
+          pageUrl: targetUrl,
+          title: title || `Vimeo ${vmId}`,
+          artist,
+          album: 'Vimeo URL取得',
+          thumbnailUrl,
+          durationSec,
+          directStreamUrl,
+          directProtocol: directStreamUrl ? 'direct' : undefined,
+          directHasVideo: true,
+        };
+      }
+    }
+  }
+
+  // 6. Universal Public HTTP(S) URL: Try Cobalt first, then inspect OpenGraph metadata safely
+  let cobaltDirectUrl: string | undefined;
+  if (resolveStreams && allowSite('cobalt')) {
+    const cb = await resolveCobaltUniversalUrl(targetUrl, wantsVideo, maxVideoHeight, opts?.cobaltApiUrl);
+    if (cb) cobaltDirectUrl = cb.url;
+  }
+
+  // If URL points directly to a media file (.mp4 / .mp3 / .m4a / .webm / .m3u8)
+  if (/\.(mp4|mp3|m4a|webm|mkv|avi|ogg|flac|wav|m3u8)(\?.*)?$/i.test(targetUrl)) {
+    const isHls = /\.m3u8(\?.*)?$/i.test(targetUrl);
+    const baseName = decodeURIComponent(safeParsed.pathname.split('/').pop() || 'Media')
+      .replace(/\.[^.]+$/, '')
+      .replace(/[_-]+/g, ' ')
+      .trim();
+    return {
+      siteId: 'cobalt',
+      siteName: host,
+      pageUrl: targetUrl,
+      title: baseName || host,
+      artist: host,
+      album: `${host} 直接URL`,
+      durationSec: 0,
+      directStreamUrl: cobaltDirectUrl || targetUrl,
+      directProtocol: cobaltDirectUrl ? 'direct' : isHls ? 'hls' : 'direct',
+      directHasVideo: /\.(mp4|webm|mkv|avi|m3u8)/i.test(targetUrl),
+    };
+  }
+
+  const page = await fetchSafePublicWithRedirects(targetUrl).catch(() => null);
+  if (page && page.contentType.includes('html')) {
+    const html = page.text;
+    const ogTitle =
+      extractHtmlMetaContent(html, ['og:title', 'twitter:title']) ||
+      decodeHtmlEntities(html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || '');
+    const ogImage = extractHtmlMetaContent(html, ['og:image', 'twitter:image', 'thumbnail']);
+    const ogSite = extractHtmlMetaContent(html, ['og:site_name']) || host;
+    const ogVideo = extractHtmlMetaContent(html, [
+      'og:video:secure_url',
+      'og:video:url',
+      'og:video',
+      'twitter:player:stream',
+    ]);
+
+    let directMediaUrl: string | undefined = cobaltDirectUrl;
+    let directProtocol: 'direct' | 'hls' | undefined = cobaltDirectUrl ? 'direct' : undefined;
+    if (!directMediaUrl && ogVideo && /^https?:\/\//i.test(ogVideo)) {
+      if (/\.(mp4|webm|m4a|mp3|m3u8)(\?.*)?$/i.test(ogVideo)) {
+        try {
+          await assertSafePublicHttpUrl(ogVideo);
+          const probe = await probeRemoteStream(ogVideo, { 'User-Agent': BROWSER_UA });
+          if (probe.ok) {
+            directMediaUrl = ogVideo;
+            directProtocol = /\.m3u8/i.test(ogVideo) ? 'hls' : 'direct';
+          }
+        } catch {}
+      }
+    }
+
+    if (ogTitle || directMediaUrl) {
+      let safeThumb = ogImage;
+      if (safeThumb && !safeThumb.startsWith('http')) {
+        try {
+          safeThumb = new URL(safeThumb, page.finalUrl).toString();
+        } catch {
+          safeThumb = '';
+        }
+      }
+      return {
+        siteId: cobaltDirectUrl ? 'cobalt' : 'youtube-direct',
+        siteName: ogSite || host,
+        pageUrl: page.finalUrl,
+        title: (ogTitle || host).replace(/\s*[|｜\-–—]\s*(?:YouTube|ニコニコ動画|Vimeo|Dailymotion|FC2動画).*$/i, '').trim() || host,
+        artist: ogSite || host,
+        album: `${ogSite || host} URL取得`,
+        thumbnailUrl: safeThumb || undefined,
+        durationSec: 0,
+        directStreamUrl: directMediaUrl,
+        directProtocol,
+        directHasVideo: true,
+      };
+    }
+  } else if (cobaltDirectUrl) {
+    return {
+      siteId: 'cobalt',
+      siteName: host,
+      pageUrl: targetUrl,
+      title: host,
+      artist: host,
+      album: `${host} Cobalt抽出`,
+      durationSec: 0,
+      directStreamUrl: cobaltDirectUrl,
+      directProtocol: 'direct',
+      directHasVideo: wantsVideo,
+    };
+  }
+
+  return null;
+}
+
 // ---------- YouTube Direct / Cobalt / Alternate Resolver ----------
+
+function sortFormatsByTargetHeight(formatsList: any[], maxVideoHeight = 0): any[] {
+  return [...formatsList].sort((a: any, b: any) => {
+    const ha = Number(a?.height) || parseInt(String(a?.qualityLabel || ''), 10) || 0;
+    const hb = Number(b?.height) || parseInt(String(b?.qualityLabel || ''), 10) || 0;
+    if (maxVideoHeight > 0) {
+      const aFits = ha > 0 && ha <= maxVideoHeight ? 0 : 1;
+      const bFits = hb > 0 && hb <= maxVideoHeight ? 0 : 1;
+      if (aFits !== bFits) return aFits - bFits;
+      if (aFits === 0 && ha !== hb) return hb - ha;
+      if (ha !== hb) return ha - hb;
+    } else if (ha !== hb) {
+      return hb - ha;
+    }
+    return (Number(b?.bitrate) || 0) - (Number(a?.bitrate) || 0);
+  });
+}
 
 async function resolveYouTubeDirectStream(
   videoId: string,
@@ -1343,10 +2163,13 @@ async function resolveYouTubeDirectStream(
     poToken?: string;
     cobaltApiUrl?: string;
     enabledSiteSet?: Set<string> | null;
+    maxVideoHeight?: number;
+    allowMuxedAdaptive?: boolean;
   }
 ): Promise<
   | {
       url: string;
+      secondaryAudioUrl?: string;
       headers?: Record<string, string>;
       sourceKind: 'youtube-direct' | 'cobalt' | 'piped' | 'invidious';
       sourceLabel: string;
@@ -1359,10 +2182,24 @@ async function resolveYouTubeDirectStream(
   const cookie = (opts?.youtubeCookie || process.env.YOUTUBE_COOKIE || '').trim();
   const poToken = (opts?.poToken || process.env.YOUTUBE_PO_TOKEN || '').trim();
   const cobaltUrl = (opts?.cobaltApiUrl || process.env.COBALT_API_URL || '').trim();
+  const maxVideoHeight = opts?.maxVideoHeight || 0;
+  const allowMuxedAdaptive = Boolean(opts?.allowMuxedAdaptive) && !IS_VERCEL;
 
   if (cobaltUrl && allowSite('cobalt')) {
     try {
       const endpoint = cobaltUrl.replace(/\/+$/, '');
+      const cobaltQuality =
+        maxVideoHeight >= 2160
+          ? '2160'
+          : maxVideoHeight >= 1080
+          ? '1080'
+          : maxVideoHeight >= 720
+          ? '720'
+          : maxVideoHeight >= 480
+          ? '480'
+          : maxVideoHeight >= 360
+          ? '360'
+          : '1080';
       const r = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -1373,7 +2210,7 @@ async function resolveYouTubeDirectStream(
           url: `https://www.youtube.com/watch?v=${videoId}`,
           downloadMode: wantsVideo ? 'auto' : 'audio',
           audioFormat: 'best',
-          videoQuality: '720',
+          videoQuality: cobaltQuality,
         }),
         signal: AbortSignal.timeout(10000),
       });
@@ -1395,15 +2232,15 @@ async function resolveYouTubeDirectStream(
 
   const pickBestFormats = (formatsList: any[], isCombinedFallback = false): any[] => {
     if (wantsVideo) {
-      return formatsList
-        .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('video/mp4'))
-        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+      const mp4s = formatsList.filter(
+        (f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('video/mp4')
+      );
+      return sortFormatsByTargetHeight(mp4s, maxVideoHeight);
     }
     const audioOnly = formatsList
       .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('audio/'))
       .sort((a: any, b: any) => {
         if (IS_VERCEL) {
-          // On Vercel, prefer <= 4.2MB audio (e.g. ~128kbps m4a) so response stays under 4.5MB limit
           const aLen = Number(a.contentLength) || 0;
           const bLen = Number(b.contentLength) || 0;
           const aFits = aLen > 0 && aLen <= 4_200_000 ? 0 : 1;
@@ -1411,7 +2248,6 @@ async function resolveYouTubeDirectStream(
           if (aFits !== bFits) return aFits - bFits;
           return (a.bitrate || 0) - (b.bitrate || 0);
         }
-        // Prefer mp4/m4a AAC or highest bitrate
         const aM4a = String(a.mimeType || '').includes('mp4') ? 0 : 1;
         const bM4a = String(b.mimeType || '').includes('mp4') ? 0 : 1;
         if (aM4a !== bM4a) return aM4a - bM4a;
@@ -1495,123 +2331,191 @@ async function resolveYouTubeDirectStream(
   let lastReason = '';
   if (allowSite('youtube-direct')) {
     for (const c of clients) {
-    try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'User-Agent': c.ua,
-      };
-      if (cookie) headers.Cookie = cookie;
-
-      const body: Record<string, any> = {
-        context: {
-          client: c.client,
-          ...(c.thirdParty ? { thirdParty: c.thirdParty } : {}),
-        },
-        videoId,
-        contentCheckOk: true,
-        racyCheckOk: true,
-      };
-      if (poToken) {
-        body.serviceIntegrityDimensions = { poToken };
-      }
-
-      const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!resp.ok) continue;
-      const json = (await resp.json()) as any;
-      if (json?.playabilityStatus?.reason) {
-        lastReason = String(json.playabilityStatus.reason);
-      }
-
-      const declaredDur = Number(json?.videoDetails?.lengthSeconds) || 0;
-      const adaptive = Array.isArray(json?.streamingData?.adaptiveFormats)
-        ? json.streamingData.adaptiveFormats
-        : [];
-      const combined = Array.isArray(json?.streamingData?.formats)
-        ? json.streamingData.formats
-        : [];
-
-      const candidates = wantsVideo
-        ? pickBestFormats([...combined, ...adaptive], true)
-        : [
-            ...pickBestFormats(adaptive, false),
-            ...pickBestFormats(combined, true),
-          ];
-
-      const streamHeaders: Record<string, string> = cookie
-        ? { Cookie: cookie, 'User-Agent': c.ua }
-        : { 'User-Agent': c.ua };
-      for (const picked of candidates.slice(0, 3)) {
-        if (!picked?.url) continue;
-        const probe = await probeRemoteStream(picked.url, streamHeaders);
-        if (probe.ok) {
-          if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
-          return {
-            url: picked.url,
-            headers: streamHeaders,
-            sourceKind: 'youtube-direct',
-            sourceLabel: `YouTube 直接フルストリーム (${c.name})`,
-            durationSec: declaredDur || undefined,
-          };
-        }
-      }
-    } catch (e: any) {
-      lastReason = e?.message || lastReason;
-    }
-  }
-
-  // Try youtubei.js built-in deciphering across multiple InnerTube clients (even without cookies!)
-  const innertubeClients = ['IOS', 'ANDROID', 'TV_EMBEDDED', 'WEB_EMBEDDED', 'WEB'] as const;
-  try {
-    const yt = await getInnertube();
-    for (const clientKey of innertubeClients) {
       try {
-        const info = await yt.getBasicInfo(videoId, { client: clientKey });
-        const declaredDur = Number((info as any)?.basic_info?.duration) || 0;
-        const adaptive = info?.streaming_data?.adaptive_formats || [];
-        const formats = info?.streaming_data?.formats || [];
-        const rawList = wantsVideo
-          ? [...formats, ...adaptive].filter((f: any) => f.mime_type?.includes('mp4'))
-          : [...adaptive.filter((f: any) => f.mime_type?.startsWith('audio/')), ...formats];
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'User-Agent': c.ua,
+        };
+        if (cookie) headers.Cookie = cookie;
 
-        const sorted = rawList.sort((a: any, b: any) =>
-          IS_VERCEL && !wantsVideo
-            ? (a.bitrate || 0) - (b.bitrate || 0)
-            : (b.bitrate || 0) - (a.bitrate || 0)
-        );
+        const body: Record<string, any> = {
+          context: {
+            client: c.client,
+            ...(c.thirdParty ? { thirdParty: c.thirdParty } : {}),
+          },
+          videoId,
+          contentCheckOk: true,
+          racyCheckOk: true,
+        };
+        if (poToken) {
+          body.serviceIntegrityDimensions = { poToken };
+        }
 
-        for (const fmt of sorted.slice(0, 3)) {
-          try {
-            const deciphered = fmt.url || (await fmt.decipher(yt.session.player));
-            if (!deciphered) continue;
-            const probe = await probeRemoteStream(deciphered, { 'User-Agent': BROWSER_UA });
-            if (probe.ok) {
-              if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
+        const resp = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) continue;
+        const json = (await resp.json()) as any;
+        if (json?.playabilityStatus?.reason) {
+          lastReason = String(json.playabilityStatus.reason);
+        }
+
+        const declaredDur = Number(json?.videoDetails?.lengthSeconds) || 0;
+        const adaptive = Array.isArray(json?.streamingData?.adaptiveFormats)
+          ? json.streamingData.adaptiveFormats
+          : [];
+        const combined = Array.isArray(json?.streamingData?.formats)
+          ? json.streamingData.formats
+          : [];
+
+        const streamHeaders: Record<string, string> = cookie
+          ? { Cookie: cookie, 'User-Agent': c.ua }
+          : { 'User-Agent': c.ua };
+
+        // High-resolution HD/4K dual-stream muxing (video-only MP4/WebM + adaptive audio) when FFmpeg is present
+        if (wantsVideo && allowMuxedAdaptive && (maxVideoHeight === 0 || maxVideoHeight >= 1080)) {
+          const adaptiveVideo = sortFormatsByTargetHeight(
+            adaptive.filter(
+              (f: any) =>
+                typeof f?.url === 'string' &&
+                (f.mimeType?.startsWith('video/mp4') || f.mimeType?.startsWith('video/webm')) &&
+                (Number(f.height) || 0) >= 1080
+            ),
+            maxVideoHeight
+          );
+          const adaptiveAudio = adaptive
+            .filter((f: any) => typeof f?.url === 'string' && f.mimeType?.startsWith('audio/'))
+            .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+
+          if (adaptiveVideo[0]?.url && adaptiveAudio[0]?.url) {
+            const [vProbe, aProbe] = await Promise.all([
+              probeRemoteStream(adaptiveVideo[0].url, streamHeaders),
+              probeRemoteStream(adaptiveAudio[0].url, streamHeaders),
+            ]);
+            if (vProbe.ok && aProbe.ok) {
+              const hLabel = adaptiveVideo[0].height ? ` ${adaptiveVideo[0].height}p` : ' HD';
               return {
-                url: deciphered,
+                url: adaptiveVideo[0].url,
+                secondaryAudioUrl: adaptiveAudio[0].url,
+                headers: streamHeaders,
                 sourceKind: 'youtube-direct',
-                sourceLabel: `YouTube InnerTube フルストリーム (${clientKey})`,
+                sourceLabel: `YouTube 直接${hLabel} (${c.name})`,
                 durationSec: declaredDur || undefined,
               };
             }
-          } catch {}
+          }
         }
+
+        const candidates = wantsVideo
+          ? pickBestFormats(combined, true)
+          : [
+              ...pickBestFormats(adaptive, false),
+              ...pickBestFormats(combined, true),
+            ];
+
+        for (const picked of candidates.slice(0, 3)) {
+          if (!picked?.url) continue;
+          const probe = await probeRemoteStream(picked.url, streamHeaders);
+          if (probe.ok) {
+            if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
+            return {
+              url: picked.url,
+              headers: streamHeaders,
+              sourceKind: 'youtube-direct',
+              sourceLabel: `YouTube 直接フルストリーム (${c.name})`,
+              durationSec: declaredDur || undefined,
+            };
+          }
+        }
+      } catch (e: any) {
+        lastReason = e?.message || lastReason;
+      }
+    }
+
+    // Try youtubei.js built-in deciphering across multiple InnerTube clients (even without cookies!)
+    const innertubeClients = ['IOS', 'ANDROID', 'TV_EMBEDDED', 'WEB_EMBEDDED', 'WEB'] as const;
+    try {
+      const yt = await getInnertube();
+      for (const clientKey of innertubeClients) {
+        try {
+          const info = await yt.getBasicInfo(videoId, { client: clientKey });
+          const declaredDur = Number((info as any)?.basic_info?.duration) || 0;
+          const adaptive = info?.streaming_data?.adaptive_formats || [];
+          const formats = info?.streaming_data?.formats || [];
+
+          if (wantsVideo && allowMuxedAdaptive && (maxVideoHeight === 0 || maxVideoHeight >= 1080)) {
+            const hdVid = sortFormatsByTargetHeight(
+              adaptive.filter((f: any) => f.mime_type?.includes('mp4') && (Number(f.height) || 0) >= 1080),
+              maxVideoHeight
+            );
+            const hdAud = adaptive
+              .filter((f: any) => f.mime_type?.startsWith('audio/'))
+              .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+            if (hdVid[0] && hdAud[0]) {
+              const vUrl = hdVid[0].url || (await hdVid[0].decipher(yt.session.player));
+              const aUrl = hdAud[0].url || (await hdAud[0].decipher(yt.session.player));
+              if (vUrl && aUrl) {
+                const [vProbe, aProbe] = await Promise.all([
+                  probeRemoteStream(vUrl, { 'User-Agent': BROWSER_UA }),
+                  probeRemoteStream(aUrl, { 'User-Agent': BROWSER_UA }),
+                ]);
+                if (vProbe.ok && aProbe.ok) {
+                  const hLabel = hdVid[0].height ? ` ${hdVid[0].height}p` : ' HD';
+                  return {
+                    url: vUrl,
+                    secondaryAudioUrl: aUrl,
+                    sourceKind: 'youtube-direct',
+                    sourceLabel: `YouTube InnerTube${hLabel} (${clientKey})`,
+                    durationSec: declaredDur || undefined,
+                  };
+                }
+              }
+            }
+          }
+
+          const rawList = wantsVideo
+            ? formats.filter((f: any) => f.mime_type?.includes('mp4'))
+            : [...adaptive.filter((f: any) => f.mime_type?.startsWith('audio/')), ...formats];
+
+          const sorted = wantsVideo
+            ? sortFormatsByTargetHeight(rawList, maxVideoHeight)
+            : rawList.sort((a: any, b: any) =>
+                IS_VERCEL
+                  ? (a.bitrate || 0) - (b.bitrate || 0)
+                  : (b.bitrate || 0) - (a.bitrate || 0)
+              );
+
+          for (const fmt of sorted.slice(0, 3)) {
+            try {
+              const deciphered = fmt.url || (await fmt.decipher(yt.session.player));
+              if (!deciphered) continue;
+              const probe = await probeRemoteStream(deciphered, { 'User-Agent': BROWSER_UA });
+              if (probe.ok) {
+                if (IS_VERCEL && !wantsVideo && probe.totalSize > 4_350_000) continue;
+                return {
+                  url: deciphered,
+                  sourceKind: 'youtube-direct',
+                  sourceLabel: `YouTube InnerTube フルストリーム (${clientKey})`,
+                  durationSec: declaredDur || undefined,
+                };
+              }
+            } catch {}
+          }
         } catch {}
       }
     } catch {}
   }
 
   if (allowSite('piped')) {
-    const piped = await resolveViaPipedPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL);
+    const piped = await resolveViaPipedPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL, maxVideoHeight);
     if (piped) return piped;
   }
 
   if (allowSite('invidious')) {
-    const inv = await resolveViaInvidiousPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL);
+    const inv = await resolveViaInvidiousPool(videoId, wantsVideo, probeRemoteStream, IS_VERCEL, maxVideoHeight);
     if (inv) return inv;
   }
 
@@ -1803,11 +2707,12 @@ async function probeMediaFile(filePath: string): Promise<{
   durationSec: number;
   hasVideo: boolean;
   videoCodec: string | null;
+  videoHeight: number;
   hasAudio: boolean;
 }> {
   const ffprobeOk = await getFfprobeAvailable();
   if (!ffprobeOk) {
-    return { durationSec: 0, hasVideo: false, videoCodec: null, hasAudio: true };
+    return { durationSec: 0, hasVideo: false, videoCodec: null, videoHeight: 0, hasAudio: true };
   }
   try {
     const { stdout } = await execFileAsync(
@@ -1816,7 +2721,7 @@ async function probeMediaFile(filePath: string): Promise<{
         '-v',
         'error',
         '-show_entries',
-        'format=duration:stream=codec_type,codec_name',
+        'format=duration:stream=codec_type,codec_name,height',
         '-of',
         'json',
         filePath,
@@ -1832,10 +2737,11 @@ async function probeMediaFile(filePath: string): Promise<{
       durationSec: Number.isFinite(rawDur) && rawDur > 0 ? Math.round(rawDur) : 0,
       hasVideo: Boolean(videoStream),
       videoCodec: videoStream?.codec_name ? String(videoStream.codec_name).toLowerCase() : null,
+      videoHeight: Number(videoStream?.height) || 0,
       hasAudio: Boolean(audioStream),
     };
   } catch {
-    return { durationSec: 0, hasVideo: false, videoCodec: null, hasAudio: true };
+    return { durationSec: 0, hasVideo: false, videoCodec: null, videoHeight: 0, hasAudio: true };
   }
 }
 
@@ -1846,21 +2752,27 @@ async function detectMediaContainerFromFile(
 ): Promise<{ ext: string; mimeType: string; isAudioOnly: boolean }> {
   try {
     const fh = await fs.promises.open(filePath, 'r');
-    const buf = Buffer.alloc(32);
-    const { bytesRead } = await fh.read(buf, 0, 32, 0);
+    const buf = Buffer.alloc(64);
+    const { bytesRead } = await fh.read(buf, 0, 64, 0);
     await fh.close();
 
     if (bytesRead >= 4) {
       const ascii4 = buf.subarray(0, 4).toString('ascii');
       if (ascii4 === 'fLaC') return { ext: 'flac', mimeType: 'audio/flac', isAudioOnly: true };
       if (ascii4 === 'OggS') return { ext: 'ogg', mimeType: 'audio/ogg', isAudioOnly: true };
-      if (ascii4 === 'RIFF' && bytesRead >= 12 && buf.subarray(8, 12).toString('ascii') === 'WAVE') {
-        return { ext: 'wav', mimeType: 'audio/wav', isAudioOnly: true };
+      if (ascii4 === 'RIFF' && bytesRead >= 12) {
+        const sub4 = buf.subarray(8, 12).toString('ascii');
+        if (sub4 === 'WAVE') return { ext: 'wav', mimeType: 'audio/wav', isAudioOnly: true };
+        if (sub4 === 'AVI ') return { ext: 'avi', mimeType: 'video/x-msvideo', isAudioOnly: false };
       }
       if (buf.subarray(0, 3).toString('ascii') === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) {
         return { ext: 'mp3', mimeType: 'audio/mpeg', isAudioOnly: true };
       }
       if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
+        const headerStr = buf.subarray(0, bytesRead).toString('latin1').toLowerCase();
+        if (headerStr.includes('matroska')) {
+          return { ext: 'mkv', mimeType: 'video/x-matroska', isAudioOnly: false };
+        }
         return wantsVideo
           ? { ext: 'webm', mimeType: 'video/webm', isAudioOnly: false }
           : { ext: 'webm', mimeType: 'audio/webm', isAudioOnly: true };
@@ -1883,6 +2795,8 @@ async function detectMediaContainerFromFile(
   if (ct.includes('flac')) return { ext: 'flac', mimeType: 'audio/flac', isAudioOnly: true };
   if (ct.includes('wav')) return { ext: 'wav', mimeType: 'audio/wav', isAudioOnly: true };
   if (ct.includes('ogg')) return { ext: 'ogg', mimeType: 'audio/ogg', isAudioOnly: true };
+  if (ct.includes('matroska') || ct.includes('mkv')) return { ext: 'mkv', mimeType: 'video/x-matroska', isAudioOnly: false };
+  if (ct.includes('msvideo') || ct.includes('avi')) return { ext: 'avi', mimeType: 'video/x-msvideo', isAudioOnly: false };
   if (ct.includes('webm')) {
     return wantsVideo
       ? { ext: 'webm', mimeType: 'video/webm', isAudioOnly: false }
@@ -1978,6 +2892,7 @@ async function spawnFfmpegWithProgress(
 async function runFfmpegConvert(options: {
   inputSource: string; // local file path OR HLS m3u8 URL
   inputHeaders?: Record<string, string>;
+  secondaryAudioSource?: string; // optional separate adaptive audio track for HD/4K muxing
   outputPath: string;
   format: FreemakeFormatSpec;
   title?: string;
@@ -1986,12 +2901,15 @@ async function runFfmpegConvert(options: {
   coverImagePath?: string;
   isAudioOnlyInput?: boolean;
   inputVideoCodec?: string | null;
+  inputVideoHeight?: number;
+  maxVideoHeight?: number;
   expectedDurationSec?: number;
   onProgress?: (info: { processedSec: number; durationSec: number; ratio: number }) => void;
 }): Promise<void> {
   const {
     inputSource,
     inputHeaders,
+    secondaryAudioSource,
     outputPath,
     format,
     title,
@@ -2000,6 +2918,8 @@ async function runFfmpegConvert(options: {
     coverImagePath,
     isAudioOnlyInput,
     inputVideoCodec,
+    inputVideoHeight = 0,
+    maxVideoHeight = 0,
     expectedDurationSec = 0,
     onProgress,
   } = options;
@@ -2008,6 +2928,12 @@ async function runFfmpegConvert(options: {
     Boolean(coverImagePath) &&
     !format.isVideo &&
     (format.ext === 'mp3' || format.ext === 'm4a' || format.ext === 'flac' || format.ext === 'ogg');
+
+  const needsDownscale =
+    Boolean(format.isVideo) &&
+    !isAudioOnlyInput &&
+    maxVideoHeight > 0 &&
+    (inputVideoHeight <= 0 || inputVideoHeight > maxVideoHeight);
 
   const buildArgs = (
     videoStrategy: 'copy' | 'ultrafast' | 'still' | 'formatDefault',
@@ -2022,7 +2948,12 @@ async function runFfmpegConvert(options: {
     }
     args.push('-i', inputSource);
 
+    if (secondaryAudioSource) {
+      args.push('-i', secondaryAudioSource);
+    }
+
     if (format.isVideo && isAudioOnlyInput) {
+      const stillSize = maxVideoHeight > 0 && maxVideoHeight <= 480 ? 480 : 720;
       if (withCover && coverImagePath) {
         args.push(
           '-loop',
@@ -2034,7 +2965,7 @@ async function runFfmpegConvert(options: {
           '-map',
           '0:a:0',
           '-vf',
-          'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,format=yuv420p',
+          `scale=${stillSize}:${stillSize}:force_original_aspect_ratio=increase,crop=${stillSize}:${stillSize},format=yuv420p`,
           '-shortest'
         );
       } else {
@@ -2055,49 +2986,78 @@ async function runFfmpegConvert(options: {
       }
     } else if (!format.isVideo && withCover && coverImagePath && canAttachAudioCover) {
       args.push('-i', coverImagePath);
+    } else if (secondaryAudioSource) {
+      args.push('-map', '0:v:0', '-map', '1:a:0', '-shortest');
     }
 
     if (format.isVideo) {
+      if (needsDownscale && videoStrategy !== 'copy') {
+        args.push('-vf', `scale=-2:'min(ih,${maxVideoHeight})'`);
+      }
       if (videoStrategy === 'copy') {
-        args.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart');
+        args.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k');
+        if (format.ext === 'mp4') args.push('-movflags', '+faststart');
       } else if (videoStrategy === 'still') {
-        args.push(
-          '-c:v',
-          'libx264',
-          '-preset',
-          'ultrafast',
-          '-tune',
-          'stillimage',
-          '-pix_fmt',
-          'yuv420p',
-          '-crf',
-          '28',
-          '-r',
-          '1',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '192k',
-          '-movflags',
-          '+faststart'
-        );
+        if (format.ext === 'avi') {
+          args.push('-c:v', 'mpeg4', '-q:v', '5', '-r', '1', '-c:a', 'libmp3lame', '-b:a', '192k');
+        } else if (format.ext === 'webm') {
+          args.push(
+            '-c:v',
+            'libvpx',
+            '-deadline',
+            'realtime',
+            '-cpu-used',
+            '5',
+            '-b:v',
+            '500k',
+            '-r',
+            '1',
+            '-c:a',
+            'libvorbis',
+            '-q:a',
+            '5'
+          );
+        } else {
+          args.push(
+            '-c:v',
+            'libx264',
+            '-preset',
+            'ultrafast',
+            '-tune',
+            'stillimage',
+            '-pix_fmt',
+            'yuv420p',
+            '-crf',
+            '28',
+            '-r',
+            '1',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '192k'
+          );
+          if (format.ext === 'mp4') args.push('-movflags', '+faststart');
+        }
       } else if (videoStrategy === 'ultrafast') {
-        args.push(
-          '-c:v',
-          'libx264',
-          '-preset',
-          'ultrafast',
-          '-pix_fmt',
-          'yuv420p',
-          '-crf',
-          '24',
-          '-c:a',
-          'aac',
-          '-b:a',
-          '192k',
-          '-movflags',
-          '+faststart'
-        );
+        if (format.ext === 'avi' || format.ext === 'webm') {
+          args.push(...format.ffmpegArgs);
+        } else {
+          args.push(
+            '-c:v',
+            'libx264',
+            '-preset',
+            'ultrafast',
+            '-pix_fmt',
+            'yuv420p',
+            '-crf',
+            '24',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '192k'
+          );
+          if (format.ext === 'mp4') args.push('-movflags', '+faststart');
+        }
       } else {
         args.push(...format.ffmpegArgs);
       }
@@ -2133,7 +3093,7 @@ async function runFfmpegConvert(options: {
     if (title) args.push('-metadata', `title=${title}`);
     if (artist) args.push('-metadata', `artist=${artist}`);
     if (album) args.push('-metadata', `album=${album}`);
-    args.push('-metadata', 'comment=Converted by Zero Music x Freemake Audio Engine');
+    args.push('-metadata', 'comment=Converted by Zero Music x Freemake Engine');
     args.push(outputPath);
     return args;
   };
@@ -2149,12 +3109,23 @@ async function runFfmpegConvert(options: {
       await spawnFfmpegWithProgress(buildArgs('still', false), expectedDurationSec, onProgress);
       return;
     }
-    if (inputVideoCodec === 'h264') {
+
+    const canCopyContainer =
+      (format.ext === 'mp4' || format.ext === 'mkv') &&
+      inputVideoCodec === 'h264' &&
+      !needsDownscale;
+    const canCopyWebm =
+      format.ext === 'webm' &&
+      (inputVideoCodec === 'vp8' || inputVideoCodec === 'vp9') &&
+      !needsDownscale;
+
+    if (canCopyContainer || canCopyWebm) {
       try {
         await spawnFfmpegWithProgress(buildArgs('copy', false), expectedDurationSec, onProgress);
         return;
       } catch {}
     }
+
     await spawnFfmpegWithProgress(buildArgs('ultrafast', false), expectedDurationSec, onProgress);
     return;
   }
@@ -2401,6 +3372,7 @@ async function executeFreemakeDownloadPipeline(
       duration = '',
       durationSeconds = 0,
       format: rawFormat = 'mp3_320',
+      quality: rawQuality = 'best',
       youtubeCookie,
       poToken,
       cobaltApiUrl,
@@ -2416,23 +3388,37 @@ async function executeFreemakeDownloadPipeline(
 
     const ffmpegStatus = await getFfmpegStatus();
     const format = FREEMAKE_FORMATS[rawFormat as FreemakeFormatId] || FREEMAKE_FORMATS.mp3_320;
-    const videoId = extractYouTubeVideoId(String(rawUrl || rawId || ''));
+    const maxVideoHeight = parseQualityMaxHeight(String(rawQuality || 'best'));
+    const cleanRawUrl = String(rawUrl || '').trim();
+    const videoId = extractYouTubeVideoId(cleanRawUrl || String(rawId || ''));
+    const isNonYtHttpUrl = !videoId && /^https?:\/\//i.test(cleanRawUrl);
 
     emitJobProgress(job, {
       stage: 'resolving',
       percent: 6,
       stagePercent: 25,
-      message: '楽曲メタデータとジャケット画像を取得中...',
+      message: isNonYtHttpUrl
+        ? '外部サイトURLのメディア情報とストリームを解析中...'
+        : '楽曲メタデータとジャケット画像を取得中...',
     });
+
+    let extPage: ResolvedExternalPage | null = null;
+    if (isNonYtHttpUrl) {
+      extPage = await resolveExternalPageUrl(cleanRawUrl, format.isVideo, maxVideoHeight, {
+        cobaltApiUrl,
+        enabledSiteSet,
+        resolveStreams: true,
+      });
+    }
 
     const meta = await resolveMetadataForTrack({
       videoId,
-      title: String(title || ''),
-      artist: String(artist || ''),
-      album: String(album || ''),
-      thumbnail: String(thumbnail || ''),
+      title: String(title || extPage?.title || ''),
+      artist: String(artist || extPage?.artist || ''),
+      album: String(album || extPage?.album || ''),
+      thumbnail: String(thumbnail || extPage?.thumbnailUrl || ''),
       duration: String(duration || ''),
-      durationSeconds: Number(durationSeconds) || 0,
+      durationSeconds: Number(durationSeconds) || extPage?.durationSec || 0,
       getInnertube,
     });
 
@@ -2441,15 +3427,16 @@ async function executeFreemakeDownloadPipeline(
     ).catch(() => null);
 
     let inputSource = path.join(tmpDir, 'input.media');
+    let secondaryAudioSource: string | undefined;
     let inputHeaders: Record<string, string> | undefined;
     let downloadedContentType = 'audio/mpeg';
     let sourceKind: FreemakeDownloadSiteId | 'official-preview-30s' = 'youtube-direct';
     let sourceLabel = '';
     let isAudioOnlyInput = true;
     let resolvedDurationSec = meta.expectedDurationSec || 0;
-    const resolvedTitle = meta.title || String(title || '').trim();
-    const resolvedArtist = meta.artist || String(artist || '').trim();
-    const resolvedAlbum = String(album || '').trim() || meta.album || '';
+    const resolvedTitle = meta.title || extPage?.title || String(title || '').trim();
+    const resolvedArtist = meta.artist || extPage?.artist || String(artist || '').trim();
+    const resolvedAlbum = String(album || '').trim() || extPage?.album || meta.album || '';
 
     let resolved = false;
 
@@ -2458,7 +3445,8 @@ async function executeFreemakeDownloadPipeline(
       headers: Record<string, string> | undefined,
       kind: typeof sourceKind,
       label: string,
-      candDurationSec: number
+      candDurationSec: number,
+      optionalAudioUrl?: string
     ): Promise<boolean> => {
       try {
         emitJobProgress(job, {
@@ -2467,7 +3455,7 @@ async function executeFreemakeDownloadPipeline(
           stagePercent: 0,
           sourceKind: kind,
           sourceLabel: label,
-          message: `${label} から音声を取得中...`,
+          message: optionalAudioUrl ? `${label} (映像+音声) を取得中...` : `${label} からストリームを取得中...`,
         });
         const dl = await downloadUrlToFile(
           targetUrl,
@@ -2477,21 +3465,36 @@ async function executeFreemakeDownloadPipeline(
             const ratio = totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0.4;
             emitJobProgress(job, {
               stage: 'fetching',
-              percent: 25 + ratio * 33,
+              percent: 25 + ratio * (optionalAudioUrl ? 24 : 33),
               stagePercent: Math.round(ratio * 100),
               receivedBytes,
               totalBytes,
               sourceKind: kind,
               sourceLabel: label,
-              message: '音声データをダウンロード中...',
+              message: 'メディアデータをダウンロード中...',
             });
           }
         );
+
+        if (optionalAudioUrl) {
+          const audioDest = path.join(tmpDir, 'input.audio.media');
+          try {
+            await downloadUrlToFile(optionalAudioUrl, audioDest, headers);
+            secondaryAudioSource = audioDest;
+          } catch {
+            await fs.promises.unlink(inputSource).catch(() => {});
+            await fs.promises.unlink(audioDest).catch(() => {});
+            secondaryAudioSource = undefined;
+            return false;
+          }
+        }
 
         // Verify full-length duration if ffprobe is present and expected track > 60s
         const probed = await probeMediaFile(inputSource);
         if (probed.durationSec > 0 && probed.durationSec < 45 && meta.expectedDurationSec > 60) {
           await fs.promises.unlink(inputSource).catch(() => {});
+          if (secondaryAudioSource) await fs.promises.unlink(secondaryAudioSource).catch(() => {});
+          secondaryAudioSource = undefined;
           return false;
         }
 
@@ -2503,10 +3506,12 @@ async function executeFreemakeDownloadPipeline(
         } else if (candDurationSec > 0) {
           resolvedDurationSec = candDurationSec;
         }
-        isAudioOnlyInput = !probed.hasVideo && !dl.contentType.includes('video') && !format.isVideo;
+        isAudioOnlyInput = !probed.hasVideo && !dl.contentType.includes('video') && !optionalAudioUrl && !format.isVideo;
         return true;
       } catch {
         await fs.promises.unlink(inputSource).catch(() => {});
+        if (secondaryAudioSource) await fs.promises.unlink(secondaryAudioSource).catch(() => {});
+        secondaryAudioSource = undefined;
         return false;
       }
     };
@@ -2575,8 +3580,31 @@ async function executeFreemakeDownloadPipeline(
       return true;
     };
 
+    // Strategy A0: Direct external URL stream (Bilibili / Niconico / Dailymotion / SoundCloud / Vimeo / Cobalt)
+    if (!resolved && extPage?.directStreamUrl) {
+      const extLabel = `${extPage.siteName} URL直接抽出`;
+      if (extPage.directProtocol === 'hls' || extPage.directStreamUrl.includes('.m3u8')) {
+        resolved = await tryHlsStream(
+          extPage.directStreamUrl,
+          extPage.directHeaders,
+          extPage.siteId,
+          extLabel,
+          extPage.durationSec || resolvedDurationSec,
+          Boolean(extPage.directHasVideo)
+        );
+      } else {
+        resolved = await tryDownloadStream(
+          extPage.directStreamUrl,
+          extPage.directHeaders,
+          extPage.siteId,
+          extLabel,
+          extPage.durationSec || resolvedDurationSec
+        );
+      }
+    }
+
     // Strategy A: Direct YouTube / Cobalt / Piped / Invidious (exact videoId)
-    if (videoId) {
+    if (!resolved && videoId) {
       emitJobProgress(job, {
         stage: 'searching',
         percent: 12,
@@ -2587,7 +3615,14 @@ async function executeFreemakeDownloadPipeline(
         videoId,
         format.isVideo,
         getInnertube,
-        { youtubeCookie, poToken, cobaltApiUrl, enabledSiteSet }
+        {
+          youtubeCookie,
+          poToken,
+          cobaltApiUrl,
+          enabledSiteSet,
+          maxVideoHeight,
+          allowMuxedAdaptive: ffmpegStatus.available,
+        }
       );
       if ('url' in directResult) {
         resolved = await tryDownloadStream(
@@ -2595,7 +3630,8 @@ async function executeFreemakeDownloadPipeline(
           directResult.headers,
           directResult.sourceKind,
           directResult.sourceLabel,
-          directResult.durationSec || resolvedDurationSec
+          directResult.durationSec || resolvedDurationSec,
+          directResult.secondaryAudioUrl
         );
       }
     }
@@ -2651,7 +3687,7 @@ async function executeFreemakeDownloadPipeline(
           score: cand.score,
           hasVideo: true,
           exec: async () => {
-            const stream = await resolveBilibiliStreamForCandidate(cand, format.isVideo);
+            const stream = await resolveBilibiliStreamForCandidate(cand, format.isVideo, maxVideoHeight);
             if (!stream) return false;
             const label = `Bilibili フル音源 (${formatSecLabel(stream.durationSec || resolvedDurationSec) || 'Full'})`;
             return tryDownloadStream(
@@ -2758,7 +3794,14 @@ async function executeFreemakeDownloadPipeline(
             alt.videoId,
             format.isVideo,
             getInnertube,
-            { youtubeCookie, poToken, cobaltApiUrl, enabledSiteSet }
+            {
+              youtubeCookie,
+              poToken,
+              cobaltApiUrl,
+              enabledSiteSet,
+              maxVideoHeight,
+              allowMuxedAdaptive: ffmpegStatus.available,
+            }
           );
           if ('url' in altStream) {
             const ok = await tryDownloadStream(
@@ -2885,10 +3928,12 @@ async function executeFreemakeDownloadPipeline(
 
     // Standard FFmpeg transcoding path
     let inputVideoCodec: string | null = null;
+    let inputVideoHeight = 0;
     if (!inputSource.startsWith('http')) {
       const probedInput = await probeMediaFile(inputSource);
       isAudioOnlyInput = !probedInput.hasVideo;
       inputVideoCodec = probedInput.videoCodec;
+      inputVideoHeight = probedInput.videoHeight;
       if (probedInput.durationSec > 0 && sourceKind !== 'official-preview-30s') {
         resolvedDurationSec = probedInput.durationSec;
       }
@@ -2921,6 +3966,7 @@ async function executeFreemakeDownloadPipeline(
     await runFfmpegConvert({
       inputSource,
       inputHeaders,
+      secondaryAudioSource,
       outputPath,
       format,
       title: resolvedTitle || safeBase,
@@ -2929,6 +3975,8 @@ async function executeFreemakeDownloadPipeline(
       coverImagePath,
       isAudioOnlyInput,
       inputVideoCodec,
+      inputVideoHeight,
+      maxVideoHeight,
       expectedDurationSec: resolvedDurationSec,
       onProgress: ({ processedSec, durationSec, ratio }) => {
         emitJobProgress(job, {
@@ -3028,7 +4076,7 @@ export function registerFreemakeRoutes(
     });
   });
 
-  // 2. Probe available FULL-TRACK download sources across all sites for a track/URL
+  // 2. Probe available FULL-TRACK / VIDEO download sources across all sites for a track/URL/playlist
   app.get('/api/freemake/probe', async (req: Request, res: Response) => {
     const rawIdOrUrl = String(req.query.videoId || req.query.url || '').trim();
     const rawTitle = String(req.query.title || '').trim();
@@ -3036,15 +4084,36 @@ export function registerFreemakeRoutes(
     const rawDuration = String(req.query.duration || '').trim();
     const rawDurSec = Number(req.query.durationSeconds) || 0;
     const videoId = extractYouTubeVideoId(rawIdOrUrl);
+    const playlistId = extractYouTubePlaylistId(rawIdOrUrl);
+    const isNonYtHttpUrl = !videoId && /^https?:\/\//i.test(rawIdOrUrl);
 
-    const meta = await resolveMetadataForTrack({
-      videoId,
-      title: rawTitle,
-      artist: rawArtist,
-      duration: rawDuration,
-      durationSeconds: rawDurSec,
-      getInnertube,
-    });
+    let extPage: ResolvedExternalPage | null = null;
+    if (isNonYtHttpUrl) {
+      try {
+        await assertSafePublicHttpUrl(rawIdOrUrl);
+      } catch (err: any) {
+        return res.status(400).json({ error: err?.message || '不正または許可されていないURLです' });
+      }
+      if (!playlistId) {
+        extPage = await resolveExternalPageUrl(rawIdOrUrl, true, 0, { resolveStreams: false }).catch(
+          () => null
+        );
+      }
+    }
+
+    const [playlistData, meta] = await Promise.all([
+      playlistId ? resolveYouTubePlaylist(playlistId, getInnertube) : Promise.resolve(null),
+      resolveMetadataForTrack({
+        videoId,
+        title: rawTitle || extPage?.title || '',
+        artist: rawArtist || extPage?.artist || '',
+        album: extPage?.album || '',
+        thumbnail: extPage?.thumbnailUrl || '',
+        duration: rawDuration,
+        durationSeconds: rawDurSec || extPage?.durationSec || 0,
+        getInnertube,
+      }),
+    ]);
 
     const helpers: SearchHelpers = {
       cleanSearchTitle,
@@ -3075,7 +4144,17 @@ export function registerFreemakeRoutes(
       { siteId: string; siteName: string; title: string; durationSec: number; score: number }
     >();
 
-    if (topBili) {
+    if (extPage) {
+      matchedBySite.set(extPage.siteId, {
+        siteId: extPage.siteId,
+        siteName: extPage.siteName,
+        title: extPage.title,
+        durationSec: extPage.durationSec || meta.expectedDurationSec || 0,
+        score: 200,
+      });
+    }
+
+    if (topBili && !matchedBySite.has('bilibili-full')) {
       matchedBySite.set('bilibili-full', {
         siteId: 'bilibili-full',
         siteName: 'Bilibili',
@@ -3084,7 +4163,7 @@ export function registerFreemakeRoutes(
         score: topBili.score,
       });
     }
-    if (topSc) {
+    if (topSc && !matchedBySite.has('soundcloud-full')) {
       matchedBySite.set('soundcloud-full', {
         siteId: 'soundcloud-full',
         siteName: 'SoundCloud',
@@ -3111,16 +4190,24 @@ export function registerFreemakeRoutes(
 
     res.json({
       videoId,
-      thumbnailUrl: meta.thumbnailUrl || null,
-      album: meta.album || null,
+      resolvedSiteName: extPage?.siteName || (videoId ? 'YouTube' : bestMatch?.siteName || null),
+      resolvedUrl: extPage?.pageUrl || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : null),
+      resolvedArtist: meta.artist || extPage?.artist || null,
+      thumbnailUrl: meta.thumbnailUrl || extPage?.thumbnailUrl || null,
+      album: meta.album || extPage?.album || null,
+      playlistId: playlistId || null,
+      playlistTitle: playlistData?.playlistTitle || null,
+      playlistItems: playlistData?.items || [],
       fullTrackAvailable: Boolean(
-        bestMatch || videoId || process.env.YOUTUBE_COOKIE || process.env.COBALT_API_URL
+        extPage || bestMatch || videoId || playlistData || process.env.YOUTUBE_COOKIE || process.env.COBALT_API_URL
       ),
-      fullTrackSource: bestMatch
+      fullTrackSource: extPage
+        ? `${extPage.siteName} URL直接対応`
+        : bestMatch
         ? `フル音源 (${bestMatch.siteName} / ${formatSecLabel(bestMatch.durationSec) || 'Full'})`
         : null,
-      fullTrackTitle: bestMatch?.title || meta.title || null,
-      fullTrackDurationSec: bestMatch?.durationSec || meta.expectedDurationSec || null,
+      fullTrackTitle: extPage?.title || bestMatch?.title || meta.title || null,
+      fullTrackDurationSec: extPage?.durationSec || bestMatch?.durationSec || meta.expectedDurationSec || null,
       matchedSites,
       officialPreviewAvailable: Boolean(meta.officialPreviewUrl),
       officialPreviewSource: meta.officialPreviewSource || null,

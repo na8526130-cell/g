@@ -43,6 +43,9 @@ import {
   Link2,
   Film,
   Download,
+  Sliders,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 
 interface MvCanvasMeta {
@@ -161,6 +164,10 @@ export const FullScreenPlayerModal: React.FC = () => {
     isTrackBlocked,
     showToast,
     openFreemakeModal,
+    setDspModalOpen,
+    vocalLevel,
+    spatialAudio,
+    skipBySeconds,
   } = usePlayer();
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -916,13 +923,17 @@ export const FullScreenPlayerModal: React.FC = () => {
                   type="button"
                   onClick={() => {
                     const nextQ =
-                      audioQuality === 'high'
+                      audioQuality === 'hires'
+                        ? 'lossless'
+                        : audioQuality === 'lossless'
+                        ? 'high'
+                        : audioQuality === 'high'
                         ? 'normal'
                         : audioQuality === 'normal'
                         ? 'low'
                         : audioQuality === 'low'
                         ? 'auto'
-                        : 'high';
+                        : 'hires';
                     setAudioQuality(nextQ);
                   }}
                   className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
@@ -930,14 +941,30 @@ export const FullScreenPlayerModal: React.FC = () => {
                   <Volume2 className="w-4 h-4 text-neutral-400" />
                   <span>
                     音質:{' '}
-                    {audioQuality === 'high'
-                      ? '最高音質 (320kbps)'
+                    {audioQuality === 'hires'
+                      ? 'ハイレゾ DSP (24/96)'
+                      : audioQuality === 'lossless'
+                      ? 'ロスレス (CD 16/44.1)'
+                      : audioQuality === 'high'
+                      ? '高音質 (256kbps)'
                       : audioQuality === 'normal'
                       ? '標準 (160kbps)'
                       : audioQuality === 'low'
                       ? '低音質 (節約)'
                       : '自動'}
                   </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setDspModalOpen(true);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-sky-300 hover:text-sky-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Sliders className="w-4 h-4 text-sky-400" />
+                  <span>空間オーディオ・カラオケ(Sing)・DSP</span>
                 </button>
 
                 <button
@@ -1154,6 +1181,18 @@ export const FullScreenPlayerModal: React.FC = () => {
               {shuffleMode !== 'off' && <span className="w-1 h-1 rounded-full bg-red-500 -mt-1.5" />}
             </div>
 
+            {currentTrack.trackType === 'podcast' && (
+              <button
+                type="button"
+                onClick={() => skipBySeconds(-15)}
+                className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                title="15秒戻る"
+              >
+                <RotateCcw className="w-5 h-5" />
+                <span className="text-[10px] font-mono font-bold leading-none mt-0.5">-15s</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={prevTrack}
@@ -1184,6 +1223,18 @@ export const FullScreenPlayerModal: React.FC = () => {
             >
               <SkipForward className="w-8 h-8 fill-current" />
             </button>
+
+            {currentTrack.trackType === 'podcast' && (
+              <button
+                type="button"
+                onClick={() => skipBySeconds(30)}
+                className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                title="30秒進む"
+              >
+                <RotateCw className="w-5 h-5" />
+                <span className="text-[10px] font-mono font-bold leading-none mt-0.5">+30s</span>
+              </button>
+            )}
 
             <div className="relative flex flex-col items-center">
               <button
@@ -1217,6 +1268,29 @@ export const FullScreenPlayerModal: React.FC = () => {
             </button>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDspModalOpen(true)}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer border ${
+                  vocalLevel < 100 || spatialAudio !== 'off' || audioQuality === 'lossless' || audioQuality === 'hires'
+                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                    : 'bg-white/5 text-neutral-300 border-white/10 hover:text-white hover:bg-white/10'
+                }`}
+                title="高音質DSP / 空間オーディオ / Singカラオケ"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>
+                  {vocalLevel < 100
+                    ? `Sing ${vocalLevel}%`
+                    : spatialAudio !== 'off'
+                    ? '空間3D'
+                    : audioQuality === 'hires'
+                    ? 'Hi-Res'
+                    : audioQuality === 'lossless'
+                    ? 'Lossless'
+                    : 'DSP/Sing'}
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={() => openFreemakeModal(currentTrack)}

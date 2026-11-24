@@ -40,6 +40,9 @@ import { ConnectDeviceModal } from './components/ConnectDeviceModal';
 import { ZeroCodeModal } from './components/ZeroCodeModal';
 import { FreemakeModal } from './components/FreemakeModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AudioDspModal } from './components/AudioDspModal';
+import { AiPlaylistModal } from './components/AiPlaylistModal';
+import { PodcastsView } from './views/PodcastsView';
 
 const MainLayout: React.FC = () => {
   const {
@@ -154,6 +157,7 @@ const MainLayout: React.FC = () => {
         {activeView === 'album' && <AlbumDetailView />}
         {activeView === 'library' && <LibraryView />}
         {activeView === 'party' && <ListeningPartyView />}
+        {activeView === 'podcasts' && <PodcastsView />}
       </main>
 
       {/* Persistent Single Instance YouTubePlayer (Never unmounted) */}
@@ -231,6 +235,8 @@ const MainLayout: React.FC = () => {
       <ZeroCodeModal />
       <FreemakeModal />
       <SettingsModal />
+      <AudioDspModal />
+      <AiPlaylistModal />
 
       {/* In-App PWA Install Promotion Banner */}
       <PWAInstallBanner />

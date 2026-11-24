@@ -15,6 +15,9 @@ class SocialSocketService {
   private pollTimer: any = null;
   private lastSeq = 0;
   private clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  private deviceId: string | null = null;
+  private pairingCode: string | null = null;
+  private collabCode: string | null = null;
 
   constructor() {
     this.connect();
@@ -39,6 +42,16 @@ class SocialSocketService {
     if (this.currentUser) {
       this.send('auth', { username: this.currentUser });
     }
+    if (this.deviceId || this.pairingCode) {
+      this.send('connect:bind', {
+        deviceId: this.deviceId,
+        pairingCode: this.pairingCode,
+        username: this.currentUser,
+      });
+    }
+    if (this.collabCode) {
+      this.send('collab:subscribe', { code: this.collabCode });
+    }
     if (this.nowPlaying) {
       this.send('presence', { username: this.currentUser, nowPlaying: this.nowPlaying });
     }
@@ -55,6 +68,9 @@ class SocialSocketService {
         if (this.currentUser) params.set('username', this.currentUser);
         if (this.currentRoomId) params.set('roomId', this.currentRoomId);
         if (this.currentVideoId) params.set('videoId', this.currentVideoId);
+        if (this.deviceId) params.set('deviceId', this.deviceId);
+        if (this.pairingCode) params.set('pairingCode', this.pairingCode);
+        if (this.collabCode) params.set('collabCode', this.collabCode);
 
         const res = await fetch(`/api/realtime/poll?${params.toString()}`);
         if (!res.ok) return;
@@ -72,7 +88,7 @@ class SocialSocketService {
 
     pollOnce();
     if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = setInterval(pollOnce, 3500);
+    this.pollTimer = setInterval(pollOnce, 2500);
   }
 
   public connect() {
@@ -94,6 +110,16 @@ class SocialSocketService {
         this.wsFailures = 0;
         if (this.currentUser) {
           this.send('auth', { username: this.currentUser });
+        }
+        if (this.deviceId || this.pairingCode) {
+          this.send('connect:bind', {
+            deviceId: this.deviceId,
+            pairingCode: this.pairingCode,
+            username: this.currentUser,
+          });
+        }
+        if (this.collabCode) {
+          this.send('collab:subscribe', { code: this.collabCode });
         }
         if (this.nowPlaying) {
           this.send('presence', { username: this.currentUser, nowPlaying: this.nowPlaying });
@@ -126,7 +152,6 @@ class SocialSocketService {
             return;
           }
         }
-        // Auto-reconnect with 3-second delay
         if (!this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
@@ -178,6 +203,21 @@ class SocialSocketService {
     }
   }
 
+  public bindDevice(deviceId: string, pairingCode: string, username?: string | null) {
+    this.deviceId = deviceId;
+    this.pairingCode = pairingCode;
+    this.send('connect:bind', {
+      deviceId,
+      pairingCode,
+      username: username ?? this.currentUser,
+    });
+  }
+
+  public subscribeCollab(code: string) {
+    this.collabCode = code.toUpperCase();
+    this.send('collab:subscribe', { code: this.collabCode });
+  }
+
   public setNowPlaying(track: { title: string; artist: string; videoId: string } | null) {
     this.nowPlaying = track;
     this.currentVideoId = track ? track.videoId : null;
@@ -203,12 +243,25 @@ class SocialSocketService {
     isPlaying?: boolean;
     positionSec?: number;
     trackChanged?: boolean;
+    username?: string;
   }) {
     this.send('party:sync', payload);
   }
 
   public sendPartyChat(roomId: string, text: string, username?: string) {
     this.send('party:chat', { roomId, text, username });
+  }
+
+  public addPartyQueueTrack(roomId: string, track: any, username?: string) {
+    this.send('party:queue_add', { roomId, track, username });
+  }
+
+  public removePartyQueueTrack(roomId: string, trackId: string, username?: string) {
+    this.send('party:queue_remove', { roomId, trackId, username });
+  }
+
+  public playPartyQueueTrack(roomId: string, track: any, username?: string) {
+    this.send('party:queue_play', { roomId, track, username });
   }
 
   public on(event: string, callback: SocketListener) {
