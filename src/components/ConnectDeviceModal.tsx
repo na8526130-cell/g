@@ -19,6 +19,9 @@ import {
   RefreshCw,
   Copy,
   Sliders,
+  Watch,
+  Gamepad2,
+  Car,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
 import { AudioQualityMode } from '../types/music';
@@ -51,6 +54,9 @@ export const ConnectDeviceModal: React.FC = () => {
     connectDevices,
     refreshConnectDevices,
     sendRemoteCommand,
+    setCompanionModalOpen,
+    setCompanionMode,
+    setCarModeOpen,
   } = usePlayer();
 
   const [selectedOutputLabel, setSelectedOutputLabel] = useState<string>('');
@@ -605,6 +611,44 @@ export const ConnectDeviceModal: React.FC = () => {
                 ))}
               </div>
             )}
+
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectModalOpen(false);
+                  setCompanionMode('watch');
+                  setCompanionModalOpen(true);
+                }}
+                className="min-h-[48px] p-2.5 rounded-xl bg-sky-950/35 hover:bg-sky-950/60 border border-sky-500/30 flex flex-col items-center justify-center gap-1 text-center transition-colors cursor-pointer"
+              >
+                <Watch className="w-4 h-4 text-sky-400" />
+                <span className="text-[11px] font-bold text-white">ウォッチUI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectModalOpen(false);
+                  setCompanionMode('console');
+                  setCompanionModalOpen(true);
+                }}
+                className="min-h-[48px] p-2.5 rounded-xl bg-indigo-950/35 hover:bg-indigo-950/60 border border-indigo-500/30 flex flex-col items-center justify-center gap-1 text-center transition-colors cursor-pointer"
+              >
+                <Gamepad2 className="w-4 h-4 text-indigo-400" />
+                <span className="text-[11px] font-bold text-white">ゲーム機/TV UI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectModalOpen(false);
+                  setCarModeOpen(true);
+                }}
+                className="min-h-[48px] p-2.5 rounded-xl bg-emerald-950/35 hover:bg-emerald-950/60 border border-emerald-500/30 flex flex-col items-center justify-center gap-1 text-center transition-colors cursor-pointer"
+              >
+                <Car className="w-4 h-4 text-emerald-400" />
+                <span className="text-[11px] font-bold text-white">ドライブモード</span>
+              </button>
+            </div>
 
             <button
               type="button"

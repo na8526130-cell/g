@@ -43,6 +43,11 @@ import { SettingsModal } from './components/SettingsModal';
 import { AudioDspModal } from './components/AudioDspModal';
 import { AiPlaylistModal } from './components/AiPlaylistModal';
 import { PodcastsView } from './views/PodcastsView';
+import { ClassicalExplorerModal } from './components/ClassicalExplorerModal';
+import { DjMixerModal } from './components/DjMixerModal';
+import { CarModeModal } from './components/CarModeModal';
+import { CompactCompanionModal } from './components/CompactCompanionModal';
+import { StartupSplash } from './components/StartupSplash';
 
 const MainLayout: React.FC = () => {
   const {
@@ -237,6 +242,10 @@ const MainLayout: React.FC = () => {
       <SettingsModal />
       <AudioDspModal />
       <AiPlaylistModal />
+      <ClassicalExplorerModal />
+      <DjMixerModal />
+      <CarModeModal />
+      <CompactCompanionModal />
 
       {/* In-App PWA Install Promotion Banner */}
       <PWAInstallBanner />
@@ -248,6 +257,7 @@ export default function App() {
   return (
     <PlayerProvider>
       <MainLayout />
+      <StartupSplash />
     </PlayerProvider>
   );
 }

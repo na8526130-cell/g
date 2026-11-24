@@ -17,6 +17,7 @@ import {
   ChevronDown,
   MessageSquare,
   Tv,
+  Globe,
 } from 'lucide-react';
 
 export const MiniFloatingPlayer: React.FC = () => {
@@ -163,6 +164,14 @@ export const MiniFloatingPlayer: React.FC = () => {
             useBase64
             className="w-12 h-12 rounded-xl object-cover bg-neutral-800 shadow"
           />
+          {currentTrack.isSharedOffline && (
+            <span
+              className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-600 border border-[#12131a] flex items-center justify-center shadow z-10"
+              title="共有オフライン"
+            >
+              <Globe className="w-2.5 h-2.5 text-white" />
+            </span>
+          )}
           {isPlaying && (
             <div className="absolute inset-0 bg-black/40 rounded-xl flex items-center justify-center gap-0.5">
               <span className="w-1 h-3 bg-red-500 animate-pulse" />

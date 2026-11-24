@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { Transform } from 'stream';
 import { promisify } from 'util';
+import { detectImageBufferType, fetchBestCoverImage } from './coverEmbed.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,7 @@ export interface SharedOfflineTrackMeta {
   album: string;
   duration: string;
   durationSeconds: number;
+  thumbnail?: string;
   fileName: string;
   fileExt: string;
   mimeType: string;
@@ -180,6 +182,70 @@ async function probeDurationSeconds(filePath: string): Promise<number> {
   return 0;
 }
 
+async function extractEmbeddedCoverWithFfmpeg(
+  plainAudioPath: string,
+  outJpgPath: string
+): Promise<Buffer | null> {
+  try {
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-v',
+        'error',
+        '-i',
+        plainAudioPath,
+        '-map',
+        '0:v:0',
+        '-frames:v',
+        '1',
+        '-vf',
+        'scale=600:600:force_original_aspect_ratio=decrease',
+        '-q:v',
+        '3',
+        outJpgPath,
+      ],
+      { timeout: 12000 }
+    );
+    if (fs.existsSync(outJpgPath)) {
+      const buf = await fs.promises.readFile(outJpgPath);
+      if (detectImageBufferType(buf)) {
+        return buf;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+async function lookupItunesCoverUrl(title: string, artist: string): Promise<string | null> {
+  const cleanTitle = String(title || '')
+    .replace(/[\(\[【（].*?[\)\]】）]/g, ' ')
+    .replace(/\.(mp3|wav|flac|m4a|aac|ogg|opus|mp4|webm|mov)$/i, '')
+    .trim();
+  const cleanArtist =
+    artist && artist !== '共有アップロード' && artist !== 'ローカル音源' && artist !== 'ゲスト'
+      ? artist.trim()
+      : '';
+  const query = [cleanArtist, cleanTitle].filter(Boolean).join(' ').trim();
+  if (!query || query.length < 2) return null;
+
+  try {
+    const resp = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&country=JP&media=music&limit=5`,
+      { signal: AbortSignal.timeout(4500) }
+    );
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as any;
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const hit = results.find((r: any) => typeof r?.artworkUrl100 === 'string' || typeof r?.artworkUrl60 === 'string');
+    const rawArt = String(hit?.artworkUrl100 || hit?.artworkUrl60 || '').trim();
+    if (!rawArt) return null;
+    return rawArt.replace(/\/\d+x\d+bb(\.\w+)?$/i, '/600x600bb$1');
+  } catch {
+    return null;
+  }
+}
+
 interface UploadSessionMeta {
   uploadId: string;
   filename: string;
@@ -190,6 +256,7 @@ interface UploadSessionMeta {
   title?: string;
   artist?: string;
   album?: string;
+  thumbnail?: string;
   uploadedBy?: string;
   durationSeconds?: number;
   duration?: string;
@@ -202,8 +269,11 @@ export function registerSharedOfflineRoutes(
   onTrackAdded?: (track: SharedOfflineTrackMeta) => void
 ) {
   const filesDir = path.resolve(dataDir, 'shared_offline_files');
+  const coversDir = path.resolve(dataDir, 'shared_offline_covers');
   const tmpDir = path.resolve(dataDir, 'shared_offline_tmp');
   const indexFile = path.resolve(dataDir, 'shared_offline_index.json');
+  const inFlightCoverResolves = new Map<string, Promise<string | null>>();
+  const failedCoverLookupAt = new Map<string, number>();
 
   const ensureDirs = () => {
     if (!fs.existsSync(dataDir)) {
@@ -211,6 +281,9 @@ export function registerSharedOfflineRoutes(
     }
     if (!fs.existsSync(filesDir)) {
       fs.mkdirSync(filesDir, { recursive: true });
+    }
+    if (!fs.existsSync(coversDir)) {
+      fs.mkdirSync(coversDir, { recursive: true });
     }
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
@@ -220,6 +293,98 @@ export function registerSharedOfflineRoutes(
   const getTrackDiskPath = (item: Pick<SharedOfflineTrackMeta, 'id' | 'fileExt'>) =>
     path.join(filesDir, `${item.id}${item.fileExt || '.mp3'}`);
 
+  const findExistingCoverPath = (id: string): { filePath: string; mimeType: string } | null => {
+    const safeId = path.basename(String(id || '').trim());
+    if (!/^[a-zA-Z0-9_-]{3,80}$/.test(safeId)) return null;
+    const jpgPath = path.join(coversDir, `${safeId}.jpg`);
+    if (fs.existsSync(jpgPath)) return { filePath: jpgPath, mimeType: 'image/jpeg' };
+    const pngPath = path.join(coversDir, `${safeId}.png`);
+    if (fs.existsSync(pngPath)) return { filePath: pngPath, mimeType: 'image/png' };
+    return null;
+  };
+
+  const buildCoverApiUrl = (id: string) => `/api/shared-offline/cover/${encodeURIComponent(id)}`;
+
+  const resolveAndSaveCoverForTrack = async (
+    item: Pick<SharedOfflineTrackMeta, 'id' | 'title' | 'artist' | 'fileExt' | 'isObfuscated'>,
+    options?: {
+      thumbnailInput?: unknown;
+      plainAudioPath?: string;
+    }
+  ): Promise<string | null> => {
+    ensureDirs();
+    const existing = findExistingCoverPath(item.id);
+    if (existing) return existing.filePath;
+
+    // 1) Client-supplied thumbnail (HTTP URL or data:image/... base64)
+    const rawThumb = typeof options?.thumbnailInput === 'string' ? options.thumbnailInput.trim() : '';
+    if (rawThumb && !rawThumb.startsWith('/api/shared-offline/cover/')) {
+      const candidateUrls = [rawThumb];
+      const fetched = await fetchBestCoverImage(candidateUrls).catch(() => null);
+      if (fetched) {
+        const outPath = path.join(coversDir, `${item.id}.${fetched.ext}`);
+        await fs.promises.writeFile(outPath, fetched.buffer);
+        return outPath;
+      }
+    }
+
+    // 2) Extract embedded cover art (ID3 APIC / MP4 covr / video frame) via ffmpeg
+    const tmpCoverOut = path.join(tmpDir, `cover_${item.id}_${Date.now()}.jpg`);
+    let tempPlainToDelete: string | null = null;
+    try {
+      let plainPath = options?.plainAudioPath;
+      if (!plainPath) {
+        const diskPath = getTrackDiskPath(item);
+        if (fs.existsSync(diskPath)) {
+          if (item.isObfuscated) {
+            const plainTmp = path.join(tmpDir, `plain_${item.id}_${Date.now()}${item.fileExt || '.mp3'}`);
+            await new Promise<void>((resolve, reject) => {
+              const rs = fs.createReadStream(diskPath);
+              const ws = fs.createWriteStream(plainTmp);
+              rs.on('error', reject);
+              ws.on('error', reject);
+              ws.on('finish', resolve);
+              rs.pipe(createXorTransformStream(0)).pipe(ws);
+            });
+            plainPath = plainTmp;
+            tempPlainToDelete = plainTmp;
+          } else {
+            plainPath = diskPath;
+          }
+        }
+      }
+
+      if (plainPath && fs.existsSync(plainPath)) {
+        const extractedBuf = await extractEmbeddedCoverWithFfmpeg(plainPath, tmpCoverOut);
+        if (extractedBuf) {
+          const outPath = path.join(coversDir, `${item.id}.jpg`);
+          await fs.promises.writeFile(outPath, extractedBuf);
+          return outPath;
+        }
+      }
+    } catch {} finally {
+      if (tempPlainToDelete) {
+        fs.promises.unlink(tempPlainToDelete).catch(() => {});
+      }
+      fs.promises.unlink(tmpCoverOut).catch(() => {});
+    }
+
+    // 3) Fallback: Look up official album artwork on iTunes Search by title & artist
+    try {
+      const itunesUrl = await lookupItunesCoverUrl(item.title, item.artist);
+      if (itunesUrl) {
+        const fetched = await fetchBestCoverImage([itunesUrl]).catch(() => null);
+        if (fetched) {
+          const outPath = path.join(coversDir, `${item.id}.${fetched.ext}`);
+          await fs.promises.writeFile(outPath, fetched.buffer);
+          return outPath;
+        }
+      }
+    } catch {}
+
+    return null;
+  };
+
   const seedFromBundledDataIfNeeded = () => {
     try {
       ensureDirs();
@@ -228,6 +393,7 @@ export function registerSharedOfflineRoutes(
       if (path.resolve(dataDir) === seedDir) return;
       const seedIndex = path.join(seedDir, 'shared_offline_index.json');
       const seedFilesDir = path.join(seedDir, 'shared_offline_files');
+      const seedCoversDir = path.join(seedDir, 'shared_offline_covers');
       if (!fs.existsSync(seedIndex)) return;
       const raw = fs.readFileSync(seedIndex, 'utf8');
       const parsed = JSON.parse(raw);
@@ -239,6 +405,13 @@ export function registerSharedOfflineRoutes(
         const dstFile = path.join(filesDir, `${item.id}${ext}`);
         if (fs.existsSync(srcFile) && !fs.existsSync(dstFile)) {
           fs.copyFileSync(srcFile, dstFile);
+        }
+        for (const cExt of ['.jpg', '.png']) {
+          const srcCov = path.join(seedCoversDir, `${item.id}${cExt}`);
+          const dstCov = path.join(coversDir, `${item.id}${cExt}`);
+          if (fs.existsSync(srcCov) && !fs.existsSync(dstCov)) {
+            fs.copyFileSync(srcCov, dstCov);
+          }
         }
       }
       fs.writeFileSync(indexFile, JSON.stringify(parsed, null, 2), 'utf8');
@@ -340,6 +513,7 @@ export function registerSharedOfflineRoutes(
   const finalizeTrackFromDisk = async (params: {
     id: string;
     diskPath: string;
+    plainAudioPath?: string;
     rawFilename: string;
     ext: string;
     headerMime: string;
@@ -348,6 +522,7 @@ export function registerSharedOfflineRoutes(
     titleInput?: unknown;
     artistInput?: unknown;
     albumInput?: unknown;
+    thumbnailInput?: unknown;
     uploadedByInput?: unknown;
     durationSecondsInput?: unknown;
     durationInput?: unknown;
@@ -371,7 +546,9 @@ export function registerSharedOfflineRoutes(
       0,
       Math.round(Number(params.durationSecondsInput) || params.probedDurationSeconds || 0)
     );
-    if (durationSeconds <= 0 && !params.isObfuscated) {
+    if (durationSeconds <= 0 && params.plainAudioPath && fs.existsSync(params.plainAudioPath)) {
+      durationSeconds = await probeDurationSeconds(params.plainAudioPath);
+    } else if (durationSeconds <= 0 && !params.isObfuscated) {
       durationSeconds = await probeDurationSeconds(params.diskPath);
     }
     if (durationSeconds <= 0) {
@@ -384,6 +561,20 @@ export function registerSharedOfflineRoutes(
     );
     const mimeType = EXT_TO_MIME[params.ext] || params.headerMime || 'audio/mpeg';
 
+    await resolveAndSaveCoverForTrack(
+      {
+        id: params.id,
+        title,
+        artist,
+        fileExt: params.ext,
+        isObfuscated: params.isObfuscated,
+      },
+      {
+        thumbnailInput: params.thumbnailInput,
+        plainAudioPath: params.plainAudioPath,
+      }
+    ).catch(() => null);
+
     const meta: SharedOfflineTrackMeta = {
       id: params.id,
       title,
@@ -391,6 +582,7 @@ export function registerSharedOfflineRoutes(
       album,
       duration,
       durationSeconds,
+      thumbnail: buildCoverApiUrl(params.id),
       fileName: params.rawFilename,
       fileExt: params.ext,
       mimeType,
@@ -417,9 +609,12 @@ export function registerSharedOfflineRoutes(
   app.get('/api/shared-offline', (_req: Request, res: Response) => {
     reloadIndexIfChanged();
     pruneMissingFiles();
-    const sorted = [...sharedTracks].sort(
-      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
-    );
+    const sorted = [...sharedTracks]
+      .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+      .map((t) => ({
+        ...t,
+        thumbnail: t.thumbnail || buildCoverApiUrl(t.id),
+      }));
     const totalBytes = sorted.reduce((acc, t) => acc + (t.fileSize || 0), 0);
     res.json({
       tracks: sorted,
@@ -433,6 +628,7 @@ export function registerSharedOfflineRoutes(
     '/api/shared-offline/upload',
     express.raw({ type: '*/*', limit: '25mb' }),
     async (req: Request, res: Response) => {
+      let plainTmpPath = '';
       try {
         const bodyBuf = req.body as Buffer;
         if (!Buffer.isBuffer(bodyBuf) || bodyBuf.length < 32) {
@@ -452,12 +648,21 @@ export function registerSharedOfflineRoutes(
         ensureDirs();
         const id = `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const diskPath = path.join(filesDir, `${id}${ext}`);
+        plainTmpPath = path.join(tmpDir, `plain_small_${id}${ext}`);
+        await fs.promises.writeFile(plainTmpPath, bodyBuf);
+
         const obfuscated = xorBufferAtOffset(bodyBuf, 0);
         await fs.promises.writeFile(diskPath, obfuscated);
+
+        const thumbInput =
+          typeof req.headers['x-track-thumbnail'] === 'string'
+            ? req.headers['x-track-thumbnail']
+            : req.query.thumbnail;
 
         const meta = await finalizeTrackFromDisk({
           id,
           diskPath,
+          plainAudioPath: plainTmpPath,
           rawFilename,
           ext,
           headerMime,
@@ -466,6 +671,7 @@ export function registerSharedOfflineRoutes(
           titleInput: req.query.title,
           artistInput: req.query.artist,
           albumInput: req.query.album,
+          thumbnailInput: thumbInput,
           uploadedByInput: req.query.uploadedBy,
           durationSecondsInput: req.query.durationSeconds,
           durationInput: req.query.duration,
@@ -475,6 +681,10 @@ export function registerSharedOfflineRoutes(
       } catch (err: any) {
         console.error('[SharedOffline] Upload error:', err);
         res.status(500).json({ error: err?.message || 'アップロードに失敗しました' });
+      } finally {
+        if (plainTmpPath) {
+          fs.promises.unlink(plainTmpPath).catch(() => {});
+        }
       }
     }
   );
@@ -517,6 +727,7 @@ export function registerSharedOfflineRoutes(
         title: typeof body.title === 'string' ? body.title : undefined,
         artist: typeof body.artist === 'string' ? body.artist : undefined,
         album: typeof body.album === 'string' ? body.album : undefined,
+        thumbnail: typeof body.thumbnail === 'string' ? body.thumbnail : undefined,
         uploadedBy: typeof body.uploadedBy === 'string' ? body.uploadedBy : undefined,
         durationSeconds: Number(body.durationSeconds) || undefined,
         duration: typeof body.duration === 'string' ? body.duration : undefined,
@@ -634,7 +845,9 @@ export function registerSharedOfflineRoutes(
 
       const id = `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const diskPath = path.join(filesDir, `${id}${ext}`);
-      const writeStream = fs.createWriteStream(diskPath);
+      const plainAssembledPath = path.join(sessionDir, `assembled${ext}`);
+      const xorWriteStream = fs.createWriteStream(diskPath);
+      const plainWriteStream = fs.createWriteStream(plainAssembledPath);
 
       let totalSize = 0;
       try {
@@ -646,18 +859,29 @@ export function registerSharedOfflineRoutes(
           const chunkData = await fs.promises.readFile(chunkPath);
           const xorData = xorBufferAtOffset(chunkData, totalSize);
           totalSize += chunkData.length;
-          if (!writeStream.write(xorData)) {
-            await new Promise<void>((resolve) => writeStream.once('drain', resolve));
+          if (!xorWriteStream.write(xorData)) {
+            await new Promise<void>((resolve) => xorWriteStream.once('drain', resolve));
+          }
+          if (!plainWriteStream.write(chunkData)) {
+            await new Promise<void>((resolve) => plainWriteStream.once('drain', resolve));
           }
         }
-        await new Promise<void>((resolve, reject) => {
-          writeStream.on('finish', resolve);
-          writeStream.on('error', reject);
-          writeStream.end();
-        });
+        await Promise.all([
+          new Promise<void>((resolve, reject) => {
+            xorWriteStream.on('finish', resolve);
+            xorWriteStream.on('error', reject);
+            xorWriteStream.end();
+          }),
+          new Promise<void>((resolve, reject) => {
+            plainWriteStream.on('finish', resolve);
+            plainWriteStream.on('error', reject);
+            plainWriteStream.end();
+          }),
+        ]);
       } catch (assembleErr) {
         try {
-          writeStream.destroy();
+          xorWriteStream.destroy();
+          plainWriteStream.destroy();
           if (fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
         } catch {}
         throw assembleErr;
@@ -671,6 +895,7 @@ export function registerSharedOfflineRoutes(
       const meta = await finalizeTrackFromDisk({
         id,
         diskPath,
+        plainAudioPath: plainAssembledPath,
         rawFilename,
         ext,
         headerMime,
@@ -679,6 +904,7 @@ export function registerSharedOfflineRoutes(
         titleInput: body.title ?? sessionMeta.title,
         artistInput: body.artist ?? sessionMeta.artist,
         albumInput: body.album ?? sessionMeta.album,
+        thumbnailInput: body.thumbnail ?? sessionMeta.thumbnail,
         uploadedByInput: body.uploadedBy ?? sessionMeta.uploadedBy,
         durationSecondsInput: body.durationSeconds ?? sessionMeta.durationSeconds,
         durationInput: body.duration ?? sessionMeta.duration,
@@ -789,6 +1015,102 @@ export function registerSharedOfflineRoutes(
       } else {
         readStream.pipe(res);
       }
+    }
+  });
+
+  // 3b. Cover artwork endpoint (extracts ID3/MP4 art or fetches iTunes cover on demand; always returns a crisp fallback)
+  app.get('/api/shared-offline/cover/:id', async (req: Request, res: Response) => {
+    const rawId = String(req.params.id || '').trim();
+    const safeId = path.basename(rawId);
+    if (!/^[a-zA-Z0-9_-]{3,80}$/.test(safeId)) {
+      return res.status(400).json({ error: '無効なIDです' });
+    }
+
+    const sendFallbackAppIcon = () => {
+      const publicIcon = path.resolve(process.cwd(), 'public', 'pwa-512x512.png');
+      if (fs.existsSync(publicIcon)) {
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.sendFile(publicIcon);
+      }
+      const fallbackSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#059669"/><stop offset="100%" stop-color="#0f172a"/></linearGradient></defs><rect width="512" height="512" rx="64" fill="url(#g)"/><circle cx="256" cy="256" r="124" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="18"/><path d="M298 156v146a44 44 0 1 1-24-39V194l92-22v106a44 44 0 1 1-24-39v-95z" fill="#ffffff"/></svg>`;
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(fallbackSvg);
+    };
+
+    try {
+      const existing = findExistingCoverPath(safeId);
+      if (existing) {
+        res.setHeader('Content-Type', existing.mimeType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.sendFile(existing.filePath);
+      }
+
+      const item = findTrackById(safeId);
+      if (!item) {
+        return sendFallbackAppIcon();
+      }
+
+      const lastFailed = failedCoverLookupAt.get(safeId) || 0;
+      if (Date.now() - lastFailed < 5 * 60 * 1000) {
+        return sendFallbackAppIcon();
+      }
+
+      let pending = inFlightCoverResolves.get(safeId);
+      if (!pending) {
+        pending = resolveAndSaveCoverForTrack(item)
+          .then((savedPath) => {
+            if (!savedPath) {
+              failedCoverLookupAt.set(safeId, Date.now());
+            } else {
+              item.thumbnail = buildCoverApiUrl(safeId);
+              saveIndex();
+            }
+            return savedPath;
+          })
+          .finally(() => {
+            inFlightCoverResolves.delete(safeId);
+          });
+        inFlightCoverResolves.set(safeId, pending);
+      }
+
+      const resolvedPath = await pending;
+      if (resolvedPath && fs.existsSync(resolvedPath)) {
+        const mime = resolvedPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.sendFile(resolvedPath);
+      }
+    } catch {}
+
+    return sendFallbackAppIcon();
+  });
+
+  // 3c. Attach/update cover image explicitly after upload (e.g., data URI for small uploads)
+  app.post('/api/shared-offline/:id/cover', async (req: Request, res: Response) => {
+    const safeId = path.basename(String(req.params.id || '').trim());
+    if (!/^[a-zA-Z0-9_-]{3,80}$/.test(safeId)) {
+      return res.status(400).json({ error: '無効なIDです' });
+    }
+    const item = findTrackById(safeId);
+    if (!item) {
+      return res.status(404).json({ error: '共有オフライン音源が見つかりません' });
+    }
+    const thumb = typeof req.body?.thumbnail === 'string' ? req.body.thumbnail.trim() : '';
+    if (!thumb) {
+      return res.status(400).json({ error: '画像データが指定されていません' });
+    }
+    try {
+      const savedPath = await resolveAndSaveCoverForTrack(item, { thumbnailInput: thumb });
+      if (savedPath) {
+        item.thumbnail = buildCoverApiUrl(safeId);
+        saveIndex();
+        return res.json({ success: true, thumbnail: item.thumbnail });
+      }
+      return res.status(400).json({ error: '対応形式の画像 (JPEG / PNG) を指定してください' });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || 'カバー画像の保存に失敗しました' });
     }
   });
 

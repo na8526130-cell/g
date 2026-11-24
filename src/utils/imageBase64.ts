@@ -77,7 +77,7 @@ export async function toBase64Image(rawSrc?: string): Promise<string | undefined
         (typeof window !== 'undefined' && trimmed.startsWith(window.location.origin));
 
       if (isLocal && !trimmed.startsWith('/api/proxy/image')) {
-        const res = await fetch(trimmed);
+        const res = await fetch(trimmed, { signal: AbortSignal.timeout(5000) });
         if (res.ok) {
           const blob = await res.blob();
           const dataUrl = await blobToDataUrl(blob);
@@ -93,7 +93,7 @@ export async function toBase64Image(rawSrc?: string): Promise<string | undefined
           : `${trimmed}${trimmed.includes('?') ? '&' : '?'}format=base64`
         : `/api/proxy/image?url=${encodeURIComponent(trimmed)}&format=base64`;
 
-      const proxyRes = await fetch(targetUrl);
+      const proxyRes = await fetch(targetUrl, { signal: AbortSignal.timeout(5000) });
       if (proxyRes.ok) {
         const contentType = proxyRes.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {

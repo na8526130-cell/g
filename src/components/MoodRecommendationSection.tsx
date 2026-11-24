@@ -24,11 +24,20 @@ import {
   Loader2,
   ListStart,
   Download,
+  Activity,
 } from 'lucide-react';
 import { api } from '../services/api';
-import { CommentEmotionData, Track } from '../types/music';
+import { BpmRangePreset, CommentEmotionData, Track } from '../types/music';
 import { usePlayer } from '../context/PlayerContext';
 import { SafeImage } from './SafeImage';
+
+const BPM_PRESETS: { id: BpmRangePreset; label: string; desc: string }[] = [
+  { id: 'all', label: 'すべてのテンポ', desc: 'Auto' },
+  { id: 'slow', label: 'Slow (<90 BPM)', desc: 'バラード・チル' },
+  { id: 'mid', label: 'Mid (90–115 BPM)', desc: '作業・散歩' },
+  { id: 'upbeat', label: 'Upbeat (116–135 BPM)', desc: 'ポップ・ドライブ' },
+  { id: 'fast', label: 'Fast (136+ BPM)', desc: 'ワークアウト・疾走' },
+];
 
 interface MoodOption {
   id: string;
@@ -66,11 +75,12 @@ const POPULAR_ARTISTS = [
 ];
 
 export const MoodRecommendationSection: React.FC = () => {
-  const { playTrack, addToQueue, playNext, showToast, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying, openFreemakeModal } =
+  const { playTrack, addToQueue, playNext, showToast, toggleLikeTrack, likedTrackIds, currentTrack, isPlaying, openFreemakeModal, catalogRegion } =
     usePlayer();
 
   const [selectedMood, setSelectedMood] = useState<string>('energy');
   const [selectedArtist, setSelectedArtist] = useState<string>('指定なし');
+  const [bpmRange, setBpmRange] = useState<BpmRangePreset>('all');
   const [customArtistInput, setCustomArtistInput] = useState<string>('');
   const [isCustomInputOpen, setIsCustomInputOpen] = useState<boolean>(false);
 
@@ -99,16 +109,46 @@ export const MoodRecommendationSection: React.FC = () => {
 
   const [, startTransition] = useTransition();
 
-  const fetchRecommendation = async (mood: string, artist: string, forceRefresh = false) => {
+  const fetchRecommendation = async (
+    mood: string,
+    artist: string,
+    bpm: BpmRangePreset = bpmRange,
+    forceRefresh = false
+  ) => {
     setLoading(true);
     try {
       const effectiveArtist = artist === '指定なし' ? undefined : artist;
-      const res = await api.getMoodRecommendation(mood, effectiveArtist, forceRefresh);
-      if (res && res.tracks) {
-        startTransition(() => {
-          setRecData(res);
-          setExpandedTrackId(res.tracks[0]?.id || null);
+      if (bpm !== 'all') {
+        const res = await api.searchByMoodBpm({
+          mood,
+          bpmRange: bpm,
+          q: effectiveArtist,
+          gl: catalogRegion,
+          forceRefresh,
         });
+        if (res && res.tracks) {
+          const moodLabel = MOOD_NAME_MAP[mood] || res.moodLabel || mood;
+          const bpmLabel = BPM_PRESETS.find((b) => b.id === bpm)?.label || '';
+          startTransition(() => {
+            setRecData({
+              mood: { id: mood, name: moodLabel, icon: '', tagline: `${moodLabel} · ${bpmLabel}` },
+              artist: effectiveArtist || null,
+              title: `${moodLabel} × ${bpmLabel}`,
+              tagline: `${effectiveArtist ? `${effectiveArtist} · ` : ''}テンポ帯 ${bpmLabel} で絞り込んだ選曲`,
+              cover: res.tracks[0]?.thumbnail || '',
+              tracks: res.tracks,
+            });
+            setExpandedTrackId(res.tracks[0]?.id || null);
+          });
+        }
+      } else {
+        const res = await api.getMoodRecommendation(mood, effectiveArtist, forceRefresh);
+        if (res && res.tracks) {
+          startTransition(() => {
+            setRecData(res);
+            setExpandedTrackId(res.tracks[0]?.id || null);
+          });
+        }
       }
     } catch (err) {
       console.error('[MoodRecommendation] Failed to fetch:', err);
@@ -118,8 +158,8 @@ export const MoodRecommendationSection: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchRecommendation(selectedMood, selectedArtist);
-  }, [selectedMood, selectedArtist]);
+    fetchRecommendation(selectedMood, selectedArtist, bpmRange);
+  }, [selectedMood, selectedArtist, bpmRange, catalogRegion]);
 
   const handleAnalyzeCurrentTrack = async () => {
     if (!currentTrack || analyzingCurrent) return;
@@ -220,7 +260,7 @@ export const MoodRecommendationSection: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => fetchRecommendation(selectedMood, selectedArtist, true)}
+            onClick={() => fetchRecommendation(selectedMood, selectedArtist, bpmRange, true)}
             disabled={loading}
             className="px-3.5 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-700/80 text-xs font-semibold text-neutral-200 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
           >
@@ -429,6 +469,33 @@ export const MoodRecommendationSection: React.FC = () => {
         </div>
       </div>
 
+      {/* Step 3: BPM Tempo Band Filter */}
+      <div className="mb-6 relative z-10">
+        <label className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-2 flex items-center gap-1.5">
+          <Activity className="w-3.5 h-3.5 text-red-400" />
+          <span>3. BPM テンポ帯で絞り込み</span>
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {BPM_PRESETS.map((preset) => {
+            const active = bpmRange === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => setBpmRange(preset.id)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  active
+                    ? 'bg-red-600 text-white shadow-md shadow-red-600/30'
+                    : 'bg-[#181820] hover:bg-[#20202a] text-neutral-300 border border-neutral-800 hover:border-neutral-700'
+                }`}
+              >
+                <span>{preset.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Loading Indicator */}
       {loading && !recData && (
         <div className="py-12 flex flex-col items-center justify-center gap-2 text-neutral-400 text-xs">
@@ -589,6 +656,11 @@ export const MoodRecommendationSection: React.FC = () => {
                         >
                           {track.title}
                         </span>
+                        {typeof track.bpm === 'number' && track.bpm > 0 && (
+                          <span className="px-1.5 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono text-amber-300 shrink-0">
+                            ~{track.bpm} BPM
+                          </span>
+                        )}
                         {matchPct !== null && matchPct > 0 && (
                           <span className="px-1.5 py-0.5 rounded bg-red-600/20 border border-red-600/40 text-[10px] font-mono font-bold text-red-400 shrink-0">
                             {matchPct}%

@@ -1,7 +1,7 @@
 const CACHE_DB_NAME = 'ZeroMusicApiCacheDB';
 const CACHE_DB_VERSION = 1;
 const CACHE_STORE_NAME = 'api_cache';
-const MAX_CACHE_ENTRIES = 300;
+const MAX_CACHE_ENTRIES = 500;
 const LEGACY_PREFIX = 'zm_qc_v1:';
 const LEGACY_INDEX_KEY = 'zm_qc_idx_v1';
 
@@ -67,10 +67,15 @@ export function purgeLegacyLocalStorageCache(): void {
   } catch {}
 }
 
-export async function getApiCacheEntry<T>(key: string): Promise<T | null> {
+export async function getApiCacheEntry<T>(
+  key: string,
+  options?: { allowExpired?: boolean }
+): Promise<T | null> {
   purgeLegacyLocalStorageCache();
   try {
     const db = await openApiCacheDB();
+    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    const allowExpired = Boolean(options?.allowExpired || isOffline);
     return await new Promise<T | null>((resolve) => {
       const tx = db.transaction([CACHE_STORE_NAME], 'readonly');
       const store = tx.objectStore(CACHE_STORE_NAME);
@@ -83,7 +88,11 @@ export async function getApiCacheEntry<T>(key: string): Promise<T | null> {
           return;
         }
         if (rec.exp <= Date.now()) {
-          // Expired: delete lazily in background
+          if (allowExpired) {
+            resolve(rec.data);
+            return;
+          }
+          // Expired & online: delete lazily in background
           deleteApiCacheEntry(key).catch(() => {});
           resolve(null);
           return;
@@ -117,7 +126,7 @@ export async function setApiCacheEntry<T>(key: string, data: T, ttlMs: number): 
       putReq.onerror = () => resolve();
     });
 
-    // Opportunistically prune expired & excess entries beyond MAX_CACHE_ENTRIES
+    // Opportunistically prune excess entries beyond MAX_CACHE_ENTRIES
     pruneApiCacheEntries(db, now).catch(() => {});
   } catch {}
 }
@@ -137,6 +146,7 @@ export async function deleteApiCacheEntry(key: string): Promise<void> {
 
 async function pruneApiCacheEntries(db: IDBDatabase, now: number): Promise<void> {
   try {
+    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
     const records = await new Promise<CacheRecord[]>((resolve) => {
       const tx = db.transaction([CACHE_STORE_NAME], 'readonly');
       const store = tx.objectStore(CACHE_STORE_NAME);
@@ -149,7 +159,9 @@ async function pruneApiCacheEntries(db: IDBDatabase, now: number): Promise<void>
     const liveRecords: CacheRecord[] = [];
 
     for (const r of records) {
-      if (!r || typeof r.exp !== 'number' || r.exp <= now) {
+      if (!r || typeof r.exp !== 'number') continue;
+      if (!isOffline && r.exp <= now - 7 * 24 * 60 * 60 * 1000) {
+        // Keep stale entries up to 7 days for offline resilience; only delete very old entries
         if (r?.key) expiredKeys.push(r.key);
       } else {
         liveRecords.push(r);

@@ -46,6 +46,14 @@ import {
   Sliders,
   RotateCcw,
   RotateCw,
+  Car,
+  Disc3,
+  Music2,
+  Watch,
+  CheckCircle2,
+  ArrowDownToLine,
+  Loader2,
+  Globe,
 } from 'lucide-react';
 
 interface MvCanvasMeta {
@@ -168,6 +176,15 @@ export const FullScreenPlayerModal: React.FC = () => {
     vocalLevel,
     spatialAudio,
     skipBySeconds,
+    setCarModeOpen,
+    setDjMixerOpen,
+    setClassicalModalOpen,
+    setCompanionModalOpen,
+    setCompanionMode,
+    cachedOfflineIds,
+    downloadingOfflineIds,
+    downloadTrackOffline,
+    removeTrackOfflineCache,
   } = usePlayer();
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -586,9 +603,10 @@ export const FullScreenPlayerModal: React.FC = () => {
       {/* Ambient Canvas Backdrop (Blurred Artwork base + Looping MV Canvas overlay) */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         {currentTrack.thumbnail && (
-          <img
+          <SafeImage
             src={currentTrack.thumbnail}
             alt=""
+            useBase64
             className={`w-full h-full object-cover opacity-30 blur-3xl scale-125 transition-transform duration-[12000ms] ease-linear ${
               isPlaying ? 'scale-[1.35]' : 'scale-125'
             }`}
@@ -911,6 +929,38 @@ export const FullScreenPlayerModal: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setMenuOpen(false);
+                    if (currentTrack.isLocal) {
+                      showToast('ローカル保存済みの楽曲です', 'info', 2000);
+                      return;
+                    }
+                    if (cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline) {
+                      removeTrackOfflineCache(currentTrack.id);
+                    } else {
+                      downloadTrackOffline(currentTrack);
+                    }
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-emerald-300 hover:text-emerald-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  {downloadingOfflineIds.has(currentTrack.id) ? (
+                    <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+                  ) : cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline || currentTrack.isLocal ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <ArrowDownToLine className="w-4 h-4 text-emerald-400" />
+                  )}
+                  <span>
+                    {downloadingOfflineIds.has(currentTrack.id)
+                      ? 'オフライン保存中...'
+                      : cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline || currentTrack.isLocal
+                      ? 'オフライン保存済み（タップで解除）'
+                      : 'この曲をオフライン保存（1タップ）'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
                     openFreemakeModal(currentTrack);
                   }}
                   className="w-full py-2 text-left text-sm font-semibold text-sky-300 hover:text-sky-200 flex items-center gap-4 transition-colors cursor-pointer"
@@ -976,7 +1026,56 @@ export const FullScreenPlayerModal: React.FC = () => {
                   className="w-full py-2 text-left text-sm font-medium text-neutral-300 hover:text-white flex items-center gap-4 transition-colors cursor-pointer"
                 >
                   <Award className="w-4 h-4 text-neutral-400" />
-                  <span>リスニング記録 (Wrapped)</span>
+                  <span>リスニング記録 (Wrapped / Recap)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setCarModeOpen(true);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-emerald-300 hover:text-emerald-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Car className="w-4 h-4 text-emerald-400" />
+                  <span>ドライブモード (CarPlay / 車載UI)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setDjMixerOpen(true);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-purple-300 hover:text-purple-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Disc3 className="w-4 h-4 text-purple-400" />
+                  <span>DJミキサー & セット出力</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setClassicalModalOpen(true);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-amber-300 hover:text-amber-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Music2 className="w-4 h-4 text-amber-400" />
+                  <span>クラシック専門館</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setCompanionMode('watch');
+                    setCompanionModalOpen(true);
+                  }}
+                  className="w-full py-2 text-left text-sm font-semibold text-sky-300 hover:text-sky-200 flex items-center gap-4 transition-colors cursor-pointer"
+                >
+                  <Watch className="w-4 h-4 text-sky-400" />
+                  <span>Watch / ゲーム機リモート</span>
                 </button>
 
                 <div className="my-1.5 border-t border-white/10" />
@@ -1031,6 +1130,12 @@ export const FullScreenPlayerModal: React.FC = () => {
                 useBase64
                 className="w-full h-full object-cover"
               />
+              {currentTrack.isSharedOffline && (
+                <span className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur-md border border-emerald-400/40 text-emerald-300 text-[11px] font-bold shadow-lg">
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>共有オフライン</span>
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -1081,6 +1186,38 @@ export const FullScreenPlayerModal: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1 shrink-0">
+              {!currentTrack.isLocal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (downloadingOfflineIds.has(currentTrack.id)) return;
+                    if (cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline) {
+                      removeTrackOfflineCache(currentTrack.id);
+                    } else {
+                      downloadTrackOffline(currentTrack);
+                    }
+                  }}
+                  className={`min-w-[38px] min-h-[38px] flex items-center justify-center transition-colors cursor-pointer ${
+                    cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline
+                      ? 'text-emerald-400 hover:text-emerald-300'
+                      : 'text-neutral-400 hover:text-emerald-300'
+                  }`}
+                  title={
+                    cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline
+                      ? 'オフライン保存済み（クリックで削除）'
+                      : 'この曲をオフライン保存'
+                  }
+                  aria-label="オフライン保存"
+                >
+                  {downloadingOfflineIds.has(currentTrack.id) ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                  ) : cachedOfflineIds.has(currentTrack.id) || currentTrack.isCachedOffline ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                  ) : (
+                    <ArrowDownToLine className="w-5 h-5" />
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => openTrackDetailModal(currentTrack)}

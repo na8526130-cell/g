@@ -14,13 +14,75 @@ import {
   SpatialAudioPreset,
   AudioStreamMetadata,
   PodcastShow,
+  CatalogRegion,
+  ListeningLogEntry,
+  RecapPeriod,
 } from '../types/music';
+
+export interface RecapStats {
+  period: RecapPeriod;
+  periodKey: string;
+  label: string;
+  availableKeys: { key: string; label: string }[];
+  totalMinutes: number;
+  totalPlays: number;
+  totalPlayedTracks: number;
+  topTracks: { track: Track; count: number; seconds: number }[];
+  topArtists: { artist: string; count: number }[];
+  topMood: string | null;
+  timeOfDay: string;
+}
+
+const VALID_CATALOG_REGIONS: CatalogRegion[] = ['JP', 'US', 'KR', 'GB', 'GLOBAL'];
+
+function getSeasonFromMonth(month1to12: number, year: number): { key: string; label: string } {
+  if (month1to12 >= 3 && month1to12 <= 5) {
+    return { key: `${year}-spring`, label: `${year}年 春 (3〜5月)` };
+  }
+  if (month1to12 >= 6 && month1to12 <= 8) {
+    return { key: `${year}-summer`, label: `${year}年 夏 (6〜8月)` };
+  }
+  if (month1to12 >= 9 && month1to12 <= 11) {
+    return { key: `${year}-autumn`, label: `${year}年 秋 (9〜11月)` };
+  }
+  const winterYear = month1to12 === 12 ? year + 1 : year;
+  return { key: `${winterYear}-winter`, label: `${winterYear}年 冬 (12〜2月)` };
+}
+
+function getPeriodKeyAndLabel(ts: string, period: RecapPeriod): { key: string; label: string } {
+  const d = new Date(ts);
+  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
+  const year = safeDate.getFullYear();
+  const month = safeDate.getMonth() + 1;
+  if (period === 'year') {
+    return { key: String(year), label: `${year}年 年間まとめ` };
+  }
+  if (period === 'season') {
+    return getSeasonFromMonth(month, year);
+  }
+  const mm = String(month).padStart(2, '0');
+  return { key: `${year}-${mm}`, label: `${year}年${month}月` };
+}
 import { ConnectDeviceInfo, ConnectCommandPayload } from '../types/social';
 import { api, SyncedAccountLibrary } from '../services/api';
 import { socialSocket } from '../services/socialSocket';
 import { audioDspEngine } from '../services/audioDspEngine';
-import { getPlayableOfflineTrack } from '../services/offlineStorage';
+import {
+  CACHED_YT_CHANGED_EVENT,
+  deleteCachedTrackAudio,
+  getActiveOfflineBlobUrl,
+  getAllCachedSharedTracks,
+  getAllCachedTrackAudios,
+  getAllOfflineTracks,
+  getCachedTrackAudioIds,
+  getPlayableOfflineTrack,
+} from '../services/offlineStorage';
+import {
+  downloadCollectionForOffline,
+  downloadTrackForOffline,
+} from '../services/offlineManager';
 import { syncSharedTracksForOffline } from '../services/sharedOffline';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { normalizeArtistName } from '../utils/artistNames';
 
 const normalizeTrack = (t: Track): Track =>
@@ -126,6 +188,28 @@ interface PlayerContextType {
   aiPlaylistModalOpen: boolean;
   setAiPlaylistModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
 
+  // Offline Audio Cache & Batch Download Manager
+  offlinePreferCache: boolean;
+  setOfflinePreferCache: (val: boolean) => void;
+  cachedOfflineIds: Set<string>;
+  cachedOfflineTracks: Track[];
+  downloadingOfflineIds: Set<string>;
+  offlineBatchStatus: {
+    active: boolean;
+    label: string;
+    done: number;
+    total: number;
+    currentTitle?: string;
+  } | null;
+  downloadTrackOffline: (track: Track) => Promise<boolean>;
+  removeTrackOfflineCache: (trackId: string) => Promise<void>;
+  downloadCollectionOffline: (
+    tracks: Track[],
+    label?: string
+  ) => Promise<{ saved: number; skipped: number; failed: number }>;
+  playAllOfflineSavedTracks: (shuffle?: boolean) => Promise<void>;
+  refreshOfflineCaches: () => Promise<void>;
+
   // Podcasts
   subscribedPodcasts: PodcastShow[];
   toggleSubscribePodcast: (show: PodcastShow) => void;
@@ -142,8 +226,26 @@ interface PlayerContextType {
   refreshConnectDevices: () => Promise<void>;
   sendRemoteCommand: (payload: Omit<ConnectCommandPayload, 'fromDeviceId'>) => Promise<void>;
 
+  // Catalog Region (International / Outside-service-region access)
+  catalogRegion: CatalogRegion;
+  setCatalogRegion: (region: CatalogRegion) => void;
+
+  // Feature Modals (Classical, DJ Mixer, Car Mode, Watch/Console Companion)
+  classicalModalOpen: boolean;
+  setClassicalModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  djMixerOpen: boolean;
+  setDjMixerOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  carModeOpen: boolean;
+  setCarModeOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  companionModalOpen: boolean;
+  setCompanionModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  companionMode: 'watch' | 'console';
+  setCompanionMode: React.Dispatch<React.SetStateAction<'watch' | 'console'>>;
+
   wrappedModalOpen: boolean;
   setWrappedModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  listeningLogs: ListeningLogEntry[];
+  getRecapStats: (period: RecapPeriod, periodKey?: string) => RecapStats;
   listeningStats: {
     totalMinutes: number;
     totalMinutesListened: number;
@@ -450,9 +552,13 @@ const STORAGE_KEYS = {
   CONNECT_DEVICE_ID: 'zero_connect_device_id_v1',
   CONNECT_DEVICE_NAME: 'zero_connect_device_name_v1',
   CONNECT_PAIRING_CODE: 'zero_connect_pairing_code_v1',
+  CATALOG_REGION: 'zero_catalog_region_v1',
+  LISTENING_LOGS: 'yt_listening_logs_v1',
+  OFFLINE_PREFER_CACHE: 'yt_offline_prefer_cache_v1',
 };
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const isOnlineState = useOnlineStatus();
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
   const [queueIndex, setQueueIndex] = useState<number>(0);
@@ -600,24 +706,85 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, []);
 
+  const [offlinePreferCache, setOfflinePreferCacheState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.OFFLINE_PREFER_CACHE);
+      return saved === 'false' ? false : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const setOfflinePreferCache = useCallback((val: boolean) => {
+    setOfflinePreferCacheState(val);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OFFLINE_PREFER_CACHE, String(val));
+    } catch {}
+  }, []);
+
+  const [cachedOfflineIds, setCachedOfflineIds] = useState<Set<string>>(() => new Set());
+  const cachedOfflineIdsRef = useRef<Set<string>>(cachedOfflineIds);
+  cachedOfflineIdsRef.current = cachedOfflineIds;
+  const [cachedOfflineTracks, setCachedOfflineTracks] = useState<Track[]>([]);
+  const [downloadingOfflineIds, setDownloadingOfflineIds] = useState<Set<string>>(() => new Set());
+  const [offlineBatchStatus, setOfflineBatchStatus] = useState<{
+    active: boolean;
+    label: string;
+    done: number;
+    total: number;
+    currentTitle?: string;
+  } | null>(null);
+
+  const refreshOfflineCaches = useCallback(async () => {
+    try {
+      const [ids, tracks] = await Promise.all([
+        getCachedTrackAudioIds(),
+        getAllCachedTrackAudios(),
+      ]);
+      setCachedOfflineIds(ids);
+      setCachedOfflineTracks(tracks);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    refreshOfflineCaches();
+    const onChanged = () => {
+      refreshOfflineCaches();
+    };
+    window.addEventListener(CACHED_YT_CHANGED_EVENT, onChanged);
+    return () => {
+      window.removeEventListener(CACHED_YT_CHANGED_EVENT, onChanged);
+    };
+  }, [refreshOfflineCaches]);
+
   const shouldUseDirectDsp = useMemo(() => {
     if (!currentTrack) return false;
     if (dspFallbackIds.has(currentTrack.id)) return false;
-    if (currentTrack.isLocal) return true;
-    if (currentTrack.trackType === 'podcast' && Boolean(currentTrack.audioUrl)) return true;
     if (
-      playerMode === 'cover' &&
-      (audioQuality === 'lossless' ||
-        audioQuality === 'hires' ||
-        vocalLevel < 100 ||
-        spatialAudio !== 'off' ||
-        djEqSweep ||
-        crossfadeDuration > 0)
+      currentTrack.isLocal ||
+      currentTrack.isSharedOffline ||
+      currentTrack.id.startsWith('shared_')
     ) {
       return true;
     }
+    if (currentTrack.trackType === 'podcast' && Boolean(currentTrack.audioUrl)) return true;
+    const isCachedBlob = Boolean(
+      (currentTrack.isCachedOffline || cachedOfflineIds.has(currentTrack.id)) &&
+        currentTrack.audioUrl?.startsWith('blob:')
+    );
+    if (isCachedBlob && (!isOnlineState || (playerMode === 'cover' && offlinePreferCache))) {
+      return true;
+    }
+    // Online YouTube tracks always play via YouTube Embed (YT.Player)
     return false;
-  }, [currentTrack, dspFallbackIds, playerMode, audioQuality, vocalLevel, spatialAudio, djEqSweep, crossfadeDuration]);
+  }, [
+    currentTrack,
+    dspFallbackIds,
+    playerMode,
+    cachedOfflineIds,
+    offlinePreferCache,
+    isOnlineState,
+  ]);
 
   const shouldUseDirectDspRef = useRef<boolean>(shouldUseDirectDsp);
   shouldUseDirectDspRef.current = shouldUseDirectDsp;
@@ -674,6 +841,29 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [subscribedPodcasts]
   );
 
+  const [catalogRegion, setCatalogRegionState] = useState<CatalogRegion>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.CATALOG_REGION) as CatalogRegion | null;
+      return saved && VALID_CATALOG_REGIONS.includes(saved) ? saved : 'JP';
+    } catch {
+      return 'JP';
+    }
+  });
+
+  const setCatalogRegion = useCallback((region: CatalogRegion) => {
+    const clean = VALID_CATALOG_REGIONS.includes(region) ? region : 'JP';
+    setCatalogRegionState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.CATALOG_REGION, clean);
+    } catch {}
+  }, []);
+
+  const [classicalModalOpen, setClassicalModalOpen] = useState<boolean>(false);
+  const [djMixerOpen, setDjMixerOpen] = useState<boolean>(false);
+  const [carModeOpen, setCarModeOpen] = useState<boolean>(false);
+  const [companionModalOpen, setCompanionModalOpen] = useState<boolean>(false);
+  const [companionMode, setCompanionMode] = useState<'watch' | 'console'>('watch');
+
   const [wrappedModalOpen, setWrappedModalOpen] = useState<boolean>(false);
   const [historyStats, setHistoryStats] = useState<Record<string, { track: Track; count: number; seconds: number }>>(() => {
     try {
@@ -690,7 +880,44 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   });
 
+  const [listeningLogs, setListeningLogs] = useState<ListeningLogEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.LISTENING_LOGS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed
+            .filter((e: any) => e?.track?.id && e?.timestamp)
+            .slice(-1500)
+            .map((e: any) => ({ ...e, track: normalizeTrack(e.track) }));
+        }
+      }
+      // Seed from existing historyStats if timestamped logs do not exist yet
+      const legacyRaw = localStorage.getItem('yt_listening_history_v1');
+      if (legacyRaw) {
+        const legacy = JSON.parse(legacyRaw) || {};
+        const nowIso = new Date().toISOString();
+        const seeded: ListeningLogEntry[] = Object.values<any>(legacy)
+          .filter((item) => item?.track?.id)
+          .slice(0, 300)
+          .map((item, idx) => ({
+            id: `seed_${item.track.id}_${idx}`,
+            track: normalizeTrack(item.track),
+            timestamp: nowIso,
+            seconds: Number(item.seconds) || Number(item.track.durationSeconds) || 180,
+          }));
+        if (seeded.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.LISTENING_LOGS, JSON.stringify(seeded));
+        }
+        return seeded;
+      }
+    } catch {}
+    return [];
+  });
+
   const targetVolumeRef = useRef<number>(80);
+  const isMutedRef = useRef<boolean>(isMuted);
+  isMutedRef.current = isMuted;
   const isTransitioningEarlyRef = useRef<boolean>(false);
   const isFetchingRadioRef = useRef<boolean>(false);
   const lastAutoEmptyAtRef = useRef<number>(0);
@@ -1574,14 +1801,21 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (navigator.onLine) {
         syncSharedTracksForOffline().catch(() => {});
       }
-    }, 2500);
+    }, 800);
     const onOnline = () => {
       syncSharedTracksForOffline().catch(() => {});
     };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        syncSharedTracksForOffline().catch(() => {});
+      }
+    };
     window.addEventListener('online', onOnline);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       clearTimeout(timer);
       window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -1618,15 +1852,25 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const artistParam = params.get('artist');
     const collabParam = params.get('collab');
     const connectParam = params.get('connect');
+    const modeParam = params.get('mode')?.toLowerCase();
 
     if (connectParam) {
       const norm = connectParam.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
       const cleanConnect = /^\d{4}$/.test(norm) ? `ZM-${norm}` : norm.slice(0, 16);
       if (cleanConnect) {
         setPairingCode(cleanConnect);
-        setConnectModalOpen(true);
+        if (modeParam === 'watch' || modeParam === 'console') {
+          setCompanionMode(modeParam);
+          setCompanionModalOpen(true);
+        } else {
+          setConnectModalOpen(true);
+        }
         showToast(`Zero Connect (${cleanConnect}) でペアリングしました`, 'success', 2600);
       }
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (modeParam === 'watch' || modeParam === 'console') {
+      setCompanionMode(modeParam);
+      setCompanionModalOpen(true);
       window.history.replaceState({}, '', window.location.pathname);
     } else if (trackId) {
       api
@@ -1722,6 +1966,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       blockedArtists,
       pinnedBestTracks: pinnedBestTracks.slice(0, 4),
       listeningHistory: listeningArr,
+      listeningLogs: listeningLogs.slice(-1500),
+      catalogRegion,
       subscribedPodcasts,
       settings: {
         audioQuality,
@@ -1747,6 +1993,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     blockedArtists,
     pinnedBestTracks,
     historyStats,
+    listeningLogs,
+    catalogRegion,
     subscribedPodcasts,
     audioQuality,
     vocalLevel,
@@ -1832,6 +2080,22 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setHistoryStats(nextHist);
       try {
         localStorage.setItem('yt_listening_history_v1', JSON.stringify(nextHist));
+      } catch {}
+    }
+    if (Array.isArray(lib.listeningLogs)) {
+      const nextLogs = lib.listeningLogs
+        .filter((e: any) => e?.track?.id && e?.timestamp)
+        .slice(-1500)
+        .map((e: any) => ({ ...e, track: normalizeTrack(e.track) }));
+      setListeningLogs(nextLogs);
+      try {
+        localStorage.setItem(STORAGE_KEYS.LISTENING_LOGS, JSON.stringify(nextLogs));
+      } catch {}
+    }
+    if (lib.catalogRegion && VALID_CATALOG_REGIONS.includes(lib.catalogRegion)) {
+      setCatalogRegionState(lib.catalogRegion);
+      try {
+        localStorage.setItem(STORAGE_KEYS.CATALOG_REGION, lib.catalogRegion);
       } catch {}
     }
     if (Array.isArray(lib.subscribedPodcasts)) {
@@ -1978,6 +2242,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         listeningHistory: Array.from(histMap.values())
           .sort((a, b) => (b.count || 0) - (a.count || 0))
           .slice(0, 150),
+        listeningLogs: mergeById(cloudLib.listeningLogs || [], localLib.listeningLogs || []).slice(-1500),
+        catalogRegion: cloudLib.catalogRegion || localLib.catalogRegion || 'JP',
         subscribedPodcasts: mergeById(cloudLib.subscribedPodcasts || [], localLib.subscribedPodcasts || []),
         settings: cloudLib.settings || localLib.settings,
       };
@@ -2230,6 +2496,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     blockedArtists,
     pinnedBestTracks,
     historyStats,
+    listeningLogs,
+    catalogRegion,
     subscribedPodcasts,
     audioQuality,
     vocalLevel,
@@ -2459,23 +2727,91 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     searchQueryRef.current = searchQuery;
   }, [searchQuery]);
 
+  const playAllOfflineSavedTracksRef = useRef<(shuffle?: boolean) => Promise<void>>(async () => {});
+
   const playTrack = useCallback(
     async (
       track: Track,
       customQueue?: Track[],
       contextOverride?: { source: string; subtitle: string }
     ) => {
+      audioDspEngine.unlock();
       userIntendedPlayingRef.current = true;
       isTransitioningEarlyRef.current = false;
 
+      const isCurrentlyOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+      const needsOfflineHydration =
+        track.isLocal ||
+        track.isSharedOffline ||
+        track.id.startsWith('shared_') ||
+        track.isCachedOffline ||
+        cachedOfflineIdsRef.current.has(track.id) ||
+        isCurrentlyOffline;
+
+      // Synchronously start playback if we already hold an in-memory blob: URL so the user gesture never expires
+      const syncBlobUrl =
+        track.audioUrl?.startsWith('blob:')
+          ? track.audioUrl
+          : getActiveOfflineBlobUrl(track.id);
+      if (syncBlobUrl && needsOfflineHydration) {
+        audioDspEngine.loadAndPlay({
+          trackId: track.id,
+          src: syncBlobUrl,
+          autoplay: true,
+          crossfadeSec: crossfadeDuration,
+          djEqSweep,
+        });
+      }
+
+      // For online YouTube tracks, load YouTube Embed (YT.Player) synchronously inside the click gesture
+      if (!needsOfflineHydration && !isCurrentlyOffline) {
+        const isPodcastRss = track.trackType === 'podcast' && Boolean(track.audioUrl);
+        if (!isPodcastRss) {
+          const targetYtId = track.podcastVideoId || track.id;
+          const win = window as any;
+          if (win.__ytPlayer && typeof win.__ytPlayer.loadVideoById === 'function') {
+            try {
+              if (!isMutedRef.current && typeof win.__ytPlayer.unMute === 'function') {
+                win.__ytPlayer.unMute();
+              }
+              if (typeof win.__ytPlayer.setVolume === 'function') {
+                win.__ytPlayer.setVolume(targetVolumeRef.current);
+              }
+              win.__ytManualLoadAt = { videoId: targetYtId, ts: Date.now() };
+              win.__ytPlayer.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
+            } catch {}
+          }
+        }
+      }
+
       let resolvedTrack = normalizeTrack(track);
-      if (track.isLocal || track.isSharedOffline) {
+      if (needsOfflineHydration) {
         resolvedTrack = normalizeTrack(await getPlayableOfflineTrack(track));
-        if (resolvedTrack.isSharedOffline && navigator.onLine) {
+        if (resolvedTrack.isSharedOffline && !isCurrentlyOffline) {
           fetch(`/api/shared-offline/${encodeURIComponent(resolvedTrack.id)}/play`, {
             method: 'POST',
           }).catch(() => {});
         }
+      }
+
+      const hasPlayableOfflineSrc = Boolean(
+        resolvedTrack.audioUrl &&
+          (resolvedTrack.audioUrl.startsWith('blob:') ||
+            resolvedTrack.audioUrl.startsWith('data:'))
+      );
+      if (isCurrentlyOffline && !hasPlayableOfflineSrc) {
+        showToast(
+          `「${resolvedTrack.title}」はオフライン保存されていないため再生できません`,
+          'warning',
+          4200,
+          {
+            label: '保存済みの曲を再生',
+            onClick: () => {
+              playAllOfflineSavedTracksRef.current(false);
+            },
+          }
+        );
+        return;
       }
 
       if (contextOverride) {
@@ -2497,6 +2833,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setPlaybackContextLabel({
             source: 'アルバムから再生中',
             subtitle: resolvedTrack.album || resolvedTrack.title,
+          });
+        } else if (resolvedTrack.isSharedOffline) {
+          setPlaybackContextLabel({
+            source: '共有オフラインから再生中',
+            subtitle: resolvedTrack.uploadedBy
+              ? `投稿: ${resolvedTrack.uploadedBy}`
+              : resolvedTrack.album || resolvedTrack.artist || '共有オフライン',
           });
         } else if (view === 'library') {
           setPlaybackContextLabel({
@@ -2561,6 +2904,21 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return updated;
       });
 
+      setListeningLogs((prev) => {
+        const entry: ListeningLogEntry = {
+          id: `${resolvedTrack.id}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          track: resolvedTrack,
+          timestamp: new Date().toISOString(),
+          seconds: resolvedTrack.durationSeconds || 180,
+          moodTag: resolvedTrack.moodTag,
+        };
+        const updated = [...prev, entry].slice(-1500);
+        try {
+          localStorage.setItem(STORAGE_KEYS.LISTENING_LOGS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
       if (customQueue && customQueue.length > 0) {
         const cleanQueue = customQueue.map(normalizeTrack);
         setQueue(cleanQueue);
@@ -2611,6 +2969,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 
   const togglePlay = useCallback(() => {
+    audioDspEngine.unlock();
     if (isPlaying) {
       userIntendedPlayingRef.current = false;
       setIsPlaying(false);
@@ -2629,6 +2988,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [dispatchPauseCommand]);
 
   const resume = useCallback(() => {
+    audioDspEngine.unlock();
     userIntendedPlayingRef.current = true;
     setIsPlaying(true);
     dispatchPlayCommand();
@@ -2683,6 +3043,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const nextTrack = useCallback(
     (isManualSkip = false) => {
+      audioDspEngine.unlock();
       if (queue.length === 0) return;
       isTransitioningEarlyRef.current = false;
       digestJumpedTrackRef.current = null;
@@ -2717,63 +3078,86 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
+      const loadTargetTrack = (target: Track, startSearchIdx: number) => {
+        const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+        const needsOffline =
+          target.isLocal ||
+          target.isSharedOffline ||
+          target.id.startsWith('shared_') ||
+          target.isCachedOffline ||
+          cachedOfflineIdsRef.current.has(target.id) ||
+          isOffline;
+        if (needsOffline) {
+          (async () => {
+            const resolved = normalizeTrack(await getPlayableOfflineTrack(target));
+            const playable =
+              !isOffline ||
+              Boolean(
+                resolved.audioUrl &&
+                  (resolved.audioUrl.startsWith('blob:') ||
+                    resolved.audioUrl.startsWith('data:'))
+              );
+            if (playable) {
+              setCurrentTrack(resolved);
+              dispatchPlayCommand();
+              return;
+            }
+            for (let i = startSearchIdx + 1; i < queue.length; i++) {
+              const cand = queue[i];
+              if (!cand || isTrackBlocked(cand)) continue;
+              const resCand = normalizeTrack(await getPlayableOfflineTrack(cand));
+              if (
+                resCand.audioUrl &&
+                (resCand.audioUrl.startsWith('blob:') ||
+                  resCand.audioUrl.startsWith('data:'))
+              ) {
+                setQueueIndex(i);
+                setCurrentTrack(resCand);
+                dispatchPlayCommand();
+                return;
+              }
+            }
+            userIntendedPlayingRef.current = false;
+            setIsPlaying(false);
+            showToast('オフライン再生可能な次の曲が見つかりませんでした', 'warning', 2800);
+          })();
+        } else {
+          setCurrentTrack(target);
+          const isPodcastRss = target.trackType === 'podcast' && Boolean(target.audioUrl);
+          if (!isPodcastRss) {
+            const win = window as any;
+            const targetYtId = target.podcastVideoId || target.id;
+            if (win.__ytPlayer) {
+              if (!isMutedRef.current && typeof win.__ytPlayer.unMute === 'function') {
+                win.__ytPlayer.unMute();
+              }
+              if (typeof win.__ytPlayer.setVolume === 'function') {
+                win.__ytPlayer.setVolume(targetVolumeRef.current);
+              }
+              if (typeof win.__ytPlayer.loadVideoById === 'function') {
+                win.__ytManualLoadAt = { videoId: targetYtId, ts: Date.now() };
+                win.__ytPlayer.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
+              }
+            }
+          }
+          dispatchPlayCommand();
+        }
+      };
+
       if (nextIdx < queue.length) {
         const rawNext = queue[nextIdx];
         setQueueIndex(nextIdx);
         setProgress(0);
         userIntendedPlayingRef.current = true;
         setIsPlaying(true);
-
-        if (rawNext.isLocal || rawNext.isSharedOffline) {
-          getPlayableOfflineTrack(rawNext).then((resolved) => {
-            setCurrentTrack(resolved);
-            dispatchPlayCommand();
-          });
-        } else {
-          setCurrentTrack(rawNext);
-          if (!shouldUseDirectDspRef.current) {
-            const win = window as any;
-            if (win.__ytPlayer) {
-              if (typeof win.__ytPlayer.setVolume === 'function') {
-                win.__ytPlayer.setVolume(targetVolumeRef.current);
-              }
-              if (typeof win.__ytPlayer.loadVideoById === 'function') {
-                win.__ytPlayer.loadVideoById(rawNext.podcastVideoId || rawNext.id);
-              }
-            }
-          }
-          dispatchPlayCommand();
-        }
+        loadTargetTrack(rawNext, nextIdx);
       } else if (repeatMode === 'all' && queue.length > 0) {
         const rawFirst = queue[0];
         setQueueIndex(0);
         setProgress(0);
         userIntendedPlayingRef.current = true;
         setIsPlaying(true);
-
-        if (rawFirst.isLocal || rawFirst.isSharedOffline) {
-          getPlayableOfflineTrack(rawFirst).then((resolved) => {
-            setCurrentTrack(resolved);
-            dispatchPlayCommand();
-          });
-        } else {
-          setCurrentTrack(rawFirst);
-          if (!shouldUseDirectDspRef.current) {
-            const win = window as any;
-            if (win.__ytPlayer) {
-              if (typeof win.__ytPlayer.setVolume === 'function') {
-                win.__ytPlayer.setVolume(targetVolumeRef.current);
-              }
-              if (typeof win.__ytPlayer.loadVideoById === 'function') {
-                win.__ytPlayer.loadVideoById(rawFirst.podcastVideoId || rawFirst.id);
-              } else if (typeof win.__ytPlayer.seekTo === 'function') {
-                win.__ytPlayer.seekTo(0, true);
-                win.__ytPlayer.playVideo();
-              }
-            }
-          }
-          dispatchPlayCommand();
-        }
+        loadTargetTrack(rawFirst, 0);
       } else if (
         endlessRadioActive &&
         currentTrack &&
@@ -2827,6 +3211,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 
   const prevTrack = useCallback(() => {
+    audioDspEngine.unlock();
     isTransitioningEarlyRef.current = false;
     digestJumpedTrackRef.current = null;
     digestStartPlaySecRef.current = null;
@@ -2842,21 +3227,35 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       userIntendedPlayingRef.current = true;
       setIsPlaying(true);
 
-      if (rawPrev.isLocal || rawPrev.isSharedOffline) {
+      const needsOffline =
+        rawPrev.isLocal ||
+        rawPrev.isSharedOffline ||
+        rawPrev.id.startsWith('shared_') ||
+        rawPrev.isCachedOffline ||
+        cachedOfflineIdsRef.current.has(rawPrev.id) ||
+        (typeof navigator !== 'undefined' && !navigator.onLine);
+      if (needsOffline) {
         getPlayableOfflineTrack(rawPrev).then((resolved) => {
-          setCurrentTrack(resolved);
+          const norm = normalizeTrack(resolved);
+          setCurrentTrack(norm);
           dispatchPlayCommand();
         });
       } else {
         setCurrentTrack(rawPrev);
-        if (!shouldUseDirectDspRef.current) {
+        const isPodcastRss = rawPrev.trackType === 'podcast' && Boolean(rawPrev.audioUrl);
+        if (!isPodcastRss) {
           const win = window as any;
+          const targetYtId = rawPrev.podcastVideoId || rawPrev.id;
           if (win.__ytPlayer) {
+            if (!isMutedRef.current && typeof win.__ytPlayer.unMute === 'function') {
+              win.__ytPlayer.unMute();
+            }
             if (typeof win.__ytPlayer.setVolume === 'function') {
               win.__ytPlayer.setVolume(targetVolumeRef.current);
             }
             if (typeof win.__ytPlayer.loadVideoById === 'function') {
-              win.__ytPlayer.loadVideoById(rawPrev.podcastVideoId || rawPrev.id);
+              win.__ytManualLoadAt = { videoId: targetYtId, ts: Date.now() };
+              win.__ytPlayer.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
             }
           }
         }
@@ -2937,6 +3336,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const ytId = !currentTrack.isLocal && /^[a-zA-Z0-9_-]{11}$/.test(currentTrack.id) ? currentTrack.id : null;
     const resolvedThumb = resolveAbsUrl(currentTrack.thumbnail);
     const isYtimgThumb = Boolean(resolvedThumb?.src && /https?:\/\/(?:i\d*|img)\.ytimg\.com\//i.test(resolvedThumb.src));
+    const pwaFallback512 =
+      typeof window !== 'undefined' ? `${window.location.origin}/pwa-512x512.png` : '/pwa-512x512.png';
+    const pwaFallback192 =
+      typeof window !== 'undefined' ? `${window.location.origin}/pwa-192x192.png` : '/pwa-192x192.png';
 
     const artworkList: MediaImage[] = [];
     if (resolvedThumb && (!isYtimgThumb || !ytId)) {
@@ -2951,6 +3354,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         { src: `https://i.ytimg.com/vi/${ytId}/sddefault.jpg`, sizes: '640x480', type: 'image/jpeg' },
         { src: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' },
         { src: `https://i.ytimg.com/vi/${ytId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' }
+      );
+    }
+    if (artworkList.length === 0 || currentTrack.isSharedOffline || currentTrack.isLocal) {
+      artworkList.push(
+        { src: pwaFallback512, sizes: '512x512', type: 'image/png' },
+        { src: pwaFallback192, sizes: '192x192', type: 'image/png' }
       );
     }
 
@@ -3453,6 +3862,96 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       timeOfDay,
     };
   }, [historyStats]);
+
+  const getRecapStats = useCallback(
+    (period: RecapPeriod, periodKey?: string): RecapStats => {
+      const currentPeriod = getPeriodKeyAndLabel(new Date().toISOString(), period);
+      const keyMap = new Map<string, string>();
+      keyMap.set(currentPeriod.key, currentPeriod.label);
+      listeningLogs.forEach((log) => {
+        const info = getPeriodKeyAndLabel(log.timestamp, period);
+        keyMap.set(info.key, info.label);
+      });
+
+      const availableKeys = Array.from(keyMap.entries())
+        .map(([key, label]) => ({ key, label }))
+        .sort((a, b) => b.key.localeCompare(a.key));
+
+      const targetKey = periodKey && keyMap.has(periodKey) ? periodKey : currentPeriod.key;
+      const targetLabel = keyMap.get(targetKey) || currentPeriod.label;
+
+      const filtered = listeningLogs.filter((log) => {
+        return getPeriodKeyAndLabel(log.timestamp, period).key === targetKey;
+      });
+
+      const trackMap = new Map<string, { track: Track; count: number; seconds: number }>();
+      const artistCounts: Record<string, number> = {};
+      const moodCounts: Record<string, number> = {};
+      const hourBuckets = { morning: 0, day: 0, evening: 0, late: 0 };
+      let totalSecs = 0;
+
+      filtered.forEach((log) => {
+        const dur = Number(log.seconds) || log.track.durationSeconds || 180;
+        totalSecs += dur;
+
+        const existing = trackMap.get(log.track.id);
+        if (existing) {
+          existing.count += 1;
+          existing.seconds += dur;
+        } else {
+          trackMap.set(log.track.id, { track: log.track, count: 1, seconds: dur });
+        }
+
+        const art = log.track.artist || 'Unknown';
+        artistCounts[art] = (artistCounts[art] || 0) + 1;
+
+        const m = log.moodTag || log.track.moodTag;
+        if (m) {
+          moodCounts[m] = (moodCounts[m] || 0) + 1;
+        }
+
+        const hr = new Date(log.timestamp).getHours();
+        if (hr >= 5 && hr < 11) hourBuckets.morning += 1;
+        else if (hr >= 11 && hr < 17) hourBuckets.day += 1;
+        else if (hr >= 17 && hr < 23) hourBuckets.evening += 1;
+        else hourBuckets.late += 1;
+      });
+
+      const topTracks = Array.from(trackMap.values()).sort((a, b) => b.count - a.count);
+      const topArtists = Object.entries(artistCounts)
+        .map(([artist, count]) => ({ artist, count }))
+        .sort((a, b) => b.count - a.count);
+
+      const topMoodEntry = Object.entries(moodCounts).sort((a, b) => b[1] - a[1])[0];
+
+      const bestBucket = Object.entries(hourBuckets).sort((a, b) => b[1] - a[1])[0]?.[0] || 'evening';
+      const timeOfDay =
+        filtered.length === 0
+          ? listeningStats.timeOfDay
+          : bestBucket === 'morning'
+          ? '朝活・爽快リスナー'
+          : bestBucket === 'day'
+          ? '日中・作業集中リスナー'
+          : bestBucket === 'evening'
+          ? '夜のリラックスリスナー'
+          : '深夜型リスナー';
+
+      return {
+        period,
+        periodKey: targetKey,
+        label: targetLabel,
+        availableKeys,
+        totalMinutes: Math.round(totalSecs / 60),
+        totalPlays: filtered.length,
+        totalPlayedTracks: topTracks.length,
+        topTracks,
+        topArtists,
+        topMood: topMoodEntry ? topMoodEntry[0] : null,
+        timeOfDay,
+      };
+    },
+    [listeningLogs, listeningStats.timeOfDay]
+  );
 
   const cycleRepeat = useCallback(() => {
     setRepeatMode((prev) => {
@@ -4269,16 +4768,25 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           if (win.__ytPlayer && typeof win.__ytPlayer.setVolume === 'function') {
             win.__ytPlayer.setVolume(fadeVol);
           }
-        } else if (current >= crossfadeDuration && isTransitioningEarlyRef.current) {
-          isTransitioningEarlyRef.current = false;
-        }
-        // Fade out near end of track
-        else if (total - current <= crossfadeDuration) {
+        } else if (total - current <= crossfadeDuration) {
+          // Fade out near end of track
           const remaining = Math.max(0, total - current);
           const fadeOutFactor = Math.max(0, remaining / crossfadeDuration);
           const fadeVol = Math.round(targetVol * fadeOutFactor);
           if (win.__ytPlayer && typeof win.__ytPlayer.setVolume === 'function') {
             win.__ytPlayer.setVolume(fadeVol);
+          }
+        } else {
+          if (isTransitioningEarlyRef.current) {
+            isTransitioningEarlyRef.current = false;
+          }
+          // Ensure normal target volume is active so previous track's fade-out never leaves YT muted
+          if (win.__ytPlayer && typeof win.__ytPlayer.getVolume === 'function' && typeof win.__ytPlayer.setVolume === 'function') {
+            try {
+              if (Math.abs((win.__ytPlayer.getVolume() ?? targetVol) - targetVol) > 2) {
+                win.__ytPlayer.setVolume(targetVol);
+              }
+            } catch {}
           }
         }
       }
@@ -4383,6 +4891,26 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     async (errorCode: number, _errorMsg?: string) => {
       if (!currentTrack) return;
 
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        const cached = await getPlayableOfflineTrack(currentTrack);
+        if (cached.audioUrl) {
+          setCurrentTrack(normalizeTrack(cached));
+          return;
+        }
+        showToast(
+          'オフライン中のためストリーミング再生できませんでした',
+          'warning',
+          4200,
+          {
+            label: '保存済みの曲を再生',
+            onClick: () => {
+              playAllOfflineSavedTracksRef.current(false);
+            },
+          }
+        );
+        return;
+      }
+
       // Error 101/150: The owner has disabled embedding on other websites
       // Error 100: Video not found/removed
       // Error 2: Invalid parameter
@@ -4444,6 +4972,137 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [currentTrack, queueIndex, nextTrack, showToast]
   );
 
+  const downloadTrackOffline = useCallback(
+    async (track: Track): Promise<boolean> => {
+      if (!track?.id) return false;
+      if (track.isLocal) {
+        showToast(`「${track.title}」は既にローカル保存済みです`, 'info', 2200);
+        return true;
+      }
+      if (cachedOfflineIds.has(track.id)) {
+        showToast(`「${track.title}」は既にオフライン保存済みです`, 'info', 2200);
+        return true;
+      }
+      setDownloadingOfflineIds((prev) => {
+        const next = new Set(prev);
+        next.add(track.id);
+        return next;
+      });
+      try {
+        const savedTrack = await downloadTrackForOffline(track, audioQuality);
+        await refreshOfflineCaches();
+        setCurrentTrack((curr) =>
+          curr && curr.id === track.id
+            ? {
+                ...curr,
+                isCachedOffline: true,
+                audioUrl: savedTrack.audioUrl,
+                audioMimeType: savedTrack.audioMimeType,
+                fileSize: savedTrack.fileSize,
+              }
+            : curr
+        );
+        showToast(`「${track.title}」をオフライン保存しました`, 'success', 2600);
+        return true;
+      } catch (err: any) {
+        showToast(err?.message || 'オフライン保存に失敗しました', 'warning', 3200);
+        return false;
+      } finally {
+        setDownloadingOfflineIds((prev) => {
+          const next = new Set(prev);
+          next.delete(track.id);
+          return next;
+        });
+      }
+    },
+    [audioQuality, cachedOfflineIds, refreshOfflineCaches, showToast]
+  );
+
+  const removeTrackOfflineCache = useCallback(
+    async (trackId: string) => {
+      await deleteCachedTrackAudio(trackId);
+      await refreshOfflineCaches();
+      setCurrentTrack((curr) =>
+        curr && curr.id === trackId && !curr.isLocal
+          ? { ...curr, isCachedOffline: false, audioUrl: undefined }
+          : curr
+      );
+      showToast('オフラインキャッシュから削除しました', 'info', 2200);
+    },
+    [refreshOfflineCaches, showToast]
+  );
+
+  const downloadCollectionOffline = useCallback(
+    async (
+      tracks: Track[],
+      label = 'プレイリスト'
+    ): Promise<{ saved: number; skipped: number; failed: number }> => {
+      if (!tracks || tracks.length === 0) {
+        return { saved: 0, skipped: 0, failed: 0 };
+      }
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        showToast('オフライン中は一括ダウンロードできません', 'warning', 2600);
+        return { saved: 0, skipped: 0, failed: tracks.length };
+      }
+      setOfflineBatchStatus({
+        active: true,
+        label,
+        done: 0,
+        total: tracks.length,
+        currentTitle: tracks[0]?.title,
+      });
+      const res = await downloadCollectionForOffline(tracks, audioQuality, (done, total, currentTitle) => {
+        setOfflineBatchStatus({ active: done < total, label, done, total, currentTitle });
+      });
+      await refreshOfflineCaches();
+      setOfflineBatchStatus(null);
+      if (res.saved > 0) {
+        showToast(
+          `「${label}」から${res.saved}曲をオフライン保存しました${res.skipped > 0 ? `（既保存 ${res.skipped}曲）` : ''}`,
+          'success',
+          3600
+        );
+      } else if (res.skipped > 0 && res.failed === 0) {
+        showToast(`「${label}」の${res.skipped}曲はすべてオフライン保存済みです`, 'info', 2600);
+      } else {
+        showToast(`「${label}」のオフライン保存で一部取得できませんでした`, 'warning', 3200);
+      }
+      return res;
+    },
+    [audioQuality, refreshOfflineCaches, showToast]
+  );
+
+  const playAllOfflineSavedTracks = useCallback(
+    async (shuffle = false) => {
+      const [localList, cachedList, sharedList] = await Promise.all([
+        getAllOfflineTracks().catch(() => [] as Track[]),
+        getAllCachedTrackAudios().catch(() => [] as Track[]),
+        getAllCachedSharedTracks().catch(() => [] as Track[]),
+      ]);
+      const combined: Track[] = [];
+      const seen = new Set<string>();
+      for (const tr of [...cachedList, ...localList, ...sharedList]) {
+        if (!tr?.id || seen.has(tr.id)) continue;
+        seen.add(tr.id);
+        combined.push(tr);
+      }
+      if (combined.length === 0) {
+        showToast('オフライン保存済みの曲がまだありません', 'warning', 2800);
+        setLibraryTab('local');
+        navigateTo('library');
+        return;
+      }
+      const list = shuffle ? [...combined].sort(() => Math.random() - 0.5) : combined;
+      await playTrack(list[0], list, {
+        source: 'オフラインライブラリ',
+        subtitle: `保存済み ${list.length}曲${shuffle ? ' (シャッフル)' : ''}`,
+      });
+    },
+    [playTrack, showToast, setLibraryTab, navigateTo]
+  );
+
+  playAllOfflineSavedTracksRef.current = playAllOfflineSavedTracks;
+
   const onPlayerTrackEnded = useCallback(() => {
     nextTrack();
   }, [nextTrack]);
@@ -4488,6 +5147,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setDspModalOpen,
         aiPlaylistModalOpen,
         setAiPlaylistModalOpen,
+        offlinePreferCache,
+        setOfflinePreferCache,
+        cachedOfflineIds,
+        cachedOfflineTracks,
+        downloadingOfflineIds,
+        offlineBatchStatus,
+        downloadTrackOffline,
+        removeTrackOfflineCache,
+        downloadCollectionOffline,
+        playAllOfflineSavedTracks,
+        refreshOfflineCaches,
         subscribedPodcasts,
         toggleSubscribePodcast,
         isPodcastSubscribed,
@@ -4500,8 +5170,22 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         connectDevices,
         refreshConnectDevices,
         sendRemoteCommand,
+        catalogRegion,
+        setCatalogRegion,
+        classicalModalOpen,
+        setClassicalModalOpen,
+        djMixerOpen,
+        setDjMixerOpen,
+        carModeOpen,
+        setCarModeOpen,
+        companionModalOpen,
+        setCompanionModalOpen,
+        companionMode,
+        setCompanionMode,
         wrappedModalOpen,
         setWrappedModalOpen,
+        listeningLogs,
+        getRecapStats,
         listeningStats,
         lyricsOpen,
         queueOpen,

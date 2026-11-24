@@ -28,13 +28,58 @@ import {
   Info,
   RefreshCw,
   Download,
+  Globe,
+  Activity,
+  Music2,
+  SlidersHorizontal,
+  WifiOff,
+  CheckCircle2,
+  ArrowDownToLine,
 } from 'lucide-react';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { getAllCachedSharedTracks, getAllOfflineTracks } from '../services/offlineStorage';
 import {
   getSearchConversions,
   SearchConversionCandidate,
 } from '../utils/searchConverter';
+import { BpmRangePreset, CatalogRegion } from '../types/music';
 
-type SearchFilterType = 'all' | 'song' | 'video' | 'album' | 'artist' | 'playlist';
+type SearchFilterType = 'all' | 'song' | 'unofficial' | 'video' | 'album' | 'artist' | 'playlist';
+
+const REGION_OPTIONS: { id: CatalogRegion; label: string; flag: string }[] = [
+  { id: 'JP', label: '日本 (JP)', flag: '🇯🇵' },
+  { id: 'US', label: '米国 (US)', flag: '🇺🇸' },
+  { id: 'KR', label: '韓国 (KR)', flag: '🇰🇷' },
+  { id: 'GB', label: '英国 (GB)', flag: '🇬🇧' },
+  { id: 'GLOBAL', label: 'Global', flag: '🌍' },
+];
+
+const UNOFFICIAL_SUBCHIPS: { id: string; label: string; append: string }[] = [
+  { id: 'utattemita', label: '歌ってみた', append: '歌ってみた' },
+  { id: 'cover', label: 'カバー', append: 'cover' },
+  { id: 'live', label: 'ライブ音源', append: 'live ライブ' },
+  { id: 'acoustic', label: '弾き語り', append: '弾き語り' },
+  { id: 'remix', label: 'Remix', append: 'remix' },
+];
+
+const BPM_PRESETS: { id: BpmRangePreset; label: string }[] = [
+  { id: 'all', label: 'すべて' },
+  { id: 'slow', label: 'Slow (<90)' },
+  { id: 'mid', label: 'Mid (90-115)' },
+  { id: 'upbeat', label: 'Upbeat (116-135)' },
+  { id: 'fast', label: 'Fast (136+)' },
+];
+
+const MOOD_PRESETS: { id: string; label: string }[] = [
+  { id: 'all', label: 'すべてのムード' },
+  { id: 'energy', label: 'テンションUP' },
+  { id: 'drive', label: 'ドライブ' },
+  { id: 'relax', label: 'チル・リラックス' },
+  { id: 'focus', label: '集中・作業用' },
+  { id: 'emotional', label: 'エモい・夜' },
+  { id: 'sad', label: '切ない・バラード' },
+  { id: 'happy', label: '元気・ポジティブ' },
+];
 
 const GENRE_COVERS_CACHE_KEY = 'yt_music_genre_covers_v1';
 
@@ -133,7 +178,21 @@ export const SearchView: React.FC = () => {
     openFreemakeModal,
     isTrackBlocked,
     showToast,
+    catalogRegion,
+    setCatalogRegion,
+    setClassicalModalOpen,
+    likedTracks,
+    recentTracks,
+    userPlaylists,
+    cachedOfflineTracks,
+    cachedOfflineIds,
+    downloadingOfflineIds,
+    downloadTrackOffline,
+    removeTrackOfflineCache,
   } = usePlayer();
+
+  const isOnline = useOnlineStatus();
+  const [offlineLocalMatchesBanner, setOfflineLocalMatchesBanner] = useState(false);
 
   const [inputVal, setInputVal] = useState(searchQuery);
   const [provider, setProvider] = useState<'innertube' | 'spotify'>('innertube');
@@ -160,6 +219,15 @@ export const SearchView: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [resultFromCache, setResultFromCache] = useState(false);
   const forceRefreshPendingRef = useRef(false);
+
+  // BPM & Mood inline filter panel state
+  const [bpmPanelOpen, setBpmPanelOpen] = useState(false);
+  const [bpmMood, setBpmMood] = useState<string>('all');
+  const [bpmRange, setBpmRange] = useState<BpmRangePreset>('upbeat');
+  const [customMinBpm, setCustomMinBpm] = useState<string>('');
+  const [customMaxBpm, setCustomMaxBpm] = useState<string>('');
+  const [bpmResults, setBpmResults] = useState<Track[] | null>(null);
+  const [bpmLoading, setBpmLoading] = useState(false);
 
   useEffect(() => {
     setInputVal(searchQuery);
@@ -255,20 +323,66 @@ export const SearchView: React.FC = () => {
     };
   }, [genreCoversLoaded, genreCovers]);
 
-  // InnerTube search
+  // InnerTube search (with offline local search fallback)
   useEffect(() => {
     if (!searchQuery.trim() || provider !== 'innertube') return;
     let active = true;
     const shouldForce = forceRefreshPendingRef.current;
     forceRefreshPendingRef.current = false;
     setLoading(true);
+    setOfflineLocalMatchesBanner(false);
     if (shouldForce) setIsRefreshing(true);
 
+    const runLocalOfflineSearch = async (): Promise<Track[]> => {
+      const qLower = searchQuery.trim().toLowerCase();
+      const [loc, sh] = await Promise.all([
+        getAllOfflineTracks().catch(() => [] as Track[]),
+        getAllCachedSharedTracks().catch(() => [] as Track[]),
+      ]);
+      const playlistTracks = userPlaylists.flatMap((p) => p.tracks || []);
+      const pool = [
+        ...cachedOfflineTracks,
+        ...loc,
+        ...sh,
+        ...likedTracks,
+        ...recentTracks,
+        ...playlistTracks,
+      ];
+      const seen = new Set<string>();
+      const matched: Track[] = [];
+      for (const tr of pool) {
+        if (!tr?.id || seen.has(tr.id)) continue;
+        seen.add(tr.id);
+        const hay = `${tr.title} ${tr.artist} ${tr.album || ''}`.toLowerCase();
+        if (hay.includes(qLower)) {
+          matched.push(tr);
+        }
+      }
+      return matched;
+    };
+
     api
-      .search(searchQuery, filter, rawMode, shouldForce)
-      .then((res) => {
+      .search(searchQuery, filter, rawMode, shouldForce, catalogRegion)
+      .then(async (res) => {
         if (!active) return;
-        if (filter === 'all') {
+        const hasAny =
+          (res.songs?.length || 0) +
+            (res.artists?.length || 0) +
+            (res.albums?.length || 0) +
+            (res.playlists?.length || 0) +
+            (res.videos?.length || 0) +
+            (res.results?.length || 0) >
+          0;
+        if (!isOnline && !hasAny) {
+          const localMatches = await runLocalOfflineSearch();
+          if (!active) return;
+          if (filter === 'all') {
+            setResultsAll({ songs: localMatches, artists: [], albums: [], playlists: [], videos: [] });
+          } else {
+            setResultsFiltered(localMatches);
+          }
+          setOfflineLocalMatchesBanner(true);
+        } else if (filter === 'all') {
           setResultsAll({
             songs: res.songs || [],
             artists: res.artists || [],
@@ -288,8 +402,19 @@ export const SearchView: React.FC = () => {
           showToast('最新の検索結果を再取得しました');
         }
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error('Search error:', err);
+        if (!active) return;
+        if (!isOnline) {
+          const localMatches = await runLocalOfflineSearch();
+          if (!active) return;
+          if (filter === 'all') {
+            setResultsAll({ songs: localMatches, artists: [], albums: [], playlists: [], videos: [] });
+          } else {
+            setResultsFiltered(localMatches);
+          }
+          setOfflineLocalMatchesBanner(true);
+        }
         if (active) {
           setLoading(false);
           setIsRefreshing(false);
@@ -299,7 +424,20 @@ export const SearchView: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [searchQuery, filter, provider, rawMode, refreshSeq, showToast]);
+  }, [
+    searchQuery,
+    filter,
+    provider,
+    rawMode,
+    refreshSeq,
+    catalogRegion,
+    showToast,
+    isOnline,
+    cachedOfflineTracks,
+    likedTracks,
+    recentTracks,
+    userPlaylists,
+  ]);
 
   // Spotify search
   useEffect(() => {
@@ -311,7 +449,7 @@ export const SearchView: React.FC = () => {
     if (shouldForce) setIsRefreshing(true);
 
     api
-      .searchSpotify(searchQuery, rawMode, shouldForce)
+      .searchSpotify(searchQuery, rawMode, shouldForce, catalogRegion)
       .then((res) => {
         if (!active) return;
         setSpotifyTracks(res.tracks || []);
@@ -335,7 +473,7 @@ export const SearchView: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [searchQuery, provider, rawMode, refreshSeq, showToast]);
+  }, [searchQuery, provider, rawMode, refreshSeq, catalogRegion, showToast]);
 
   const handleForceRefresh = () => {
     const clean = (searchQuery || inputVal).trim();
@@ -374,9 +512,32 @@ export const SearchView: React.FC = () => {
     executeSearch(inputVal, false);
   };
 
+  const handleRunMoodBpmSearch = async (forceRefresh = false) => {
+    setBpmLoading(true);
+    try {
+      const minBpm = parseInt(customMinBpm, 10) || undefined;
+      const maxBpm = parseInt(customMaxBpm, 10) || undefined;
+      const res = await api.searchByMoodBpm({
+        mood: bpmMood,
+        bpmRange: minBpm || maxBpm ? 'all' : bpmRange,
+        minBpm,
+        maxBpm,
+        q: inputVal.trim() || searchQuery.trim() || undefined,
+        gl: catalogRegion,
+        forceRefresh,
+      });
+      setBpmResults(res.tracks || []);
+    } catch {
+      showToast('BPM・ムード検索に失敗しました', 'warning', 2200);
+    } finally {
+      setBpmLoading(false);
+    }
+  };
+
   const filterOptions: { id: SearchFilterType; label: string }[] = [
     { id: 'all', label: 'すべて' },
     { id: 'song', label: '楽曲' },
+    { id: 'unofficial', label: '歌ってみた・ライブ' },
     { id: 'artist', label: 'アーティスト' },
     { id: 'album', label: 'アルバム' },
     { id: 'playlist', label: 'プレイリスト' },
@@ -390,46 +551,92 @@ export const SearchView: React.FC = () => {
       {/* Spotify-style Search Header & White Input Bar (IMG_0222, IMG_0223) */}
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">検索</h1>
-          {hasQuery && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleForceRefresh}
-                disabled={loading || isRefreshing}
-                title="キャッシュを使わず最新の検索結果を即時再取得"
-                className="px-3 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-700/80 hover:border-red-500/50 text-xs font-bold text-neutral-200 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">検索</h1>
+            <button
+              type="button"
+              onClick={() => setBpmPanelOpen((v) => !v)}
+              className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                bpmPanelOpen || bpmResults !== null
+                  ? 'bg-red-600/20 border-red-500/50 text-red-300'
+                  : 'bg-neutral-900 border-neutral-800 text-neutral-300 hover:text-white'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5 text-red-400" />
+              <span>BPM・ムード</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setClassicalModalOpen(true)}
+              className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Music2 className="w-3.5 h-3.5 text-amber-400" />
+              <span>クラシック専門館</span>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Catalog Region Selector (Overseas / Non-resident region switch) */}
+            <div className="flex items-center gap-1 bg-neutral-900 border border-neutral-800 rounded-full px-2 py-1">
+              <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0 ml-1" />
+              <select
+                value={catalogRegion}
+                onChange={(e) => {
+                  const nextGl = e.target.value as CatalogRegion;
+                  setCatalogRegion(nextGl);
+                  showToast(`カタログ地域を ${nextGl} に切り替えました（海外利用モード）`, 'info', 2200);
+                }}
+                className="bg-transparent text-xs font-bold text-neutral-200 focus:outline-none pr-1 cursor-pointer"
+                aria-label="海外・地域カタログ切替"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-red-400' : ''}`} />
-                <span>再取得</span>
-                {resultFromCache && !isRefreshing && (
-                  <span className="text-[10px] font-normal text-neutral-400 hidden sm:inline">
-                    (キャッシュ)
-                  </span>
-                )}
-              </button>
-              <div className="flex items-center gap-1 p-1 bg-neutral-900 rounded-full">
-                <button
-                  type="button"
-                  onClick={() => setProvider('innertube')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    provider === 'innertube' ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  YouTube Music
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setProvider('spotify')}
-                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
-                    provider === 'spotify' ? 'bg-emerald-600 text-white' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  Spotify
-                </button>
-              </div>
+                {REGION_OPTIONS.map((r) => (
+                  <option key={r.id} value={r.id} className="bg-neutral-900 text-white">
+                    {r.flag} {r.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+
+            {hasQuery && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleForceRefresh}
+                  disabled={loading || isRefreshing}
+                  title="キャッシュを使わず最新の検索結果を即時再取得"
+                  className="px-3 py-1.5 rounded-full bg-neutral-900 hover:bg-neutral-800 border border-neutral-700/80 hover:border-red-500/50 text-xs font-bold text-neutral-200 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-red-400' : ''}`} />
+                  <span>再取得</span>
+                  {resultFromCache && !isRefreshing && (
+                    <span className="text-[10px] font-normal text-neutral-400 hidden sm:inline">
+                      (キャッシュ)
+                    </span>
+                  )}
+                </button>
+                <div className="flex items-center gap-1 p-1 bg-neutral-900 rounded-full">
+                  <button
+                    type="button"
+                    onClick={() => setProvider('innertube')}
+                    className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
+                      provider === 'innertube' ? 'bg-red-600 text-white' : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    YouTube Music
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setProvider('spotify')}
+                    className={`px-3 py-1 rounded-full text-xs font-bold transition-colors cursor-pointer ${
+                      provider === 'spotify' ? 'bg-emerald-600 text-white' : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    Spotify
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="relative">
@@ -539,6 +746,136 @@ export const SearchView: React.FC = () => {
               </button>
             </div>
           )}
+
+        {/* BPM & Mood Inline Filter Panel */}
+        {bpmPanelOpen && (
+          <div className="p-4 rounded-2xl bg-[#13131b] border border-red-500/25 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-red-400" />
+                <span className="text-xs font-black text-white">曲のBPM・ムードで絞り込み検索</span>
+              </div>
+              {bpmResults !== null && (
+                <button
+                  type="button"
+                  onClick={() => setBpmResults(null)}
+                  className="text-[11px] font-bold text-neutral-400 hover:text-white cursor-pointer"
+                >
+                  絞り込み結果を閉じる
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {MOOD_PRESETS.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setBpmMood(m.id)}
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-colors ${
+                    bpmMood === m.id
+                      ? 'bg-red-600 text-white'
+                      : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {BPM_PRESETS.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => {
+                    setBpmRange(b.id);
+                    setCustomMinBpm('');
+                    setCustomMaxBpm('');
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
+                    bpmRange === b.id && !customMinBpm && !customMaxBpm
+                      ? 'bg-amber-500 text-neutral-950'
+                      : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800'
+                  }`}
+                >
+                  {b.label}
+                </button>
+              ))}
+              <div className="flex items-center gap-1.5 text-[11px] text-neutral-300">
+                <input
+                  type="number"
+                  value={customMinBpm}
+                  onChange={(e) => setCustomMinBpm(e.target.value)}
+                  placeholder="最小BPM"
+                  className="w-20 px-2 py-1 rounded-lg bg-neutral-900 border border-neutral-700 text-xs text-white"
+                />
+                <span>〜</span>
+                <input
+                  type="number"
+                  value={customMaxBpm}
+                  onChange={(e) => setCustomMaxBpm(e.target.value)}
+                  placeholder="最大BPM"
+                  className="w-20 px-2 py-1 rounded-lg bg-neutral-900 border border-neutral-700 text-xs text-white"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRunMoodBpmSearch(false)}
+                disabled={bpmLoading}
+                className="ml-auto px-4 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                {bpmLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5" />}
+                <span>このBPM/ムードで探す</span>
+              </button>
+            </div>
+
+            {bpmResults && (
+              <div className="pt-2 border-t border-white/10 space-y-1 max-h-80 overflow-y-auto">
+                {bpmResults.length === 0 ? (
+                  <p className="text-xs text-neutral-400 py-4 text-center">
+                    条件に一致する楽曲が見つかりませんでした。
+                  </p>
+                ) : (
+                  bpmResults
+                    .filter((t) => !isTrackBlocked(t))
+                    .map((track, idx) => (
+                      <div
+                        key={`${track.id}-bpm-${idx}`}
+                        onClick={() => playTrack(track, bpmResults)}
+                        className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-white/5 cursor-pointer"
+                      >
+                        <SafeImage src={track.thumbnail} alt={track.title} className="w-10 h-10 rounded object-cover shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-white truncate">{track.title}</p>
+                            {track.bpm && (
+                              <span className="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-500/35 text-[10px] font-mono text-amber-300 shrink-0">
+                                ~{track.bpm} BPM
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-neutral-400 truncate">{track.artist}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addToQueue(track);
+                            showToast(`「${track.title}」をキューに追加しました`, 'info', 1800);
+                          }}
+                          className="p-2 text-neutral-400 hover:text-white cursor-pointer"
+                          title="キューに追加"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Empty Search Query -> Spotify Recent Searches (IMG_0223) + Browse Categories Grid (IMG_0222) */}
@@ -630,29 +967,66 @@ export const SearchView: React.FC = () => {
         <div className="space-y-5">
           {/* Segmented Horizontal Filter Chips (YouTube Music mode) */}
           {provider === 'innertube' && (
-            <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-              {filterOptions.map((opt) => {
-                const isActive = filter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setFilter(opt.id)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                      isActive
-                        ? 'bg-red-600 text-white'
-                        : 'bg-[#232329] text-neutral-200 hover:bg-neutral-700'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-              {matchedAlias && (
-                <span className="text-xs text-neutral-400 whitespace-nowrap pl-1">
-                  · {matchedAlias}
-                </span>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                {filterOptions.map((opt) => {
+                  const isActive = filter === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setFilter(opt.id)}
+                      className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                        isActive
+                          ? 'bg-red-600 text-white'
+                          : 'bg-[#232329] text-neutral-200 hover:bg-neutral-700'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+                {matchedAlias && (
+                  <span className="text-xs text-neutral-400 whitespace-nowrap pl-1">
+                    · {matchedAlias}
+                  </span>
+                )}
+              </div>
+
+              {filter === 'unofficial' && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] text-neutral-400 font-semibold mr-1">
+                    公式以外の音源タグ:
+                  </span>
+                  {UNOFFICIAL_SUBCHIPS.map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => {
+                        const base = (inputVal || searchQuery)
+                          .replace(/\s*(歌ってみた|cover|live|ライブ|弾き語り|remix)\b/gi, '')
+                          .trim();
+                        const nextQ = base ? `${base} ${sub.append}` : sub.append;
+                        executeSearch(nextQ, false);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/30 border border-amber-500/35 text-[11px] font-bold text-amber-200 cursor-pointer transition-colors"
+                    >
+                      + {sub.label}
+                    </button>
+                  ))}
+                </div>
               )}
+            </div>
+          )}
+
+          {(!isOnline || offlineLocalMatchesBanner) && (
+            <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-amber-950/50 border border-amber-500/35 text-xs text-amber-200 flex items-center gap-2">
+              <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                {offlineLocalMatchesBanner
+                  ? 'オフライン検索モード — 端末内の保存済み楽曲・お気に入り・履歴から一致した結果を表示しています'
+                  : 'オフライン中 — 保存済みキャッシュデータから検索結果を表示しています'}
+              </span>
             </div>
           )}
 
@@ -912,6 +1286,37 @@ export const SearchView: React.FC = () => {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (downloadingOfflineIds.has(track.id) || track.isLocal) return;
+                                  if (cachedOfflineIds.has(track.id) || track.isCachedOffline) {
+                                    removeTrackOfflineCache(track.id);
+                                  } else {
+                                    downloadTrackOffline(track);
+                                  }
+                                }}
+                                className={`min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer ${
+                                  cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                    ? 'text-emerald-400 hover:text-emerald-300'
+                                    : 'text-neutral-400 hover:text-emerald-300'
+                                }`}
+                                title={
+                                  cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                    ? 'オフライン保存済み'
+                                    : '1タップでオフライン保存'
+                                }
+                                aria-label="オフライン保存"
+                              >
+                                {downloadingOfflineIds.has(track.id) ? (
+                                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                                ) : cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal ? (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                ) : (
+                                  <ArrowDownToLine className="w-4 h-4" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   openFreemakeModal(track);
                                 }}
                                 className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 cursor-pointer"
@@ -1124,7 +1529,7 @@ export const SearchView: React.FC = () => {
                 <div className="py-20 text-center text-sm text-neutral-500">
                   該当する結果が見つかりませんでした。
                 </div>
-              ) : filter === 'song' ? (
+              ) : filter === 'song' || filter === 'unofficial' ? (
                 <div className="space-y-0.5">
                   {resultsFiltered
                     .filter((track) => !isTrackBlocked(track))
@@ -1146,9 +1551,22 @@ export const SearchView: React.FC = () => {
                           className="w-12 h-12 rounded object-cover bg-neutral-800 shrink-0"
                         />
                         <div className="flex-1 min-w-0">
-                          <p className={`text-sm font-semibold truncate ${isCurrent ? 'text-red-500' : 'text-white'}`}>
-                            {track.title}
-                          </p>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <p className={`text-sm font-semibold truncate ${isCurrent ? 'text-red-500' : 'text-white'}`}>
+                              {track.title}
+                            </p>
+                            {track.isUnofficial && (
+                              <span className="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-500/40 text-[10px] font-bold text-amber-200 shrink-0">
+                                {track.unofficialKind === 'live'
+                                  ? 'ライブ音源'
+                                  : track.unofficialKind === 'remix'
+                                  ? 'Remix'
+                                  : track.unofficialKind === 'cover'
+                                  ? '歌ってみた・カバー'
+                                  : '動画音源'}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-neutral-400 truncate mt-0.5">{track.artist}</p>
                         </div>
                         <div className="flex items-center gap-0.5 shrink-0">
@@ -1186,6 +1604,37 @@ export const SearchView: React.FC = () => {
                             aria-label="キューの最後に追加"
                           >
                             <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (downloadingOfflineIds.has(track.id) || track.isLocal) return;
+                              if (cachedOfflineIds.has(track.id) || track.isCachedOffline) {
+                                removeTrackOfflineCache(track.id);
+                              } else {
+                                downloadTrackOffline(track);
+                              }
+                            }}
+                            className={`min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer ${
+                              cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                ? 'text-emerald-400 hover:text-emerald-300'
+                                : 'text-neutral-400 hover:text-emerald-300'
+                            }`}
+                            title={
+                              cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                ? 'オフライン保存済み'
+                                : '1タップでオフライン保存'
+                            }
+                            aria-label="オフライン保存"
+                          >
+                            {downloadingOfflineIds.has(track.id) ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                            ) : cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              <ArrowDownToLine className="w-4 h-4" />
+                            )}
                           </button>
                           <button
                             type="button"

@@ -94,6 +94,10 @@ async function resolveAudioStreamForVideo(
   const cached = kvCache.get<ResolvedAudioStream>(cacheKey);
   if (cached) return cached;
 
+  if (kvCache.get<boolean>('audio_stream_yt_blocked')) {
+    return null;
+  }
+
   const cookie = (process.env.YOUTUBE_COOKIE || '').trim();
   const poToken = (process.env.YOUTUBE_PO_TOKEN || '').trim();
 
@@ -158,6 +162,8 @@ async function resolveAudioStreamForVideo(
     },
   ];
 
+  let loginRequiredCount = 0;
+
   for (const c of clients) {
     try {
       const headers: Record<string, string> = {
@@ -183,11 +189,17 @@ async function resolveAudioStreamForVideo(
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(4500),
+        signal: AbortSignal.timeout(3500),
       });
       if (!resp.ok) continue;
 
       const json = (await resp.json()) as any;
+      if (json?.playabilityStatus?.status === 'LOGIN_REQUIRED') {
+        loginRequiredCount++;
+        if (loginRequiredCount >= 2) break;
+        continue;
+      }
+
       const adaptive = Array.isArray(json?.streamingData?.adaptiveFormats)
         ? json.streamingData.adaptiveFormats
         : [];
@@ -218,8 +230,9 @@ async function resolveAudioStreamForVideo(
     } catch {}
   }
 
-  // Fallback to Innertube decipher
-  try {
+  // Fallback to Innertube decipher only if not already bot-blocked on primary clients
+  if (loginRequiredCount < 2) {
+    try {
     const yt = await getInnertube();
     for (const clientKey of ['IOS', 'ANDROID', 'TV_EMBEDDED', 'WEB'] as const) {
       try {
@@ -249,7 +262,8 @@ async function resolveAudioStreamForVideo(
         }
       } catch {}
     }
-  } catch {}
+    } catch {}
+  }
 
   // Fallback to Piped / Invidious pools
   try {
@@ -298,6 +312,10 @@ async function resolveAudioStreamForVideo(
     }
   } catch {}
 
+  if (loginRequiredCount >= 2) {
+    kvCache.set('audio_stream_yt_blocked', true, 3 * 60);
+  }
+
   return null;
 }
 
@@ -305,6 +323,26 @@ export function registerAudioStreamRoutes(
   app: Express,
   getInnertube: () => Promise<Innertube>
 ) {
+  app.get('/api/music/audio-stream/capability', async (_req: Request, res: Response) => {
+    const cachedCap = kvCache.get<{ available: boolean; reason?: string }>('audio_stream_capability_v1');
+    if (cachedCap) {
+      return res.json(cachedCap);
+    }
+    if (kvCache.get<boolean>('audio_stream_yt_blocked')) {
+      return res.json({ available: false, reason: 'LOGIN_REQUIRED' });
+    }
+    try {
+      const probe = await resolveAudioStreamForVideo('dQw4w9WgXcQ', 'high', getInnertube);
+      const result = probe
+        ? { available: true }
+        : { available: false, reason: 'UNAVAILABLE' };
+      kvCache.set('audio_stream_capability_v1', result, probe ? 10 * 60 : 3 * 60);
+      return res.json(result);
+    } catch {
+      return res.json({ available: false, reason: 'ERROR' });
+    }
+  });
+
   app.get('/api/music/audio-stream/info/:id', async (req: Request, res: Response) => {
     const videoId = String(req.params.id || '').trim();
     const quality = String(req.query.quality || 'high').trim();

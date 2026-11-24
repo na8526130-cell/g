@@ -93,6 +93,33 @@ class AudioDspEngine {
   private errorListeners = new Set<(trackId: string, err: string) => void>();
   private stateListeners = new Set<(playing: boolean) => void>();
   private djStateListeners = new Set<() => void>();
+  private unlockBound = false;
+
+  constructor() {
+    this.bindGlobalUnlock();
+  }
+
+  private bindGlobalUnlock() {
+    if (typeof window === 'undefined' || this.unlockBound) return;
+    this.unlockBound = true;
+    const handleUnlock = () => {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    };
+    window.addEventListener('pointerdown', handleUnlock, { passive: true });
+    window.addEventListener('touchstart', handleUnlock, { passive: true });
+    window.addEventListener('keydown', handleUnlock, { passive: true });
+  }
+
+  public unlock() {
+    try {
+      this.ensureAudioGraph();
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    } catch {}
+  }
 
   private notifyDjListeners() {
     this.djStateListeners.forEach((cb) => cb());
@@ -104,7 +131,6 @@ class AudioDspEngine {
       const makeAudio = (id: string): HTMLAudioElement => {
         const a = document.createElement('audio');
         a.id = id;
-        a.crossOrigin = 'anonymous';
         a.setAttribute('playsinline', '');
         a.setAttribute('webkit-playsinline', '');
         a.preload = 'auto';
@@ -571,6 +597,22 @@ class AudioDspEngine {
     return this.decks ? this.decks[this.activeDeckIdx].el : null;
   }
 
+  private applyCrossOriginForSrc(el: HTMLAudioElement, src: string) {
+    try {
+      const isDirectLocal =
+        !src ||
+        src.startsWith('blob:') ||
+        src.startsWith('data:') ||
+        src.startsWith('/') ||
+        (typeof window !== 'undefined' && src.startsWith(window.location.origin));
+      if (isDirectLocal) {
+        el.removeAttribute('crossorigin');
+      } else {
+        el.crossOrigin = 'anonymous';
+      }
+    } catch {}
+  }
+
   public async loadAndPlay(params: {
     trackId: string;
     src: string;
@@ -603,7 +645,8 @@ class AudioDspEngine {
       this.isCrossfading = true;
 
       nextDeck.currentTrackId = params.trackId;
-      if (nextDeck.el.src !== params.src) {
+      if (nextDeck.el.src !== params.src || nextDeck.el.error) {
+        this.applyCrossOriginForSrc(nextDeck.el, params.src);
         nextDeck.el.src = params.src;
         nextDeck.el.load();
       }
@@ -668,9 +711,14 @@ class AudioDspEngine {
       decks[otherIdx].deckGain?.gain.setValueAtTime(0, t);
     }
 
-    const isSameTrack = activeDeck.currentTrackId === params.trackId && activeDeck.el.src === params.src;
+    const isSameTrack =
+      activeDeck.currentTrackId === params.trackId &&
+      activeDeck.el.src === params.src &&
+      !activeDeck.el.error &&
+      activeDeck.el.readyState > 0;
     activeDeck.currentTrackId = params.trackId;
     if (!isSameTrack) {
+      this.applyCrossOriginForSrc(activeDeck.el, params.src);
       activeDeck.el.src = params.src;
       activeDeck.el.load();
     }
@@ -680,7 +728,15 @@ class AudioDspEngine {
     }
 
     if (params.autoplay !== false) {
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
       await activeDeck.el.play().catch((e) => {
+        if (e?.name === 'AbortError') return;
+        if (e?.name === 'NotAllowedError') {
+          this.stateListeners.forEach((cb) => cb(false));
+          return;
+        }
         this.errorListeners.forEach((cb) => cb(params.trackId, e?.message || 'Play blocked'));
       });
     } else {
@@ -689,8 +745,16 @@ class AudioDspEngine {
   }
 
   public play() {
-    this.ensureAudioGraph();
-    this.getCurrentElement()?.play().catch(() => {});
+    try {
+      this.ensureAudioGraph();
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    } catch {}
+    const el = this.getCurrentElement();
+    if (el && el.paused) {
+      el.play().catch(() => {});
+    }
   }
 
   public pause() {
@@ -756,10 +820,11 @@ class AudioDspEngine {
       this.ensureAudioGraph();
     } catch {}
     const deck = decks[deckIdx];
-    const wasSame = deck.currentTrackId === trackId && deck.el.src === src;
+    const wasSame = deck.currentTrackId === trackId && deck.el.src === src && !deck.el.error;
     deck.currentTrackId = trackId;
     if (!wasSame) {
       deck.el.pause();
+      this.applyCrossOriginForSrc(deck.el, src);
       deck.el.src = src;
       deck.el.load();
     }

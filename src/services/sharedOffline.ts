@@ -1,12 +1,17 @@
 import { Track } from '../types/music';
 import {
+  buildSharedCoverUrl,
   getActiveOfflineBlobUrl,
   getAllCachedSharedTracks,
   getCachedSharedOfflineIds,
   getCachedSharedOfflineTrack,
   getOfflineMeta,
   getStoredOfflineTrackRecord,
+  isLegacyPlaceholderThumbnail,
   notifySharedOfflineChanged,
+  recoverSharedBlobFromSwCache,
+  refreshSharedOfflineThumbnailCache,
+  resolveSharedTrackDisplayThumbnail,
   saveOfflineMeta,
   saveOfflineTrack,
   saveSharedOfflineBlob,
@@ -22,6 +27,7 @@ export interface ServerSharedOfflineItem {
   album: string;
   duration: string;
   durationSeconds: number;
+  thumbnail?: string;
   fileName: string;
   fileExt: string;
   mimeType: string;
@@ -32,8 +38,6 @@ export interface ServerSharedOfflineItem {
 }
 
 const SHARED_CATALOG_META_KEY = 'shared_offline_catalog_v1';
-const DEFAULT_SHARED_THUMB =
-  'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&h=400&fit=crop';
 
 const CHUNK_THRESHOLD_BYTES = 1024 * 1024; // 1 MiB
 const CHUNK_SIZE_BYTES = 1024 * 1024; // 1 MiB per chunk
@@ -42,11 +46,17 @@ const MAX_UPLOAD_BYTES = 150 * 1024 * 1024; // 150 MiB max
 let activeSyncPromise: Promise<{ cached: number; total: number }> | null = null;
 
 function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<string>): Track {
-  const isCached = cachedIds.has(item.id);
   const activeBlobUrl = getActiveOfflineBlobUrl(item.id);
+  const isCached = cachedIds.has(item.id) || Boolean(activeBlobUrl);
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
   const cleanExt = (item.fileExt || item.fileName?.split('.').pop() || 'mp3')
     .replace(/^\./, '')
     .toLowerCase();
+  const resolvedThumb = resolveSharedTrackDisplayThumbnail(
+    item.id,
+    item.thumbnail,
+    buildSharedCoverUrl(item.id)
+  );
   return {
     id: item.id,
     title: item.title,
@@ -54,7 +64,7 @@ function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<stri
     album: item.album || '共有オフライン',
     duration: item.duration || '3:00',
     durationSeconds: item.durationSeconds || 180,
-    thumbnail: DEFAULT_SHARED_THUMB,
+    thumbnail: resolvedThumb,
     isLocal: true,
     isSharedOffline: true,
     isCachedOffline: isCached,
@@ -63,7 +73,8 @@ function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<stri
     fileSize: item.fileSize,
     fileName: item.fileName,
     fileExt: cleanExt,
-    audioUrl: activeBlobUrl || `/api/shared-offline/file/${encodeURIComponent(item.id)}`,
+    audioMimeType: item.mimeType || undefined,
+    audioUrl: activeBlobUrl || (isOffline && !isCached ? undefined : `/api/shared-offline/file/${encodeURIComponent(item.id)}`),
   };
 }
 
@@ -155,11 +166,22 @@ export async function loadSharedOfflineTracks(): Promise<{
     } catch {}
   }
 
-  // Offline / fallback path: reconstruct from IndexedDB cached blobs & catalog metadata
-  const [cachedCatalog, cachedBlobTracks] = await Promise.all([
-    getOfflineMeta<ServerSharedOfflineItem[]>(SHARED_CATALOG_META_KEY),
-    getAllCachedSharedTracks(),
-  ]);
+  // Offline / fallback path: reconstruct from IndexedDB cached blobs, SW cache & catalog metadata
+  let cachedCatalog = await getOfflineMeta<ServerSharedOfflineItem[]>(SHARED_CATALOG_META_KEY);
+  if ((!cachedCatalog || cachedCatalog.length === 0) && typeof window !== 'undefined' && 'caches' in window) {
+    try {
+      const swCatalog = await window.caches.match('/api/shared-offline');
+      if (swCatalog && swCatalog.ok) {
+        const parsed = await swCatalog.json();
+        if (Array.isArray(parsed?.tracks)) {
+          cachedCatalog = parsed.tracks;
+          saveOfflineMeta(SHARED_CATALOG_META_KEY, cachedCatalog).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
+  const cachedBlobTracks = await getAllCachedSharedTracks();
 
   const byId = new Map<string, Track>();
   for (const t of cachedBlobTracks) {
@@ -168,7 +190,39 @@ export async function loadSharedOfflineTracks(): Promise<{
   if (Array.isArray(cachedCatalog)) {
     for (const item of cachedCatalog) {
       if (!byId.has(item.id)) {
-        byId.set(item.id, mapServerItemToTrack(item, cachedIds));
+        const swBlob = await recoverSharedBlobFromSwCache(item.id);
+        if (swBlob && swBlob.size > 0) {
+          const coverUrl = resolveSharedTrackDisplayThumbnail(
+            item.id,
+            item.thumbnail,
+            buildSharedCoverUrl(item.id)
+          );
+          const blobUrl = await saveSharedOfflineBlob(
+            {
+              id: item.id,
+              title: item.title,
+              artist: item.artist,
+              album: item.album,
+              duration: item.duration,
+              durationSeconds: item.durationSeconds,
+              thumbnail: coverUrl,
+              fileName: item.fileName,
+              fileType: item.mimeType || swBlob.type,
+              fileSize: item.fileSize || swBlob.size,
+              uploadedBy: item.uploadedBy,
+              uploadedAt: item.uploadedAt,
+            },
+            swBlob
+          ).catch(() => URL.createObjectURL(swBlob));
+          cachedIds.add(item.id);
+          byId.set(item.id, {
+            ...mapServerItemToTrack(item, cachedIds),
+            isCachedOffline: true,
+            audioUrl: blobUrl,
+          });
+        } else {
+          byId.set(item.id, mapServerItemToTrack(item, cachedIds));
+        }
       }
     }
   }
@@ -196,6 +250,7 @@ export async function uploadSharedOfflineFile(
     title?: string;
     artist?: string;
     album?: string;
+    thumbnail?: string;
     uploadedBy?: string;
     durationSeconds?: number;
     duration?: string;
@@ -238,6 +293,11 @@ export async function uploadSharedOfflineFile(
   const duration =
     options?.duration || (durationSeconds > 0 ? formatDurationLabel(durationSeconds) : '');
 
+  const rawInputThumb =
+    options?.thumbnail && !isLegacyPlaceholderThumbnail(options.thumbnail)
+      ? options.thumbnail.trim()
+      : undefined;
+
   let serverTrack: ServerSharedOfflineItem;
 
   if (standaloneBlob.size <= CHUNK_THRESHOLD_BYTES) {
@@ -251,6 +311,9 @@ export async function uploadSharedOfflineFile(
     });
     if (durationSeconds > 0) qs.set('durationSeconds', String(durationSeconds));
     if (duration) qs.set('duration', duration);
+    if (rawInputThumb && /^https?:\/\//i.test(rawInputThumb) && rawInputThumb.length <= 1024) {
+      qs.set('thumbnail', rawInputThumb);
+    }
 
     options?.onProgress?.(35, 'アップロード中…');
     const buf = await standaloneBlob.arrayBuffer();
@@ -272,6 +335,13 @@ export async function uploadSharedOfflineFile(
       throw new Error('サーバーからの応答が不正です');
     }
     serverTrack = data.track;
+    if (rawInputThumb && rawInputThumb.startsWith('data:image/')) {
+      await fetch(`/api/shared-offline/${encodeURIComponent(serverTrack.id)}/cover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thumbnail: rawInputThumb }),
+      }).catch(() => {});
+    }
     options?.onProgress?.(94, '仕上げ処理中…');
   } else {
     let uploadId: string | null = null;
@@ -286,6 +356,7 @@ export async function uploadSharedOfflineFile(
           title: finalTitle,
           artist: finalArtist,
           album: finalAlbum,
+          thumbnail: rawInputThumb,
           uploadedBy: finalUploadedBy,
           durationSeconds,
           duration,
@@ -352,6 +423,7 @@ export async function uploadSharedOfflineFile(
           title: finalTitle,
           artist: finalArtist,
           album: finalAlbum,
+          thumbnail: rawInputThumb,
           uploadedBy: finalUploadedBy,
           durationSeconds,
           duration,
@@ -384,6 +456,13 @@ export async function uploadSharedOfflineFile(
     }
   }
 
+  const resolvedCoverUrl = resolveSharedTrackDisplayThumbnail(
+    serverTrack.id,
+    serverTrack.thumbnail,
+    rawInputThumb,
+    buildSharedCoverUrl(serverTrack.id)
+  );
+
   let blobUrl = `/api/shared-offline/file/${encodeURIComponent(serverTrack.id)}`;
   let isCachedOffline = false;
   try {
@@ -395,7 +474,7 @@ export async function uploadSharedOfflineFile(
         album: serverTrack.album,
         duration: serverTrack.duration,
         durationSeconds: serverTrack.durationSeconds,
-        thumbnail: DEFAULT_SHARED_THUMB,
+        thumbnail: resolvedCoverUrl,
         fileName: serverTrack.fileName,
         fileType: serverTrack.mimeType,
         fileSize: serverTrack.fileSize,
@@ -421,6 +500,11 @@ export async function uploadSharedOfflineFile(
     ]);
   } catch {}
 
+  const finalDisplayThumb = resolveSharedTrackDisplayThumbnail(
+    serverTrack.id,
+    resolvedCoverUrl
+  );
+
   options?.onProgress?.(100, '完了');
   notifySharedOfflineChanged();
 
@@ -431,7 +515,7 @@ export async function uploadSharedOfflineFile(
     album: serverTrack.album,
     duration: serverTrack.duration,
     durationSeconds: serverTrack.durationSeconds,
-    thumbnail: DEFAULT_SHARED_THUMB,
+    thumbnail: finalDisplayThumb,
     isLocal: true,
     isSharedOffline: true,
     isCachedOffline,
@@ -460,6 +544,7 @@ export async function publishOfflineTrackToShared(
     title: record.title,
     artist: record.artist,
     album: record.album || '共有オフライン',
+    thumbnail: !isLegacyPlaceholderThumbnail(record.thumbnail) ? record.thumbnail : track.thumbnail,
     uploadedBy: uploadedBy || 'ゲスト',
     durationSeconds: record.durationSeconds,
     duration: record.duration,
@@ -492,7 +577,22 @@ export async function syncSharedTracksForOffline(
 
       for (const track of list) {
         if (typeof navigator !== 'undefined' && !navigator.onLine) break;
-        if (cachedIds.has(track.id)) continue;
+        if (cachedIds.has(track.id)) {
+          // Ensure previously cached tracks also have an offline inline base64 cover image
+          getCachedSharedOfflineTrack(track.id)
+            .then((rec) => {
+              if (
+                rec &&
+                (!rec.thumbnail ||
+                  isLegacyPlaceholderThumbnail(rec.thumbnail) ||
+                  !rec.thumbnail.startsWith('data:image/'))
+              ) {
+                return refreshSharedOfflineThumbnailCache(track.id, track.thumbnail);
+              }
+            })
+            .catch(() => {});
+          continue;
+        }
         if (track.fileSize && track.fileSize > MAX_FILE_BYTES) continue;
         if (sessionBytes > MAX_SESSION_BYTES) break;
 
@@ -500,8 +600,11 @@ export async function syncSharedTracksForOffline(
           const resp = await fetch(`/api/shared-offline/file/${encodeURIComponent(track.id)}`, {
             signal: AbortSignal.timeout(45000),
           });
-          if (!resp.ok) continue;
+          if (!resp.ok || resp.status === 206) continue;
+          const respType = resp.headers.get('content-type') || '';
+          if (respType.includes('text/html') || respType.includes('application/json')) continue;
           const blob = await resp.blob();
+          if (!blob || blob.size < 32 || blob.type.includes('text/html')) continue;
           sessionBytes += blob.size;
           await saveSharedOfflineBlob(
             {
@@ -511,9 +614,9 @@ export async function syncSharedTracksForOffline(
               album: track.album,
               duration: track.duration,
               durationSeconds: track.durationSeconds,
-              thumbnail: track.thumbnail,
+              thumbnail: track.thumbnail || buildSharedCoverUrl(track.id),
               fileName: track.fileName || `${track.title}.${track.fileExt || 'mp3'}`,
-              fileType: blob.type || undefined,
+              fileType: blob.type || respType || undefined,
               fileSize: track.fileSize || blob.size,
               uploadedBy: track.uploadedBy,
               uploadedAt: track.uploadedAt,

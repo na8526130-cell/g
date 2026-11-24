@@ -4,7 +4,12 @@ import { api } from '../services/api';
 import { ExploreData, Track, OriconTrack, Artist } from '../types/music';
 import { SafeImage } from '../components/SafeImage';
 import { MoodRecommendationSection } from '../components/MoodRecommendationSection';
-import { getOfflineMeta, saveOfflineMeta } from '../services/offlineStorage';
+import {
+  getAllCachedSharedTracks,
+  getAllOfflineTracks,
+  getOfflineMeta,
+  saveOfflineMeta,
+} from '../services/offlineStorage';
 import { getApiCacheEntry, setApiCacheEntry } from '../services/apiCacheDb';
 import {
   Play,
@@ -32,6 +37,13 @@ import {
   History,
   Podcast,
   Sliders,
+  Music2,
+  Disc3,
+  Car,
+  Award,
+  Watch,
+  CheckCircle2,
+  HardDrive,
 } from 'lucide-react';
 
 interface MadeForYouMix {
@@ -349,7 +361,18 @@ export const HomeExploreView: React.FC = () => {
     audioQuality,
     spatialAudio,
     vocalLevel,
+    catalogRegion,
+    setClassicalModalOpen,
+    setDjMixerOpen,
+    setCarModeOpen,
+    setCompanionModalOpen,
+    setCompanionMode,
+    setWrappedModalOpen,
+    cachedOfflineTracks,
+    playAllOfflineSavedTracks,
   } = usePlayer();
+
+  const [offlineFallbackTracks, setOfflineFallbackTracks] = useState<Track[]>([]);
 
   const [data, setData] = useState<ExploreData | null>(null);
   const [higedanData, setHigedanData] = useState<{
@@ -473,7 +496,7 @@ export const HomeExploreView: React.FC = () => {
 
     const fetchExploreWithColdStartRetry = async (): Promise<ExploreData> => {
       try {
-        return await api.getExplore();
+        return await api.getExplore(catalogRegion);
       } catch (firstErr) {
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
           throw firstErr;
@@ -482,7 +505,7 @@ export const HomeExploreView: React.FC = () => {
           retryTimer = setTimeout(resolve, 1200);
         });
         if (!active) throw firstErr;
-        return await api.getExplore();
+        return await api.getExplore(catalogRegion);
       }
     };
 
@@ -550,6 +573,13 @@ export const HomeExploreView: React.FC = () => {
           setIsFromCache(true);
           setError(null);
         } else if (active) {
+          const [loc, sh] = await Promise.all([
+            getAllOfflineTracks().catch(() => [] as Track[]),
+            getAllCachedSharedTracks().catch(() => [] as Track[]),
+          ]);
+          if (active) {
+            setOfflineFallbackTracks([...cachedOfflineTracks, ...loc, ...sh]);
+          }
           setError(err.message || '読み込みに失敗しました');
         }
         setLoading(false);
@@ -559,7 +589,7 @@ export const HomeExploreView: React.FC = () => {
       active = false;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [exploreReloadSeq]);
+  }, [exploreReloadSeq, catalogRegion, cachedOfflineTracks]);
 
   // Generate Personalized Auto-Mixes (Daylist / Daily Mix 1 & 2 / Release Radar)
   useEffect(() => {
@@ -977,64 +1007,114 @@ export const HomeExploreView: React.FC = () => {
 
   if (error && !data) {
     const isBrowserOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    const playableOfflineMap = new Map<string, Track>();
+    [...cachedOfflineTracks, ...offlineFallbackTracks].forEach((tr) => {
+      if (tr?.id && !playableOfflineMap.has(tr.id)) {
+        playableOfflineMap.set(tr.id, tr);
+      }
+    });
+    const playableOfflineList = Array.from(playableOfflineMap.values());
+
     return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center text-center p-6 space-y-4 max-w-sm mx-auto">
-        <div className="w-12 h-12 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-red-500">
-          <WifiOff className="w-6 h-6" />
-        </div>
-        <div className="space-y-1">
-          <p className="text-sm font-semibold text-white">
-            {isBrowserOffline ? 'ネットワークに接続できません' : 'サーバーに接続できませんでした'}
-          </p>
-          {!isBrowserOffline && (
-            <p className="text-xs text-neutral-400">
-              一時的な読み込みエラーが発生しました。再試行するかオフライン機能をご利用ください。
+      <div className="min-h-[60vh] flex flex-col items-center justify-center text-center p-6 space-y-6 max-w-2xl mx-auto">
+        <div className="space-y-4 max-w-sm mx-auto">
+          <div className="w-12 h-12 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-red-500 mx-auto">
+            <WifiOff className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-white">
+              {isBrowserOffline ? 'オフラインモードで動作中' : 'サーバーに接続できませんでした'}
             </p>
-          )}
+            <p className="text-xs text-neutral-400">
+              {playableOfflineList.length > 0
+                ? `端末に保存されている ${playableOfflineList.length} 曲をすぐに再生できます。`
+                : '再試行するか、オフライン音源・ダウンロード履歴をご利用ください。'}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            {playableOfflineList.length > 0 && (
+              <button
+                type="button"
+                onClick={() => playAllOfflineSavedTracks(false)}
+                className="min-h-[44px] px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>オフライン曲を再生 ({playableOfflineList.length})</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setExploreReloadSeq((s) => s + 1)}
+              className="min-h-[44px] px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-bold rounded-xl border border-neutral-700 flex items-center gap-2 cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>再読み込み</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLibraryTab('local');
+                navigateTo('library');
+              }}
+              className="min-h-[44px] px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-cyan-300 text-xs font-bold rounded-xl border border-cyan-500/35 flex items-center gap-2 cursor-pointer"
+            >
+              <FolderDown className="w-4 h-4" />
+              <span>オフライン曲</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLibraryTab('shared_offline');
+                navigateTo('library');
+              }}
+              className="min-h-[44px] px-4 py-2.5 bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 text-xs font-bold rounded-xl border border-emerald-500/35 flex items-center gap-2 cursor-pointer"
+            >
+              <Globe className="w-4 h-4" />
+              <span>共有オフライン</span>
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setExploreReloadSeq((s) => s + 1)}
-            className="min-h-[44px] px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-bold rounded-xl border border-neutral-700 flex items-center gap-2 cursor-pointer"
-          >
-            <RefreshCw className="w-4 h-4" />
-            <span>再読み込み</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setLibraryTab('local');
-              navigateTo('library');
-            }}
-            className="min-h-[44px] px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/30 cursor-pointer"
-          >
-            <FolderDown className="w-4 h-4" />
-            <span>オフライン曲</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setLibraryTab('shared_offline');
-              navigateTo('library');
-            }}
-            className="min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer"
-          >
-            <Globe className="w-4 h-4" />
-            <span>共有オフライン</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setLibraryTab('downloads');
-              navigateTo('library');
-            }}
-            className="min-h-[44px] px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-sky-300 text-xs font-bold rounded-xl border border-sky-500/35 flex items-center gap-2 cursor-pointer"
-          >
-            <History className="w-4 h-4" />
-            <span>ダウンロード履歴</span>
-          </button>
-        </div>
+
+        {playableOfflineList.length > 0 && (
+          <div className="w-full text-left bg-neutral-900/50 border border-neutral-800 rounded-2xl overflow-hidden divide-y divide-neutral-800/60">
+            <div className="px-4 py-3 flex items-center justify-between bg-neutral-900/80">
+              <div className="flex items-center gap-2 text-xs font-bold text-white">
+                <HardDrive className="w-4 h-4 text-cyan-400" />
+                <span>今すぐ聴けるオフライン保存曲</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => playAllOfflineSavedTracks(true)}
+                className="text-xs font-bold text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+                <span>シャッフル</span>
+              </button>
+            </div>
+            {playableOfflineList.slice(0, 10).map((tr) => (
+              <div
+                key={tr.id}
+                onClick={() => playTrack(tr, playableOfflineList)}
+                className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/5 cursor-pointer transition-colors"
+              >
+                <SafeImage
+                  src={tr.thumbnail}
+                  alt={tr.title}
+                  useBase64
+                  className="w-10 h-10 rounded-lg object-cover bg-neutral-800 shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-white truncate">{tr.title}</p>
+                  <p className="text-xs text-neutral-400 truncate">{tr.artist}</p>
+                </div>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold shrink-0">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span>再生可</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -1093,12 +1173,12 @@ export const HomeExploreView: React.FC = () => {
           </div>
         </div>
 
-        {/* Compact Studio Launcher Row (Mobile & PC 1-tap access) */}
-        <div className="grid grid-cols-3 gap-2 pt-0.5">
+        {/* Compact Studio Launcher Grid (Mobile & PC 1-tap access) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 pt-0.5">
           <button
             type="button"
             onClick={() => setAiPlaylistModalOpen(true)}
-            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-amber-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-amber-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
           >
             <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 shrink-0">
               <Sparkles className="w-4 h-4" />
@@ -1112,7 +1192,7 @@ export const HomeExploreView: React.FC = () => {
           <button
             type="button"
             onClick={() => navigateTo('podcasts')}
-            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-emerald-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-emerald-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
           >
             <div className="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400 shrink-0">
               <Podcast className="w-4 h-4" />
@@ -1126,7 +1206,7 @@ export const HomeExploreView: React.FC = () => {
           <button
             type="button"
             onClick={() => setDspModalOpen(true)}
-            className="p-2.5 sm:p-3 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-sky-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-sky-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
           >
             <div className="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center text-sky-400 shrink-0">
               <Sliders className="w-4 h-4" />
@@ -1144,6 +1224,79 @@ export const HomeExploreView: React.FC = () => {
                   ? 'ロスレス'
                   : '空間・カラオケ'}
               </p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setClassicalModalOpen(true)}
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-amber-400/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-300 shrink-0">
+              <Music2 className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">クラシック</p>
+              <p className="text-[10px] text-neutral-400 truncate">作品番号・作曲家</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDjMixerOpen(true)}
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-purple-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-purple-500/15 flex items-center justify-center text-purple-300 shrink-0">
+              <Disc3 className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">DJミックス</p>
+              <p className="text-[10px] text-neutral-400 truncate">2デッキ & djay出力</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCarModeOpen(true)}
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-red-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center text-red-400 shrink-0">
+              <Car className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">ドライブ</p>
+              <p className="text-[10px] text-neutral-400 truncate">CarPlay / 車載UI</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setWrappedModalOpen(true)}
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-rose-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-rose-500/15 flex items-center justify-center text-rose-400 shrink-0">
+              <Award className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">Recapまとめ</p>
+              <p className="text-[10px] text-neutral-400 truncate">年間・季節・月別</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setCompanionMode('watch');
+              setCompanionModalOpen(true);
+            }}
+            className="p-2.5 rounded-xl bg-[#13131b] hover:bg-neutral-900 border border-teal-500/25 flex items-center gap-2 text-left transition-colors cursor-pointer"
+          >
+            <div className="w-8 h-8 rounded-lg bg-teal-500/15 flex items-center justify-center text-teal-300 shrink-0">
+              <Watch className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">Watch / TV</p>
+              <p className="text-[10px] text-neutral-400 truncate">地域: {catalogRegion}</p>
             </div>
           </button>
         </div>

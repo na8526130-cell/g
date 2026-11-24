@@ -17,15 +17,18 @@ export const SafeImage: React.FC<SafeImageProps> = ({
   useBase64 = true,
   ...props
 }) => {
+  const isImmediateSrc = (s?: string) =>
+    Boolean(s && (s.startsWith('data:') || s.startsWith('blob:') || s.startsWith('/pwa-') || s === '/icon.svg'));
+
   const [currentSrc, setCurrentSrc] = useState<string | undefined>(() => {
     if (!src) return undefined;
-    if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+    if (isImmediateSrc(src)) return src;
     if (useBase64) return getCachedBase64Image(src);
     return src;
   });
   const [isLoading, setIsLoading] = useState<boolean>(() => {
     if (!src || !useBase64) return false;
-    if (src.startsWith('data:') || src.startsWith('blob:')) return false;
+    if (isImmediateSrc(src)) return false;
     return !getCachedBase64Image(src);
   });
   const [hasError, setHasError] = useState(false);
@@ -42,7 +45,7 @@ export const SafeImage: React.FC<SafeImageProps> = ({
       return;
     }
 
-    if (src.startsWith('data:') || src.startsWith('blob:')) {
+    if (isImmediateSrc(src)) {
       setCurrentSrc(src);
       setIsLoading(false);
       return;
@@ -70,9 +73,12 @@ export const SafeImage: React.FC<SafeImageProps> = ({
         setCurrentSrc(dataUrl);
         setIsLoading(false);
       } else {
-        // Fallback to direct source if proxy base64 conversion failed
         setTriedFallback(true);
-        setCurrentSrc(src);
+        if (src.startsWith('/api/shared-offline/cover/') && typeof navigator !== 'undefined' && !navigator.onLine) {
+          setCurrentSrc('/pwa-512x512.png');
+        } else {
+          setCurrentSrc(src);
+        }
         setIsLoading(false);
       }
     });
@@ -85,7 +91,13 @@ export const SafeImage: React.FC<SafeImageProps> = ({
   const handleError = () => {
     if (src && !triedFallback) {
       setTriedFallback(true);
-      setCurrentSrc(src.startsWith('http') ? `/api/proxy/image?url=${encodeURIComponent(src)}` : src);
+      if (src.startsWith('/api/shared-offline/cover/')) {
+        setCurrentSrc('/pwa-512x512.png');
+      } else {
+        setCurrentSrc(src.startsWith('http') ? `/api/proxy/image?url=${encodeURIComponent(src)}` : src);
+      }
+    } else if (src?.startsWith('/api/shared-offline/cover/') && currentSrc !== '/pwa-512x512.png') {
+      setCurrentSrc('/pwa-512x512.png');
     } else {
       setHasError(true);
     }

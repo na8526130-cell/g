@@ -102,6 +102,7 @@ export interface ListeningLogEntry {
   track: Track;
   timestamp: string;
   seconds: number;
+  moodTag?: string;
 }
 
 export interface PodcastEpisode {

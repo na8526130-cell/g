@@ -82,18 +82,36 @@ function withApiMemo<T>(
     }
   }
 
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
   const promise = (async () => {
+    if (opts.persist && isOffline) {
+      const offlineCached = await getApiCacheEntry<T>(key, { allowExpired: true });
+      if (offlineCached !== null) {
+        return offlineCached;
+      }
+    }
     if (!opts.bypass && opts.persist) {
       const persisted = await getApiCacheEntry<T>(key);
       if (persisted !== null) {
         return persisted;
       }
     }
-    const val = await fetcher();
-    if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) {
-      setApiCacheEntry(key, val, ttlMs).catch(() => {});
+    try {
+      const val = await fetcher();
+      if (opts.persist && (!opts.shouldPersist || opts.shouldPersist(val))) {
+        setApiCacheEntry(key, val, ttlMs).catch(() => {});
+      }
+      return val;
+    } catch (fetchErr) {
+      if (opts.persist) {
+        const staleFallback = await getApiCacheEntry<T>(key, { allowExpired: true });
+        if (staleFallback !== null) {
+          return staleFallback;
+        }
+      }
+      throw fetchErr;
     }
-    return val;
   })().catch((err) => {
     const cur = apiMemoCache.get(key);
     if (cur && cur.promise === promise) {
@@ -391,15 +409,23 @@ export const api = {
       trackCount: number;
     }[];
   }> {
-    return withApiMemo('spotify-curated', 5 * 60 * 1000, async () => {
-      try {
-        const res = await fetch('/api/music/spotify/curated');
-        if (!res.ok) return { playlists: [] };
-        return res.json();
-      } catch {
-        return { playlists: [] };
+    return withApiMemo(
+      'spotify-curated',
+      5 * 60 * 1000,
+      async () => {
+        try {
+          const res = await fetch('/api/music/spotify/curated');
+          if (!res.ok) throw new Error('Failed to fetch curated playlists');
+          return res.json();
+        } catch (err) {
+          throw err;
+        }
+      },
+      {
+        persist: true,
+        shouldPersist: (d) => Array.isArray(d?.playlists) && d.playlists.length > 0,
       }
-    });
+    ).catch(() => ({ playlists: [] }));
   },
 
   getSpotifyCuratedPlaylist(id: string): Promise<{
@@ -1326,6 +1352,16 @@ export const api = {
       const res = await fetch(
         `/api/music/audio-stream/info/${encodeURIComponent(videoId)}?quality=${encodeURIComponent(quality)}`
       );
+      if (!res.ok) return { available: false };
+      return res.json();
+    } catch {
+      return { available: false };
+    }
+  },
+
+  async getAudioStreamCapability(): Promise<{ available: boolean; reason?: string }> {
+    try {
+      const res = await fetch('/api/music/audio-stream/capability');
       if (!res.ok) return { available: false };
       return res.json();
     } catch {

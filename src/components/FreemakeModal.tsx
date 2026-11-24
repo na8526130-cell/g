@@ -415,6 +415,7 @@ export const FreemakeModal: React.FC = () => {
           title: resolvedTitle || res.filename.replace(/\.[^.]+$/, ''),
           artist: resolvedArtist || '共有アップロード',
           album: res.album || resolvedInputAlbum || '共有オフライン',
+          thumbnail: res.artworkUrl || resolvedInputThumb,
           uploadedBy: currentUser?.username || 'ゲスト',
           durationSeconds: res.durationSec,
         });
@@ -1704,7 +1705,10 @@ export const FreemakeModal: React.FC = () => {
                           album: item.album || '共有オフライン',
                           duration: item.duration || '3:00',
                           durationSeconds: item.durationSeconds || 180,
-                          thumbnail: item.thumbnail || '',
+                          thumbnail:
+                            item.thumbnail ||
+                            cached?.thumbnail ||
+                            `/api/shared-offline/cover/${encodeURIComponent(item.sharedTrackId)}`,
                           isLocal: true,
                           isSharedOffline: true,
                           audioUrl,

@@ -16,6 +16,17 @@
     <meta property="og:description" content="High-fidelity music streaming, synced lyrics, gapless playback, and playlist import." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <style>
+      html, body {
+        background-color: #070708;
+        margin: 0;
+        padding: 0;
+      }
+      @keyframes zmBootPulse {
+        0%, 100% { transform: scale(1); opacity: 0.92; }
+        50% { transform: scale(1.03); opacity: 1; }
+      }
+    </style>
     <script>
       window.YTConfig = Object.assign(window.YTConfig || {}, {
         host: 'https://www.youtube-nocookie.com',
@@ -23,7 +34,25 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        aria-hidden="true"
+        style="position:fixed;inset:0;background:#070708;display:flex;align-items:center;justify-content:center;z-index:120;"
+      >
+        <div
+          style="width:84px;height:84px;border-radius:22px;background:#000;border:1px solid rgba(255,255,255,0.14);display:flex;align-items:center;justify-content:center;box-shadow:0 24px 60px rgba(239,29,54,0.28);animation:zmBootPulse 1.6s ease-in-out infinite;"
+        >
+          <svg viewBox="0 0 64 64" width="66" height="66" aria-hidden="true">
+            <circle cx="32" cy="32" r="28" fill="#EF1D36" />
+            <g transform="rotate(8.5 32 32)" fill="none" stroke="#000000" stroke-linecap="round">
+              <path d="M 15.47 25.41 A 58.8 58.8 0 0 1 48.53 25.41" stroke-width="4.7" />
+              <path d="M 18.39 33.17 A 54.6 54.6 0 0 1 45.61 33.17" stroke-width="3.9" />
+              <path d="M 21.25 40.16 A 50.4 50.4 0 0 1 42.75 40.16" stroke-width="3.25" />
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

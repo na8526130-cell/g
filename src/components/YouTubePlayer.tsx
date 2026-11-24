@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
 import { audioDspEngine } from '../services/audioDspEngine';
+import { forceRefreshSharedBlobUrl } from '../services/offlineStorage';
 import {
   X,
   Tv,
@@ -100,6 +101,12 @@ export const YouTubePlayer: React.FC = () => {
   shouldUseDirectDspRef.current = shouldUseDirectDsp;
   const isPlayingRef = useRef<boolean>(isPlaying);
   isPlayingRef.current = isPlaying;
+  const volumeRef = useRef<number>(volume);
+  volumeRef.current = volume;
+  const isMutedRef = useRef<boolean>(isMuted);
+  isMutedRef.current = isMuted;
+  const dspLoadedInRenderRef = useRef<boolean>(false);
+  const retriedSharedBlobIdsRef = useRef<Set<string>>(new Set());
   const lastKnownTimeRef = useRef<number>(0);
   const pendingYtSeekRef = useRef<{ videoId: string; sec: number } | null>(null);
   const prevEngineTrackRef = useRef<{ trackId: string; mode: 'dsp' | 'yt' } | null>(null);
@@ -187,7 +194,23 @@ export const YouTubePlayer: React.FC = () => {
     const unsubErr = audioDspEngine.onError((tid) => {
       const tr = currentTrackRef.current;
       if (!tr || tr.id !== tid) return;
-      if (tr.isLocal || (tr.trackType === 'podcast' && tr.audioUrl && !tr.podcastVideoId)) {
+      if ((tr.isSharedOffline || tr.id.startsWith('shared_')) && !retriedSharedBlobIdsRef.current.has(tr.id)) {
+        retriedSharedBlobIdsRef.current.add(tr.id);
+        forceRefreshSharedBlobUrl(tr.id).then((freshUrl) => {
+          if (freshUrl && currentTrackRef.current?.id === tr.id) {
+            audioDspEngine.loadAndPlay({
+              trackId: tr.id,
+              src: freshUrl,
+              autoplay: true,
+              crossfadeSec: 0,
+            });
+            return;
+          }
+          showToastRef.current('音声ストリームの読み込みに失敗しました', 'warning', 3200);
+        });
+        return;
+      }
+      if (tr.isLocal || tr.isSharedOffline || (tr.trackType === 'podcast' && tr.audioUrl && !tr.podcastVideoId)) {
         showToastRef.current('音声ストリームの読み込みに失敗しました', 'warning', 3200);
         return;
       }
@@ -206,6 +229,14 @@ export const YouTubePlayer: React.FC = () => {
       unsubErr();
     };
   }, [userIntendedPlayingRef]);
+
+  // Reset per-track timestamp tracker whenever currentTrack changes
+  useEffect(() => {
+    lastKnownTimeRef.current = 0;
+    if (currentTrack?.id) {
+      retriedSharedBlobIdsRef.current.delete(currentTrack.id);
+    }
+  }, [currentTrack?.id]);
 
   // Synchronize Direct Web Audio DSP playback & seamless Audio <-> MV timestamp handoff
   useEffect(() => {
@@ -237,16 +268,20 @@ export const YouTubePlayer: React.FC = () => {
 
       const targetYtId = currentTrack.podcastVideoId || currentTrack.id;
       let streamSrc = '';
-      if ((currentTrack.isLocal || currentTrack.isSharedOffline) && currentTrack.audioUrl) {
+      if ((currentTrack.isLocal || currentTrack.isSharedOffline || currentTrack.isCachedOffline) && currentTrack.audioUrl) {
         streamSrc = currentTrack.audioUrl;
         setAudioStreamMeta({
           videoId: currentTrack.id,
           quality: audioQuality,
-          codec: currentTrack.audioMimeType?.includes('flac') ? 'FLAC Lossless' : 'Local Master Audio',
-          bitrateKbps: 1411,
+          codec: currentTrack.audioMimeType?.includes('flac')
+            ? 'FLAC Lossless'
+            : currentTrack.isCachedOffline && !currentTrack.isLocal
+            ? 'Offline Cache Audio + DSP'
+            : 'Local Master Audio',
+          bitrateKbps: currentTrack.isLocal ? 1411 : 256,
           sampleRateHz: audioDspEngine.getEngineTelemetry().sampleRateHz || 48000,
           channels: 2,
-          mimeType: currentTrack.audioMimeType || 'audio/mpeg',
+          mimeType: currentTrack.audioMimeType || 'audio/mp4',
           usingDirectDsp: true,
         });
       } else if (currentTrack.trackType === 'podcast' && currentTrack.audioUrl) {
@@ -282,6 +317,7 @@ export const YouTubePlayer: React.FC = () => {
       const sameSrcLoaded = Boolean(el && el.src && (el.src === streamSrc || el.src.endsWith(streamSrc)));
 
       if (!sameSrcLoaded || handoffSec > 0) {
+        dspLoadedInRenderRef.current = true;
         audioDspEngine.loadAndPlay({
           trackId: currentTrack.id,
           src: streamSrc,
@@ -393,11 +429,10 @@ export const YouTubePlayer: React.FC = () => {
 
     const activeTrack = currentTrackRef.current;
     try {
-      playerRef.current = new window.YT.Player(mountEl, {
+      const playerConfig: Record<string, any> = {
         host: YOUTUBE_NOCOOKIE_HOST,
         height: '100%',
         width: '100%',
-        videoId: activeTrack ? activeTrack.id : '',
         playerVars: {
           autoplay: 1,
           controls: 1,
@@ -428,9 +463,11 @@ export const YouTubePlayer: React.FC = () => {
                 );
               }
             }
-            event.target.setVolume(volume);
-            if (isMuted) {
+            event.target.setVolume(volumeRef.current);
+            if (isMutedRef.current) {
               event.target.mute();
+            } else if (typeof event.target.unMute === 'function') {
+              event.target.unMute();
             }
             const trackToPlay = currentTrackRef.current;
             if (trackToPlay && !shouldUseDirectDspRef.current) {
@@ -442,8 +479,25 @@ export const YouTubePlayer: React.FC = () => {
           onStateChange: (event: any) => {
             if (shouldUseDirectDspRef.current) return;
             if (event.data === window.YT.PlayerState.PLAYING) {
+              try {
+                if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
+                  event.target.unMute();
+                }
+                if (typeof event.target?.setVolume === 'function') {
+                  event.target.setVolume(volumeRef.current);
+                }
+              } catch {}
               onPlayerStateChange(true);
               startAudioHardwareKeepAlive();
+            } else if (event.data === window.YT.PlayerState.CUED) {
+              if (userIntendedPlayingRef.current && typeof event.target?.playVideo === 'function') {
+                try {
+                  if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
+                    event.target.unMute();
+                  }
+                  event.target.playVideo();
+                } catch {}
+              }
             } else if (event.data === window.YT.PlayerState.PAUSED) {
               // Critical: counter unexpected pauses (background tab/screen lock OR Canvas embed focus blip in cover mode)
               const isUnexpectedCoverPause =
@@ -478,6 +532,12 @@ export const YouTubePlayer: React.FC = () => {
           },
           onError: (event: any) => {
             if (shouldUseDirectDspRef.current) return;
+            if (typeof navigator !== 'undefined' && !navigator.onLine) {
+              if (typeof onPlayerError === 'function') {
+                onPlayerError(event.data, 'オフライン中のため再生できません');
+              }
+              return;
+            }
             const errCodes: Record<number, string> = {
               2: '無効な動画パラメータ',
               5: 'HTML5プレーヤーエラー',
@@ -497,8 +557,12 @@ export const YouTubePlayer: React.FC = () => {
             }
           },
         },
-      });
-      window.__ytPlayer = playerRef.current;
+      };
+      if (activeTrack) {
+        playerConfig.videoId = activeTrack.podcastVideoId || activeTrack.id;
+      }
+      playerRef.current = new window.YT.Player(mountEl, playerConfig);
+      // Note: window.__ytPlayer is assigned inside onReady once the iframe bridge is ready
       // Immediately ensure generated iframe attributes enforce nocookie + strict-origin referrer policy
       const createdIframe = ytContainerRef.current?.querySelector('iframe');
       if (createdIframe) {
@@ -628,7 +692,22 @@ export const YouTubePlayer: React.FC = () => {
 
     if (lastTrackIdRef.current !== targetYtId || pendingSeek > 0) {
       lastTrackIdRef.current = targetYtId;
-      if (typeof playerRef.current.loadVideoById === 'function') {
+      const manualLoad = (window as any).__ytManualLoadAt as { videoId: string; ts: number } | undefined;
+      const alreadyLoadedSynchronously =
+        pendingSeek === 0 &&
+        manualLoad &&
+        manualLoad.videoId === targetYtId &&
+        Date.now() - manualLoad.ts < 800;
+
+      if (!alreadyLoadedSynchronously && typeof playerRef.current.loadVideoById === 'function') {
+        try {
+          if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
+            playerRef.current.unMute();
+          }
+          if (typeof playerRef.current.setVolume === 'function') {
+            playerRef.current.setVolume(volumeRef.current);
+          }
+        } catch {}
         playerRef.current.loadVideoById({
           videoId: targetYtId,
           startSeconds: pendingSeek,
@@ -640,6 +719,13 @@ export const YouTubePlayer: React.FC = () => {
   // Sync play/pause state
   useEffect(() => {
     if (shouldUseDirectDsp) {
+      if (dspLoadedInRenderRef.current) {
+        dspLoadedInRenderRef.current = false;
+        if (isPlaying) {
+          startAudioHardwareKeepAlive();
+        }
+        return;
+      }
       if (isPlaying) {
         audioDspEngine.play();
         startAudioHardwareKeepAlive();
@@ -648,10 +734,14 @@ export const YouTubePlayer: React.FC = () => {
       }
       return;
     }
+    dspLoadedInRenderRef.current = false;
     if (!playerRef.current) return;
     try {
       const state = playerRef.current.getPlayerState ? playerRef.current.getPlayerState() : -1;
       if (isPlaying && state !== window.YT?.PlayerState?.PLAYING && typeof playerRef.current.playVideo === 'function') {
+        if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
+          playerRef.current.unMute();
+        }
         playerRef.current.playVideo();
       } else if (!isPlaying && state === window.YT?.PlayerState?.PLAYING && typeof playerRef.current.pauseVideo === 'function') {
         playerRef.current.pauseVideo();
@@ -738,7 +828,7 @@ export const YouTubePlayer: React.FC = () => {
             ? videoLayout === 'theater'
               ? 'fixed inset-0 z-50 bg-black/95 backdrop-blur-xl flex flex-col justify-between p-3 sm:p-6 overflow-hidden animate-in fade-in duration-200'
               : 'fixed bottom-24 right-4 sm:right-6 z-40 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-neutral-700/80 ring-1 ring-white/10 group animate-in slide-in-from-bottom-4 duration-200'
-            : 'fixed bottom-4 right-4 w-10 h-10 overflow-hidden pointer-events-none opacity-0 z-0'
+            : 'fixed bottom-4 right-4 w-48 h-28 overflow-hidden pointer-events-none opacity-[0.001] z-0'
         }`}
       >
         {/* Theater View: Top Cinema Header */}

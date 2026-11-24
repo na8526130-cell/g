@@ -36,6 +36,7 @@ import {
   Sliders,
   RotateCcw,
   RotateCw,
+  Globe,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -176,12 +177,22 @@ export const PlayerBar: React.FC = () => {
           className="fixed bottom-[64px] left-1/2 -translate-x-1/2 w-[calc(100%-16px)] max-w-lg z-40 bg-[#231215]/95 backdrop-blur-xl border border-white/10 rounded-lg px-2.5 py-2 shadow-2xl flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] transition-transform overflow-hidden"
         >
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <SafeImage
-              src={currentTrack.thumbnail}
-              alt={currentTrack.title}
-              useBase64
-              className="w-10 h-10 rounded object-cover bg-neutral-800 shrink-0 shadow"
-            />
+            <div className="relative shrink-0">
+              <SafeImage
+                src={currentTrack.thumbnail}
+                alt={currentTrack.title}
+                useBase64
+                className="w-10 h-10 rounded object-cover bg-neutral-800 shadow"
+              />
+              {currentTrack.isSharedOffline && (
+                <span
+                  className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-600 border border-[#231215] flex items-center justify-center shadow"
+                  title="共有オフライン再生中"
+                >
+                  <Globe className="w-2.5 h-2.5 text-white" />
+                </span>
+              )}
+            </div>
             <div className="min-w-0 flex-1">
               <h4 className="text-[13px] font-bold text-white truncate leading-tight">
                 {currentTrack.title}
@@ -316,6 +327,14 @@ export const PlayerBar: React.FC = () => {
                   useBase64
                   className="w-11 h-11 md:w-12 md:h-12 rounded-md object-cover bg-neutral-800 shadow group-hover:opacity-90 transition-opacity"
                 />
+                {currentTrack.isSharedOffline && (
+                  <span
+                    className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-600 border border-[#0a0a0c] flex items-center justify-center shadow"
+                    title="共有オフライン再生中"
+                  >
+                    <Globe className="w-2.5 h-2.5 text-white" />
+                  </span>
+                )}
               </div>
 
               <div className="flex flex-col min-w-0 flex-1">
@@ -357,6 +376,15 @@ export const PlayerBar: React.FC = () => {
                         {currentTrack.album}
                       </button>
                     </>
+                  )}
+                  {currentTrack.isSharedOffline && (
+                    <span
+                      className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-[10px] font-bold text-emerald-300 shrink-0"
+                      title="共有オフライン音源"
+                    >
+                      <Globe className="w-2.5 h-2.5" />
+                      <span>共有</span>
+                    </span>
                   )}
                   {(audioQuality === 'hires' || audioQuality === 'lossless' || spatialAudio !== 'off' || vocalLevel < 100) && (
                     <button

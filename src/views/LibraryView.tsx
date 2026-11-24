@@ -50,6 +50,8 @@ import {
   Cloud,
   HardDrive,
   Shield,
+  ArrowDownToLine,
+  Database,
 } from 'lucide-react';
 import { api } from '../services/api';
 import { parseLocalAudioFile } from '../services/localTracks';
@@ -61,8 +63,13 @@ import {
   getStoredOfflineTrackRecord,
   deleteOfflineTrack,
   seedDemoOfflineTrack,
+  getOfflineStorageStats,
+  requestPersistentStorage,
+  clearAllCachedTrackAudios,
+  OfflineStorageStats,
   OFFLINE_TRACKS_CHANGED_EVENT,
   SHARED_OFFLINE_CHANGED_EVENT,
+  CACHED_YT_CHANGED_EVENT,
 } from '../services/offlineStorage';
 import {
   loadSharedOfflineTracks,
@@ -150,9 +157,25 @@ export const LibraryView: React.FC = () => {
     freemakeModalOpen,
     currentUser,
     isAdmin,
+    syncAccountNow,
+    isSyncingCloud,
+    setAccountModalOpen,
+    offlinePreferCache,
+    setOfflinePreferCache,
+    cachedOfflineIds,
+    cachedOfflineTracks,
+    downloadingOfflineIds,
+    offlineBatchStatus,
+    downloadTrackOffline,
+    removeTrackOfflineCache,
+    downloadCollectionOffline,
+    refreshOfflineCaches,
+    playAllOfflineSavedTracks,
   } = usePlayer();
 
   const isOnline = useOnlineStatus();
+  const [storageStats, setStorageStats] = useState<OfflineStorageStats | null>(null);
+  const [requestingPersist, setRequestingPersist] = useState(false);
 
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
@@ -260,15 +283,29 @@ export const LibraryView: React.FC = () => {
     }
   };
 
+  const refreshStorageStats = () => {
+    getOfflineStorageStats()
+      .then((st) => setStorageStats(st))
+      .catch(() => {});
+  };
+
   // Load persistently stored tracks from IndexedDB on mount and whenever updated
   useEffect(() => {
     refreshLocalTracks();
-    const onOfflineChange = () => refreshLocalTracks();
+    refreshStorageStats();
+    const onOfflineChange = () => {
+      refreshLocalTracks();
+      refreshStorageStats();
+    };
     window.addEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
+    window.addEventListener(CACHED_YT_CHANGED_EVENT, onOfflineChange);
+    window.addEventListener(SHARED_OFFLINE_CHANGED_EVENT, onOfflineChange);
     return () => {
       window.removeEventListener(OFFLINE_TRACKS_CHANGED_EVENT, onOfflineChange);
+      window.removeEventListener(CACHED_YT_CHANGED_EVENT, onOfflineChange);
+      window.removeEventListener(SHARED_OFFLINE_CHANGED_EVENT, onOfflineChange);
     };
-  }, [freemakeModalOpen]);
+  }, [freemakeModalOpen, activeTab]);
 
   // Load Download History & stay synced with new downloads across the app
   useEffect(() => {
@@ -1465,11 +1502,11 @@ export const LibraryView: React.FC = () => {
             </div>
 
             {likedTracks.length > 0 && (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5 flex-wrap">
                 <button
                   type="button"
                   onClick={() => playTrack(likedTracks[0], likedTracks)}
-                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/20"
+                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/20 cursor-pointer"
                 >
                   <Play className="w-4 h-4 fill-current ml-0.5" />
                   <span>すべて再生</span>
@@ -1480,11 +1517,43 @@ export const LibraryView: React.FC = () => {
                     const shuffled = [...likedTracks].sort(() => Math.random() - 0.5);
                     playTrack(shuffled[0], shuffled);
                   }}
-                  className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium rounded-xl flex items-center gap-1.5"
+                  className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium rounded-xl flex items-center gap-1.5 cursor-pointer"
                 >
                   <Shuffle className="w-4 h-4" />
                   <span>シャッフル</span>
                 </button>
+                {(() => {
+                  const cachedCount = likedTracks.filter((t) => cachedOfflineIds.has(t.id) || t.isLocal).length;
+                  const allCached = cachedCount === likedTracks.length;
+                  const isBatching = Boolean(offlineBatchStatus?.active);
+                  return (
+                    <button
+                      type="button"
+                      disabled={isBatching}
+                      onClick={() => downloadCollectionOffline(likedTracks, 'お気に入りの曲')}
+                      className={`px-4 py-2.5 text-xs font-bold rounded-xl border flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 ${
+                        allCached
+                          ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300'
+                          : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-700 text-emerald-300'
+                      }`}
+                    >
+                      {isBatching ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : allCached ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <ArrowDownToLine className="w-4 h-4" />
+                      )}
+                      <span>
+                        {isBatching
+                          ? `保存中 (${offlineBatchStatus?.done}/${offlineBatchStatus?.total})`
+                          : allCached
+                          ? `全曲オフラインOK (${cachedCount})`
+                          : `オフライン一括保存 (${cachedCount}/${likedTracks.length})`}
+                      </span>
+                    </button>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -1707,6 +1776,36 @@ export const LibraryView: React.FC = () => {
                         aria-label="キューの最後に追加"
                       >
                         <Plus className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (downloadingOfflineIds.has(track.id) || track.isLocal) return;
+                          if (cachedOfflineIds.has(track.id) || track.isCachedOffline) {
+                            removeTrackOfflineCache(track.id);
+                          } else {
+                            downloadTrackOffline(track);
+                          }
+                        }}
+                        className={`p-1.5 cursor-pointer transition-colors ${
+                          cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                            ? 'text-emerald-400 hover:text-emerald-300'
+                            : 'text-neutral-400 hover:text-emerald-300'
+                        }`}
+                        title={
+                          cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                            ? 'オフライン保存済み（クリックで削除）'
+                            : '1タップでオフライン保存'
+                        }
+                        aria-label="オフライン保存"
+                      >
+                        {downloadingOfflineIds.has(track.id) ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                        ) : cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <ArrowDownToLine className="w-4 h-4" />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -2510,23 +2609,48 @@ export const LibraryView: React.FC = () => {
                     <span>共有</span>
                   </button>
                   {currentSelectedPlaylist.tracks.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        playTrack(
-                          currentSelectedPlaylist.tracks[0],
-                          currentSelectedPlaylist.tracks,
-                          {
-                            source: 'プレイリストから再生中',
-                            subtitle: currentSelectedPlaylist.name,
-                          }
-                        )
-                      }
-                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>再生</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        disabled={Boolean(offlineBatchStatus?.active)}
+                        onClick={() =>
+                          downloadCollectionOffline(
+                            currentSelectedPlaylist.tracks,
+                            currentSelectedPlaylist.name
+                          )
+                        }
+                        className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                        title="このプレイリストの曲をオフライン再生用に一括キャッシュ"
+                      >
+                        {offlineBatchStatus?.active ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ArrowDownToLine className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {offlineBatchStatus?.active
+                            ? `保存中 ${offlineBatchStatus.done}/${offlineBatchStatus.total}`
+                            : `オフライン保存 (${currentSelectedPlaylist.tracks.filter((t) => cachedOfflineIds.has(t.id) || t.isLocal).length}/${currentSelectedPlaylist.tracks.length})`}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          playTrack(
+                            currentSelectedPlaylist.tracks[0],
+                            currentSelectedPlaylist.tracks,
+                            {
+                              source: 'プレイリストから再生中',
+                              subtitle: currentSelectedPlaylist.name,
+                            }
+                          )
+                        }
+                        className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>再生</span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -2766,6 +2890,36 @@ export const LibraryView: React.FC = () => {
                           </button>
                           <button
                             type="button"
+                            onClick={() => {
+                              if (downloadingOfflineIds.has(track.id) || track.isLocal) return;
+                              if (cachedOfflineIds.has(track.id) || track.isCachedOffline) {
+                                removeTrackOfflineCache(track.id);
+                              } else {
+                                downloadTrackOffline(track);
+                              }
+                            }}
+                            className={`p-1.5 transition-colors cursor-pointer ${
+                              cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                ? 'text-emerald-400 hover:text-emerald-300'
+                                : 'text-neutral-400 hover:text-emerald-300'
+                            }`}
+                            title={
+                              cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal
+                                ? 'オフライン保存済み'
+                                : '1タップでオフライン保存'
+                            }
+                            aria-label="オフライン保存"
+                          >
+                            {downloadingOfflineIds.has(track.id) ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                            ) : cachedOfflineIds.has(track.id) || track.isCachedOffline || track.isLocal ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              <ArrowDownToLine className="w-4 h-4" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => openFreemakeModal(track)}
                             className="p-1.5 text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
                             title="ダウンロード・保存"
@@ -2986,6 +3140,34 @@ export const LibraryView: React.FC = () => {
                 <span>{isProcessingFiles ? '保存中...' : 'ファイルを追加'}</span>
               </button>
 
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!currentUser || currentUser.username === 'admin') {
+                    setAccountModalOpen(true);
+                    return;
+                  }
+                  const ok = await syncAccountNow();
+                  showToast(
+                    ok
+                      ? 'アカウントのプレイリスト・履歴をクラウド同期しました（音声ファイル共有は下の「共有に公開」を利用してください）'
+                      : 'クラウド同期に失敗しました',
+                    ok ? 'success' : 'warning',
+                    2600
+                  );
+                }}
+                disabled={isSyncingCloud}
+                className="px-3.5 py-2.5 bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border border-emerald-500/40 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                title="ライブラリ・設定のクラウド同期（音声ファイルの複数端末配信は「共有に公開」を使用）"
+              >
+                {isSyncingCloud ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                ) : (
+                  <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+                )}
+                <span>{currentUser ? 'クラウド同期' : 'アカウント同期'}</span>
+              </button>
+
               {localTracks.length > 0 && (
                 <button
                   type="button"
@@ -2993,9 +3175,137 @@ export const LibraryView: React.FC = () => {
                   className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 cursor-pointer"
                 >
                   <Play className="w-4 h-4 fill-current" />
-                  <span>すべて再生</span>
+                  <span>ローカル再生</span>
                 </button>
               )}
+
+              {(localTracks.length > 0 || cachedOfflineTracks.length > 0 || sharedTracks.length > 0) && (
+                <button
+                  type="button"
+                  onClick={() => playAllOfflineSavedTracks(true)}
+                  className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-red-600/20 cursor-pointer"
+                >
+                  <Shuffle className="w-4 h-4" />
+                  <span>全オフライン曲シャッフル</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Offline Storage Quota & Cache Control Panel */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-cyan-950/80 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                    <span>オフラインストレージ管理</span>
+                    {storageStats?.persisted && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 text-[10px] font-bold">
+                        永続保護 ON
+                      </span>
+                    )}
+                  </h3>
+                  <p className="text-xs text-neutral-400 mt-0.5 tabular-nums">
+                    オフライン音声使用量:{' '}
+                    <span className="text-white font-semibold">
+                      {formatFileSizeLabel(storageStats?.totalOfflineBytes || 0)}
+                    </span>
+                    {storageStats?.quotaTotalBytes
+                      ? ` （ブラウザ割当上限 ${formatFileSizeLabel(storageStats.quotaTotalBytes)}）`
+                      : ''}
+                    {' '}• ローカル {localTracks.length}曲 / 保存済配信曲 {cachedOfflineTracks.length}曲
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {!storageStats?.persisted && (
+                  <button
+                    type="button"
+                    disabled={requestingPersist}
+                    onClick={async () => {
+                      setRequestingPersist(true);
+                      const ok = await requestPersistentStorage();
+                      refreshStorageStats();
+                      setRequestingPersist(false);
+                      showToast(
+                        ok
+                          ? '永続ストレージを有効化しました（ブラウザによる自動キャッシュ消去を防止）'
+                          : 'このブラウザでは永続ストレージの自動承認が制限されています',
+                        ok ? 'success' : 'info',
+                        3200
+                      );
+                    }}
+                    className="px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>{requestingPersist ? '確認中...' : '永続保護を有効化'}</span>
+                  </button>
+                )}
+
+                {likedTracks.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={Boolean(offlineBatchStatus?.active)}
+                    onClick={() => downloadCollectionOffline(likedTracks, 'お気に入り曲')}
+                    className="px-3 py-2 rounded-xl bg-cyan-600/20 hover:bg-cyan-600/35 border border-cyan-500/40 text-cyan-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                  >
+                    {offlineBatchStatus?.active ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ArrowDownToLine className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {offlineBatchStatus?.active
+                        ? `保存中 (${offlineBatchStatus.done}/${offlineBatchStatus.total})`
+                        : `お気に入り曲を一括保存 (${likedTracks.length})`}
+                    </span>
+                  </button>
+                )}
+
+                {cachedOfflineTracks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await clearAllCachedTrackAudios();
+                      await refreshOfflineCaches();
+                      refreshStorageStats();
+                      showToast('キャッシュ済み配信曲をすべて削除しました', 'info', 2500);
+                    }}
+                    className="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-red-950/60 border border-neutral-700 hover:border-red-500/40 text-neutral-300 hover:text-red-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>配信キャッシュ全削除</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-neutral-800/80">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-white">保存済みトラックをキャッシュから優先再生</p>
+                <p className="text-[11px] text-neutral-400">
+                  オフライン保存済みの配信曲は、オンライン時でも通信を行わず端末内音源から即座に再生します
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={offlinePreferCache}
+                onClick={() => setOfflinePreferCache(!offlinePreferCache)}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 cursor-pointer ${
+                  offlinePreferCache ? 'bg-cyan-500' : 'bg-neutral-700'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                    offlinePreferCache ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
             </div>
           </div>
 
@@ -3039,13 +3349,113 @@ export const LibraryView: React.FC = () => {
             </div>
           </div>
 
+          {/* Cached Streaming / YouTube Tracks List */}
+          {cachedOfflineTracks.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between px-1">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>オフライン保存済みの配信トラック ({cachedOfflineTracks.length})</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    playTrack(cachedOfflineTracks[0], cachedOfflineTracks, {
+                      source: 'オフライン保存済み配信曲',
+                      subtitle: `${cachedOfflineTracks.length}曲`,
+                    })
+                  }
+                  className="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>連続再生</span>
+                </button>
+              </div>
+
+              <div className="bg-neutral-900/40 border border-neutral-800/80 rounded-2xl overflow-hidden divide-y divide-neutral-800/60 shadow-xl">
+                {cachedOfflineTracks
+                  .filter((t) => matchesQuery(t.title) || matchesQuery(t.artist))
+                  .map((track) => {
+                    const isCurrent = currentTrack?.id === track.id;
+                    return (
+                      <div
+                        key={track.id}
+                        className={`flex items-center gap-3 px-4 py-3 hover:bg-neutral-800/50 group transition-colors ${
+                          isCurrent ? 'bg-emerald-950/20' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => playTrack(track, cachedOfflineTracks)}
+                          className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-400 hover:text-emerald-400 hover:bg-neutral-700 transition-colors shrink-0 cursor-pointer"
+                        >
+                          <Play className="w-4 h-4 fill-current ml-0.5" />
+                        </button>
+
+                        <SafeImage
+                          src={track.thumbnail}
+                          alt={track.title}
+                          useBase64
+                          className="w-10 h-10 rounded-lg object-cover bg-neutral-800 shrink-0"
+                        />
+
+                        <div className="flex-1 min-w-0">
+                          <p
+                            onClick={() => playTrack(track, cachedOfflineTracks)}
+                            className={`text-sm font-semibold truncate cursor-pointer hover:underline ${
+                              isCurrent ? 'text-emerald-400 font-bold' : 'text-white'
+                            }`}
+                          >
+                            {track.title}
+                          </p>
+                          <p className="text-xs text-neutral-400 truncate">
+                            {track.artist}
+                            {track.fileSize ? ` • ${formatFileSizeLabel(track.fileSize)}` : ''}
+                          </p>
+                        </div>
+
+                        <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold shrink-0">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>キャッシュ済</span>
+                        </span>
+
+                        <span className="text-xs font-mono text-neutral-400 shrink-0">
+                          {track.duration}
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={() => playNext(track)}
+                          title="次に再生"
+                          aria-label="次に再生"
+                          className="p-2 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <ListStart className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => removeTrackOfflineCache(track.id)}
+                          title="オフラインキャッシュから削除"
+                          aria-label="オフラインキャッシュから削除"
+                          className="p-2 text-neutral-500 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
           {/* Local Tracks List */}
           {localTracks.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Music className="w-4 h-4 text-cyan-400" />
-                  <span>保存済みのオフライン曲 ({localTracks.length})</span>
+                  <span>保存済みのローカルファイル ({localTracks.length})</span>
                 </h3>
               </div>
 
@@ -3070,9 +3480,12 @@ export const LibraryView: React.FC = () => {
                           <Play className="w-4 h-4 fill-current ml-0.5" />
                         </button>
 
-                        <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-500/20 flex items-center justify-center text-cyan-400 shrink-0">
-                          <FileAudio className="w-5 h-5" />
-                        </div>
+                        <SafeImage
+                          src={track.thumbnail}
+                          alt={track.title}
+                          useBase64
+                          className="w-10 h-10 rounded-lg object-cover bg-cyan-950/80 border border-cyan-500/20 shrink-0 shadow"
+                        />
 
                         <div className="flex-1 min-w-0">
                           <p
@@ -3252,7 +3665,20 @@ export const LibraryView: React.FC = () => {
               {sharedTracks.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => playTrack(sharedTracks[0], sharedTracks)}
+                  onClick={() => {
+                    const playable = isOnline
+                      ? sharedTracks
+                      : sharedTracks.filter((t) => t.isCachedOffline);
+                    if (playable.length === 0) {
+                      showToast(
+                        'オフライン再生可能な共有曲がまだキャッシュされていません（オンライン時に「オフライン同期」を押してください）',
+                        'warning',
+                        3600
+                      );
+                      return;
+                    }
+                    playTrack(playable[0], playable);
+                  }}
                   className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 cursor-pointer"
                 >
                   <Play className="w-4 h-4 fill-current" />
@@ -3501,20 +3927,58 @@ export const LibraryView: React.FC = () => {
                     >
                       <button
                         type="button"
-                        disabled={!canPlayNow}
-                        onClick={() => playTrack(track, sharedTracks)}
-                        className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-300 hover:text-emerald-400 hover:bg-neutral-700 disabled:opacity-40 transition-colors shrink-0 cursor-pointer"
+                        onClick={() => {
+                          if (!canPlayNow) {
+                            showToast(
+                              'この曲はまだ端末にキャッシュされていないためオフライン再生できません',
+                              'warning',
+                              3200
+                            );
+                            return;
+                          }
+                          const queueList = isOnline
+                            ? sharedTracks
+                            : sharedTracks.filter((t) => t.isCachedOffline || t.id === track.id);
+                          playTrack(track, queueList);
+                        }}
+                        className={`w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-300 hover:text-emerald-400 hover:bg-neutral-700 transition-colors shrink-0 cursor-pointer ${
+                          !canPlayNow ? 'opacity-45' : ''
+                        }`}
                       >
                         <Play className="w-4 h-4 fill-current ml-0.5" />
                       </button>
 
-                      <div className="w-10 h-10 rounded-lg bg-emerald-950/80 border border-emerald-500/25 flex items-center justify-center text-emerald-400 shrink-0">
-                        <FileAudio className="w-5 h-5" />
+                      <div className="relative shrink-0">
+                        <SafeImage
+                          src={track.thumbnail}
+                          alt={track.title}
+                          useBase64
+                          className="w-10 h-10 rounded-lg object-cover bg-emerald-950/80 border border-emerald-500/25 shadow"
+                        />
+                        <span
+                          className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-600 border border-neutral-900 flex items-center justify-center shadow"
+                          title="共有オフライン"
+                        >
+                          <Globe className="w-2.5 h-2.5 text-white" />
+                        </span>
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <p
-                          onClick={() => canPlayNow && playTrack(track, sharedTracks)}
+                          onClick={() => {
+                            if (!canPlayNow) {
+                              showToast(
+                                'この曲はまだ端末にキャッシュされていないためオフライン再生できません',
+                                'warning',
+                                3200
+                              );
+                              return;
+                            }
+                            const queueList = isOnline
+                              ? sharedTracks
+                              : sharedTracks.filter((t) => t.isCachedOffline || t.id === track.id);
+                            playTrack(track, queueList);
+                          }}
                           className={`text-sm font-semibold truncate cursor-pointer hover:underline ${
                             isCurrent ? 'text-emerald-400 font-bold' : 'text-white'
                           }`}
@@ -3798,7 +4262,10 @@ export const LibraryView: React.FC = () => {
                         album: item.album || '共有オフライン',
                         duration: item.duration || '3:00',
                         durationSeconds: item.durationSeconds || 180,
-                        thumbnail: item.thumbnail || '',
+                        thumbnail:
+                          item.thumbnail ||
+                          cached?.thumbnail ||
+                          `/api/shared-offline/cover/${encodeURIComponent(item.sharedTrackId)}`,
                         isLocal: true,
                         isSharedOffline: true,
                         audioUrl: cached?.blob

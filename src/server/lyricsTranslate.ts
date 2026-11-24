@@ -90,38 +90,56 @@ Instructions:
 Lyrics lines:
 ${numberedInput}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              items: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    index: { type: Type.INTEGER },
-                    translation: { type: Type.STRING },
-                    pronunciation: { type: Type.STRING },
+      const modelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      let responseText = '';
+      let lastErr: any = null;
+
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: prompt,
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  items: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        index: { type: Type.INTEGER },
+                        translation: { type: Type.STRING },
+                        pronunciation: { type: Type.STRING },
+                      },
+                      required: ['index', 'translation', 'pronunciation'],
+                    },
                   },
-                  required: ['index', 'translation', 'pronunciation'],
                 },
+                required: ['items'],
               },
             },
-            required: ['items'],
-          },
-        },
-      });
+          });
+          responseText = (response.text || '').trim();
+          if (responseText) break;
+        } catch (err: any) {
+          lastErr = err;
+          const msg = String(err?.message || '');
+          const isTransient = /503|UNAVAILABLE|429|high demand|overloaded/i.test(msg);
+          if (!isTransient) break;
+          await new Promise((r) => setTimeout(r, 900));
+        }
+      }
 
-      const text = (response.text || '').trim();
-      if (!text) {
+      if (!responseText && lastErr) {
+        throw lastErr;
+      }
+      if (!responseText) {
         return res.status(502).json({ error: '翻訳AIからの応答が空でした' });
       }
 
-      const parsed = JSON.parse(text) as {
+      const parsed = JSON.parse(responseText) as {
         items?: Array<{ index?: number; translation?: string; pronunciation?: string }>;
       };
       const items = Array.isArray(parsed?.items) ? parsed.items : [];
@@ -155,9 +173,25 @@ ${numberedInput}`;
       kvCache.set(cacheKey, payload, 7 * 24 * 3600);
       return res.json(payload);
     } catch (err: any) {
-      console.error('[LyricsTranslate] Gemini error:', err?.message || err);
+      const rawMsg = String(err?.message || '');
+      console.error('[LyricsTranslate] Gemini error:', rawMsg || err);
+      if (/503|UNAVAILABLE|high demand/i.test(rawMsg)) {
+        return res.status(503).json({
+          error: '現在AI翻訳サーバーが混み合っています。少し待ってから再試行してください。',
+        });
+      }
+      if (/429|RESOURCE_EXHAUSTED/i.test(rawMsg)) {
+        return res.status(429).json({
+          error: 'AI翻訳のリクエスト上限に達しました。しばらくしてから再試行してください。',
+        });
+      }
+      if (/403|400|API_KEY_INVALID|PERMISSION_DENIED/i.test(rawMsg)) {
+        return res.status(502).json({
+          error: 'GEMINI_API_KEY の権限または設定を確認してください。',
+        });
+      }
       return res.status(502).json({
-        error: err?.message || '歌詞の翻訳・発音ガイド生成中にエラーが発生しました',
+        error: '歌詞の翻訳・発音ガイド生成中にエラーが発生しました',
       });
     }
   });

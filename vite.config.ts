@@ -54,10 +54,35 @@ export default defineConfig(() => {
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
+              urlPattern: /^https?:\/\/[^/]+\/api\/music\/audio-stream\/.*/i,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^https?:\/\/[^/]+\/api\/podcasts\/proxy-audio.*/i,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com|i\.scdn\.co)\/.*/i,
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'artwork-images-cache',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+                expiration: {
+                  maxEntries: 250,
+                  maxAgeSeconds: 30 * 24 * 60 * 60, // 30 days
+                },
+              },
+            },
+            {
               urlPattern: /^https:\/\/images\.unsplash\.com\/.*/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'unsplash-images',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
                 expiration: {
                   maxEntries: 60,
                   maxAgeSeconds: 30 * 24 * 60 * 60, // 30 days
@@ -65,11 +90,25 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^\/api\/shared-offline\/file\/[^?#]+\?(?:.*&)?(?:download|dl)=1(?:&|$)/i,
+              urlPattern: /^https?:\/\/[^/]+\/api\/shared-offline\/cover\/[^?#]+$/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'shared-offline-covers-v1',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 24 * 60 * 60, // 60 days
+                },
+              },
+            },
+            {
+              urlPattern: /^https?:\/\/[^/]+\/api\/shared-offline\/file\/[^?#]+\?(?:.*&)?(?:download|dl)=1(?:&|$)/i,
               handler: 'NetworkOnly',
             },
             {
-              urlPattern: /^\/api\/shared-offline\/file\/[^?#]+$/i,
+              urlPattern: /^https?:\/\/[^/]+\/api\/shared-offline\/file\/[^?#]+$/i,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'shared-offline-audio-v2',
@@ -83,7 +122,7 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^\/api\/shared-offline$/i,
+              urlPattern: /^https?:\/\/[^/]+\/api\/shared-offline$/i,
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'shared-offline-catalog-cache',
@@ -97,13 +136,16 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /^\/api\/music\/.*/i,
+              urlPattern: /^https?:\/\/[^/]+\/api\/music\/.*/i,
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'api-music-cache',
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
                 expiration: {
-                  maxEntries: 100,
-                  maxAgeSeconds: 24 * 60 * 60,
+                  maxEntries: 150,
+                  maxAgeSeconds: 7 * 24 * 60 * 60,
                 },
               },
             },

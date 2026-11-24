@@ -45,3 +45,146 @@
   animation-fill-mode: forwards;
   will-change: transform;
 }
+
+@keyframes zmSplashHalo {
+  0% {
+    opacity: 0;
+    transform: scale(0.76);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+}
+
+@keyframes zmSplashRing {
+  0% {
+    opacity: 0;
+    transform: scale(0.84);
+  }
+  20% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.58);
+  }
+}
+
+@keyframes zmSplashBadge {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes zmSplashWave {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes zmSplashWordmark {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes zmSplashProgress {
+  0% {
+    transform: scaleX(0.06);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+.zm-splash-halo {
+  animation: zmSplashHalo 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.zm-splash-ring {
+  animation: zmSplashRing 1.3s cubic-bezier(0.16, 1, 0.3, 1) 0.1s forwards;
+  will-change: transform, opacity;
+}
+
+.zm-splash-badge {
+  animation: zmSplashBadge 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.zm-splash-wave-1 {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: zmSplashWave 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.12s forwards;
+}
+
+.zm-splash-wave-2 {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: zmSplashWave 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.22s forwards;
+}
+
+.zm-splash-wave-3 {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: zmSplashWave 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.32s forwards;
+}
+
+.zm-splash-wordmark {
+  opacity: 0;
+  animation: zmSplashWordmark 0.52s cubic-bezier(0.22, 1, 0.36, 1) 0.24s forwards;
+  will-change: transform, opacity;
+}
+
+.zm-splash-subtitle {
+  opacity: 0;
+  animation: zmSplashWordmark 0.52s cubic-bezier(0.22, 1, 0.36, 1) 0.36s forwards;
+  will-change: transform, opacity;
+}
+
+.zm-splash-progress {
+  transform-origin: left center;
+  animation: zmSplashProgress 1.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zm-splash-halo,
+  .zm-splash-ring,
+  .zm-splash-badge,
+  .zm-splash-wave-1,
+  .zm-splash-wave-2,
+  .zm-splash-wave-3,
+  .zm-splash-wordmark,
+  .zm-splash-subtitle,
+  .zm-splash-progress {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+}
+

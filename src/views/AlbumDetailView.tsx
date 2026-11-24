@@ -17,6 +17,8 @@ import {
   ListStart,
   Info,
   Download,
+  ArrowDownToLine,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const AlbumDetailView: React.FC = () => {
@@ -42,6 +44,12 @@ export const AlbumDetailView: React.FC = () => {
     openFreemakeModal,
     isTrackBlocked,
     showToast,
+    cachedOfflineIds,
+    downloadingOfflineIds,
+    offlineBatchStatus,
+    downloadTrackOffline,
+    removeTrackOfflineCache,
+    downloadCollectionOffline,
   } = usePlayer();
 
   const [header, setHeader] = useState<Album | null>(null);
@@ -241,6 +249,40 @@ export const AlbumDetailView: React.FC = () => {
                 <ListPlus className="w-5 h-5" />
               </button>
             )}
+
+            {tracks.length > 0 && (() => {
+              const cachedCount = tracks.filter((t) => cachedOfflineIds.has(t.id) || t.isLocal).length;
+              const allCached = cachedCount === tracks.length;
+              const isBatching = Boolean(offlineBatchStatus?.active);
+              return (
+                <button
+                  type="button"
+                  disabled={isBatching}
+                  onClick={() => downloadCollectionOffline(tracks, header.title)}
+                  className={`min-h-[40px] px-3.5 py-2 rounded-full text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-60 ${
+                    allCached
+                      ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30'
+                      : 'bg-white/10 hover:bg-white/20 border-white/15 text-white'
+                  }`}
+                  title="この一覧の楽曲を一括オフライン保存"
+                >
+                  {isBatching ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  ) : allCached ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <ArrowDownToLine className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isBatching
+                      ? `保存中 (${offlineBatchStatus?.done}/${offlineBatchStatus?.total})`
+                      : allCached
+                      ? `オフライン保存済 (${cachedCount})`
+                      : `オフライン保存 (${cachedCount}/${tracks.length})`}
+                  </span>
+                </button>
+              );
+            })()}
           </div>
 
           {tracks.length > 0 && (
@@ -389,11 +431,39 @@ export const AlbumDetailView: React.FC = () => {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (downloadingOfflineIds.has(track.id)) return;
+                    if (cachedOfflineIds.has(track.id)) {
+                      removeTrackOfflineCache(track.id);
+                    } else {
+                      downloadTrackOffline(track);
+                    }
+                  }}
+                  className={`min-w-[36px] min-h-[36px] flex items-center justify-center transition-colors cursor-pointer ${
+                    cachedOfflineIds.has(track.id)
+                      ? 'text-emerald-400 hover:text-emerald-300'
+                      : 'text-neutral-400 hover:text-emerald-300'
+                  }`}
+                  title={cachedOfflineIds.has(track.id) ? 'オフライン保存済み（クリックで削除）' : '1タップでオフライン保存'}
+                  aria-label="オフライン保存"
+                >
+                  {downloadingOfflineIds.has(track.id) ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  ) : cachedOfflineIds.has(track.id) ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <ArrowDownToLine className="w-4 h-4" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
                     openFreemakeModal(track);
                   }}
                   className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-sky-400 transition-colors cursor-pointer"
-                  title="ダウンロード・保存"
-                  aria-label="ダウンロード・保存"
+                  title="Freemakeダウンロード・形式変換"
+                  aria-label="Freemakeダウンロード・形式変換"
                 >
                   <Download className="w-4 h-4" />
                 </button>

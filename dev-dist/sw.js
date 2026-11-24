@@ -67,7 +67,7 @@ if (!self.define) {
     });
   };
 }
-define(['./workbox-87b062f7'], (function (workbox) { 'use strict';
+define(['./workbox-457ed063'], (function (workbox) { 'use strict';
 
   self.skipWaiting();
   workbox.clientsClaim();
@@ -78,16 +78,29 @@ define(['./workbox-87b062f7'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "/index.html",
-    "revision": "0.gmq85c2nf4g"
+    "revision": "0.rcouokmsfk"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("/index.html"), {
     allowlist: [/^\/$/],
     denylist: [/^\/api\//]
   }));
+  workbox.registerRoute(/^\/api\/music\/audio-stream\/.*/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^\/api\/podcasts\/proxy-audio.*/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com|i\.scdn\.co)\/.*/i, new workbox.StaleWhileRevalidate({
+    "cacheName": "artwork-images-cache",
+    plugins: [new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    }), new workbox.ExpirationPlugin({
+      maxEntries: 250,
+      maxAgeSeconds: 2592000
+    })]
+  }), 'GET');
   workbox.registerRoute(/^https:\/\/images\.unsplash\.com\/.*/i, new workbox.CacheFirst({
     "cacheName": "unsplash-images",
-    plugins: [new workbox.ExpirationPlugin({
+    plugins: [new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    }), new workbox.ExpirationPlugin({
       maxEntries: 60,
       maxAgeSeconds: 2592000
     })]
@@ -113,9 +126,11 @@ define(['./workbox-87b062f7'], (function (workbox) { 'use strict';
   }), 'GET');
   workbox.registerRoute(/^\/api\/music\/.*/i, new workbox.NetworkFirst({
     "cacheName": "api-music-cache",
-    plugins: [new workbox.ExpirationPlugin({
-      maxEntries: 100,
-      maxAgeSeconds: 86400
+    plugins: [new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    }), new workbox.ExpirationPlugin({
+      maxEntries: 150,
+      maxAgeSeconds: 604800
     })]
   }), 'GET');
 

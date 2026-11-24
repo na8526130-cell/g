@@ -1,13 +1,33 @@
-import { Track } from '../types/music';
+import { AudioQualityMode, Track } from '../types/music';
+import { toBase64Image } from '../utils/imageBase64';
 
 const DB_NAME = 'ZeroMusicOfflineDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_TRACKS = 'offline_tracks';
 const STORE_META = 'cached_meta';
 const STORE_SHARED = 'shared_offline_tracks';
+const STORE_CACHED_YT = 'cached_yt_audio';
 
 export const OFFLINE_TRACKS_CHANGED_EVENT = 'zero-offline-tracks-changed';
 export const SHARED_OFFLINE_CHANGED_EVENT = 'zero-shared-offline-changed';
+export const CACHED_YT_CHANGED_EVENT = 'zero-cached-yt-changed';
+
+export interface StoredCachedYtAudio {
+  id: string;
+  title: string;
+  artist: string;
+  artistId?: string;
+  album: string;
+  albumId?: string;
+  duration: string;
+  durationSeconds: number;
+  thumbnail: string;
+  blob: Blob;
+  fileType: string;
+  fileSize: number;
+  quality: AudioQualityMode;
+  cachedAt: number;
+}
 
 export interface StoredOfflineTrack {
   id: string;
@@ -40,12 +60,22 @@ export interface StoredSharedOfflineTrack {
   cachedAt: number;
 }
 
-const DEFAULT_OFFLINE_THUMB =
-  'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&h=400&fit=crop&crop=faces';
+export const DEFAULT_OFFLINE_ICON_THUMB = '/pwa-512x512.png';
 
-// Active blob URLs and Blob references cache to prevent memory leaks and enable synchronous offline downloads
+const LEGACY_PLACEHOLDER_THUMB_RE =
+  /https:\/\/images\.unsplash\.com\/(?:photo-1470225620780-dba8ba36b745|photo-1511671782779-c97d3d27a1d4)/i;
+
+export function isLegacyPlaceholderThumbnail(url?: string): boolean {
+  if (!url) return true;
+  const trimmed = url.trim();
+  if (!trimmed) return true;
+  return LEGACY_PLACEHOLDER_THUMB_RE.test(trimmed);
+}
+
+// Active blob URLs, Blob references, and in-memory offline thumbnail data URLs
 const activeBlobUrls = new Map<string, string>();
 const activeBlobs = new Map<string, Blob>();
+const activeSharedThumbs = new Map<string, string>();
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -61,12 +91,139 @@ export function notifySharedOfflineChanged() {
   }
 }
 
+export function notifyCachedYtChanged() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(CACHED_YT_CHANGED_EVENT));
+  }
+}
+
 export function getActiveOfflineBlobUrl(id: string): string | undefined {
   return activeBlobUrls.get(id);
 }
 
 export function getActiveOfflineBlob(id: string): Blob | undefined {
   return activeBlobs.get(id);
+}
+
+export function getActiveSharedThumb(id: string): string | undefined {
+  return activeSharedThumbs.get(id);
+}
+
+export function buildSharedCoverUrl(id: string): string {
+  return `/api/shared-offline/cover/${encodeURIComponent(id)}`;
+}
+
+const AUDIO_EXT_MIME_MAP: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  mpga: 'audio/mpeg',
+  mpeg: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  m4b: 'audio/mp4',
+  m4r: 'audio/mp4',
+  aac: 'audio/aac',
+  wav: 'audio/wav',
+  flac: 'audio/flac',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/opus',
+  webm: 'audio/webm',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  mkv: 'video/x-matroska',
+  aif: 'audio/aiff',
+  aiff: 'audio/aiff',
+  wma: 'audio/x-ms-wma',
+  caf: 'audio/x-caf',
+  amr: 'audio/amr',
+};
+
+export function inferAudioMimeType(fileType?: string, fileName?: string): string {
+  const cleanType = (fileType || '').split(';')[0].trim().toLowerCase();
+  if (
+    cleanType &&
+    cleanType !== 'application/octet-stream' &&
+    (cleanType.startsWith('audio/') || cleanType.startsWith('video/'))
+  ) {
+    return cleanType;
+  }
+  const ext = (fileName?.split('.').pop() || '').replace(/^\./, '').toLowerCase();
+  if (ext && AUDIO_EXT_MIME_MAP[ext]) {
+    return AUDIO_EXT_MIME_MAP[ext];
+  }
+  return 'audio/mpeg';
+}
+
+export function normalizeAudioBlob(blob: Blob, fileType?: string, fileName?: string): Blob {
+  const targetMime = inferAudioMimeType(fileType || blob.type, fileName);
+  if (blob instanceof File || !blob.type || blob.type === 'application/octet-stream') {
+    return blob.slice(0, blob.size, targetMime);
+  }
+  return blob;
+}
+
+export async function recoverSharedBlobFromSwCache(id: string): Promise<Blob | null> {
+  if (typeof window === 'undefined' || !('caches' in window)) return null;
+  try {
+    const url = `/api/shared-offline/file/${encodeURIComponent(id)}`;
+    const matched = await window.caches.match(url);
+    if (!matched || !matched.ok || matched.status === 206) return null;
+    const headerType = matched.headers.get('content-type') || '';
+    if (headerType.includes('text/html') || headerType.includes('application/json')) {
+      return null;
+    }
+    const blob = await matched.blob();
+    if (!blob || blob.size < 32 || blob.type.includes('text/html')) return null;
+    return normalizeAudioBlob(blob, headerType || blob.type);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveInlineCoverDataUrl(candidateUrl?: string, fallbackApiUrl?: string): Promise<string> {
+  const candidates = [candidateUrl, fallbackApiUrl].filter(
+    (u): u is string => Boolean(u && u.trim() && !isLegacyPlaceholderThumbnail(u))
+  );
+  for (const cand of candidates) {
+    if (cand.startsWith('data:image/')) {
+      return cand;
+    }
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      try {
+        const b64 = await toBase64Image(cand);
+        if (b64 && b64.startsWith('data:image/')) {
+          return b64;
+        }
+      } catch {}
+    }
+  }
+  const bestNonPlaceholder = candidates.find((c) => !c.startsWith('blob:'));
+  return bestNonPlaceholder || DEFAULT_OFFLINE_ICON_THUMB;
+}
+
+export function resolveSharedTrackDisplayThumbnail(
+  id: string,
+  ...candidates: Array<string | undefined | null>
+): string {
+  const mem = activeSharedThumbs.get(id);
+  if (mem && !isLegacyPlaceholderThumbnail(mem)) {
+    if (mem.startsWith('data:image/') || typeof navigator === 'undefined' || navigator.onLine) {
+      return mem;
+    }
+  }
+  for (const raw of candidates) {
+    const c = typeof raw === 'string' ? raw.trim() : '';
+    if (!c || isLegacyPlaceholderThumbnail(c)) continue;
+    if (c.startsWith('data:image/') || c.startsWith('/')) {
+      return c;
+    }
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      return c;
+    }
+  }
+  return typeof navigator === 'undefined' || navigator.onLine
+    ? buildSharedCoverUrl(id)
+    : DEFAULT_OFFLINE_ICON_THUMB;
 }
 
 export function openOfflineDB(): Promise<IDBDatabase> {
@@ -100,6 +257,9 @@ export function openOfflineDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_SHARED)) {
         db.createObjectStore(STORE_SHARED, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_CACHED_YT)) {
+        db.createObjectStore(STORE_CACHED_YT, { keyPath: 'id' });
       }
     };
 
@@ -163,6 +323,11 @@ export async function saveOfflineTrack(
   };
   const fileType = file.type || extMimeMap[fileExt.toLowerCase()] || 'audio/mpeg';
 
+  const resolvedThumb =
+    thumbnail && !isLegacyPlaceholderThumbnail(thumbnail)
+      ? thumbnail
+      : DEFAULT_OFFLINE_ICON_THUMB;
+
   const stored: StoredOfflineTrack = {
     id,
     title,
@@ -170,7 +335,7 @@ export async function saveOfflineTrack(
     album,
     duration: durationText,
     durationSeconds,
-    thumbnail: thumbnail || DEFAULT_OFFLINE_THUMB,
+    thumbnail: resolvedThumb,
     blob: file,
     fileName: file instanceof File ? file.name : `${title}.${fileExt}`,
     fileType,
@@ -298,11 +463,13 @@ export async function saveSharedOfflineBlob(
   if (!db.objectStoreNames.contains(STORE_SHARED)) {
     throw new Error('Shared offline store not initialized');
   }
-  // Normalize File -> plain Blob so WebKit/Safari never throws DataCloneError/NotReadableError
-  const safeBlob =
-    blob instanceof File
-      ? blob.slice(0, blob.size, blob.type || meta.fileType || 'audio/mpeg')
-      : blob;
+  // Normalize File / missing MIME -> valid audio Blob so Safari/WebKit/Chrome always decode cleanly
+  const safeBlob = normalizeAudioBlob(blob, meta.fileType, meta.fileName);
+
+  const inlineThumbnail = await resolveInlineCoverDataUrl(
+    meta.thumbnail,
+    buildSharedCoverUrl(meta.id)
+  ).catch(() => DEFAULT_OFFLINE_ICON_THUMB);
 
   const stored: StoredSharedOfflineTrack = {
     id: meta.id,
@@ -311,7 +478,7 @@ export async function saveSharedOfflineBlob(
     album: meta.album || '共有オフライン',
     duration: meta.duration || '3:00',
     durationSeconds: meta.durationSeconds || 180,
-    thumbnail: meta.thumbnail || DEFAULT_OFFLINE_THUMB,
+    thumbnail: inlineThumbnail,
     blob: safeBlob,
     fileName: meta.fileName || `${meta.title}.mp3`,
     fileType: meta.fileType || safeBlob.type || 'audio/mpeg',
@@ -326,17 +493,54 @@ export async function saveSharedOfflineBlob(
     const store = tx.objectStore(STORE_SHARED);
     const req = store.put(stored);
     req.onsuccess = () => {
-      let url = activeBlobUrls.get(meta.id);
-      if (!url) {
-        url = URL.createObjectURL(safeBlob);
-        activeBlobUrls.set(meta.id, url);
+      if (activeBlobUrls.has(meta.id)) {
+        try {
+          URL.revokeObjectURL(activeBlobUrls.get(meta.id)!);
+        } catch {}
       }
+      const url = URL.createObjectURL(safeBlob);
+      activeBlobUrls.set(meta.id, url);
       activeBlobs.set(meta.id, safeBlob);
+      if (stored.thumbnail && !isLegacyPlaceholderThumbnail(stored.thumbnail)) {
+        activeSharedThumbs.set(meta.id, stored.thumbnail);
+      }
       notifySharedOfflineChanged();
       resolve(url);
     };
     req.onerror = () => reject(req.error);
   });
+}
+
+export async function refreshSharedOfflineThumbnailCache(
+  id: string,
+  coverUrl?: string
+): Promise<string | undefined> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return undefined;
+  try {
+    const b64 = await toBase64Image(coverUrl || buildSharedCoverUrl(id));
+    if (!b64 || !b64.startsWith('data:image/')) return undefined;
+    activeSharedThumbs.set(id, b64);
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_SHARED)) return b64;
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction([STORE_SHARED], 'readwrite');
+      const store = tx.objectStore(STORE_SHARED);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const rec = getReq.result as StoredSharedOfflineTrack | undefined;
+        if (rec) {
+          rec.thumbnail = b64;
+          store.put(rec);
+        }
+        resolve();
+      };
+      getReq.onerror = () => resolve();
+    });
+    notifySharedOfflineChanged();
+    return b64;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function getCachedSharedOfflineIds(): Promise<Set<string>> {
@@ -383,19 +587,23 @@ export async function getAllCachedSharedTracks(): Promise<Track[]> {
         const list = ((req.result as StoredSharedOfflineTrack[]) || []).sort(
           (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
         );
+        const validList = list.filter((s) => Boolean(s?.id && s?.blob && s.blob.size > 0));
         resolve(
-          list.map((s) => {
-            if (s.blob) {
-              activeBlobs.set(s.id, s.blob);
-            }
+          validList.map((s) => {
+            const safeBlob = normalizeAudioBlob(s.blob, s.fileType, s.fileName);
+            activeBlobs.set(s.id, safeBlob);
             let audioUrl = activeBlobUrls.get(s.id);
             if (!audioUrl) {
               try {
-                audioUrl = URL.createObjectURL(s.blob);
+                audioUrl = URL.createObjectURL(safeBlob);
                 activeBlobUrls.set(s.id, audioUrl);
               } catch {
                 audioUrl = '';
               }
+            }
+            const resolvedThumb = resolveSharedTrackDisplayThumbnail(s.id, s.thumbnail);
+            if (s.thumbnail && !isLegacyPlaceholderThumbnail(s.thumbnail)) {
+              activeSharedThumbs.set(s.id, s.thumbnail);
             }
             return {
               id: s.id,
@@ -404,15 +612,16 @@ export async function getAllCachedSharedTracks(): Promise<Track[]> {
               album: s.album,
               duration: s.duration,
               durationSeconds: s.durationSeconds,
-              thumbnail: s.thumbnail,
+              thumbnail: resolvedThumb,
               isLocal: true,
               isSharedOffline: true,
               isCachedOffline: true,
               uploadedBy: s.uploadedBy,
               uploadedAt: s.uploadedAt,
-              fileSize: s.fileSize || s.blob?.size || 0,
+              fileSize: s.fileSize || safeBlob.size || 0,
               fileName: s.fileName,
               fileExt: (s.fileName?.split('.').pop() || '').toLowerCase() || undefined,
+              audioMimeType: safeBlob.type || s.fileType,
               audioUrl,
             };
           })
@@ -435,11 +644,15 @@ export async function warmSharedOfflineBlobUrls(): Promise<void> {
       req.onsuccess = () => {
         const list = (req.result as StoredSharedOfflineTrack[]) || [];
         for (const s of list) {
-          if (s?.id && s?.blob) {
-            activeBlobs.set(s.id, s.blob);
+          if (s?.id && s?.blob && s.blob.size > 0) {
+            const safeBlob = normalizeAudioBlob(s.blob, s.fileType, s.fileName);
+            activeBlobs.set(s.id, safeBlob);
+            if (s.thumbnail && !isLegacyPlaceholderThumbnail(s.thumbnail)) {
+              activeSharedThumbs.set(s.id, s.thumbnail);
+            }
             if (!activeBlobUrls.has(s.id)) {
               try {
-                activeBlobUrls.set(s.id, URL.createObjectURL(s.blob));
+                activeBlobUrls.set(s.id, URL.createObjectURL(safeBlob));
               } catch {}
             }
           }
@@ -449,6 +662,34 @@ export async function warmSharedOfflineBlobUrls(): Promise<void> {
       req.onerror = () => resolve();
     });
   } catch {}
+}
+
+export async function forceRefreshSharedBlobUrl(id: string): Promise<string | null> {
+  try {
+    const prevUrl = activeBlobUrls.get(id);
+    if (prevUrl) {
+      try {
+        URL.revokeObjectURL(prevUrl);
+      } catch {}
+      activeBlobUrls.delete(id);
+    }
+    const cached = await getCachedSharedOfflineTrack(id);
+    if (cached?.blob && cached.blob.size > 0) {
+      const safeBlob = normalizeAudioBlob(cached.blob, cached.fileType, cached.fileName);
+      activeBlobs.set(id, safeBlob);
+      const nextUrl = URL.createObjectURL(safeBlob);
+      activeBlobUrls.set(id, nextUrl);
+      return nextUrl;
+    }
+    const swBlob = await recoverSharedBlobFromSwCache(id);
+    if (swBlob && swBlob.size > 0) {
+      activeBlobs.set(id, swBlob);
+      const nextUrl = URL.createObjectURL(swBlob);
+      activeBlobUrls.set(id, nextUrl);
+      return nextUrl;
+    }
+  } catch {}
+  return null;
 }
 
 export async function deleteCachedSharedOfflineTrack(id: string): Promise<void> {
@@ -472,33 +713,365 @@ export async function deleteCachedSharedOfflineTrack(id: string): Promise<void> 
 }
 
 /**
- * Prepare an offline track (or shared offline track) for active playback,
+ * Save a downloaded streaming/YouTube track's audio Blob into IndexedDB keyed by its original track.id
+ */
+export async function saveCachedTrackAudio(
+  track: Track,
+  blob: Blob,
+  quality: AudioQualityMode = 'high'
+): Promise<string> {
+  const db = await openOfflineDB();
+  if (!db.objectStoreNames.contains(STORE_CACHED_YT)) {
+    throw new Error('Cached YT audio store not initialized');
+  }
+  const safeBlob =
+    blob instanceof File
+      ? blob.slice(0, blob.size, blob.type || track.audioMimeType || 'audio/mp4')
+      : blob;
+
+  const inlineYtThumb = await resolveInlineCoverDataUrl(track.thumbnail).catch(
+    () => DEFAULT_OFFLINE_ICON_THUMB
+  );
+
+  const stored: StoredCachedYtAudio = {
+    id: track.id,
+    title: track.title,
+    artist: track.artist || '不明なアーティスト',
+    artistId: track.artistId,
+    album: track.album || 'オフライン保存曲',
+    albumId: track.albumId,
+    duration: track.duration || '0:00',
+    durationSeconds: track.durationSeconds || 0,
+    thumbnail: inlineYtThumb,
+    blob: safeBlob,
+    fileType: safeBlob.type || track.audioMimeType || 'audio/mp4',
+    fileSize: safeBlob.size,
+    quality,
+    cachedAt: Date.now(),
+  };
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_CACHED_YT], 'readwrite');
+    const store = tx.objectStore(STORE_CACHED_YT);
+    const req = store.put(stored);
+    req.onsuccess = () => {
+      if (activeBlobUrls.has(track.id)) {
+        try {
+          URL.revokeObjectURL(activeBlobUrls.get(track.id)!);
+        } catch {}
+      }
+      const url = URL.createObjectURL(safeBlob);
+      activeBlobUrls.set(track.id, url);
+      activeBlobs.set(track.id, safeBlob);
+      notifyCachedYtChanged();
+      resolve(url);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function getCachedTrackAudioRecord(id: string): Promise<StoredCachedYtAudio | null> {
+  try {
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_CACHED_YT)) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE_CACHED_YT], 'readonly');
+      const store = tx.objectStore(STORE_CACHED_YT);
+      const req = store.get(id);
+      req.onsuccess = () => resolve((req.result as StoredCachedYtAudio) || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getCachedTrackAudioIds(): Promise<Set<string>> {
+  try {
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_CACHED_YT)) return new Set();
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE_CACHED_YT], 'readonly');
+      const store = tx.objectStore(STORE_CACHED_YT);
+      const req = store.getAllKeys();
+      req.onsuccess = () => resolve(new Set((req.result || []).map((k) => String(k))));
+      req.onerror = () => resolve(new Set());
+    });
+  } catch {
+    return new Set();
+  }
+}
+
+export async function getAllCachedTrackAudios(): Promise<Track[]> {
+  try {
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_CACHED_YT)) return [];
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE_CACHED_YT], 'readonly');
+      const store = tx.objectStore(STORE_CACHED_YT);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = ((req.result as StoredCachedYtAudio[]) || []).sort(
+          (a, b) => (b.cachedAt || 0) - (a.cachedAt || 0)
+        );
+        resolve(
+          list.map((s) => {
+            if (s.blob) {
+              activeBlobs.set(s.id, s.blob);
+            }
+            let audioUrl = activeBlobUrls.get(s.id);
+            if (!audioUrl && s.blob) {
+              try {
+                audioUrl = URL.createObjectURL(s.blob);
+                activeBlobUrls.set(s.id, audioUrl);
+              } catch {
+                audioUrl = '';
+              }
+            }
+            return {
+              id: s.id,
+              title: s.title,
+              artist: s.artist,
+              artistId: s.artistId,
+              album: s.album,
+              albumId: s.albumId,
+              duration: s.duration,
+              durationSeconds: s.durationSeconds,
+              thumbnail: s.thumbnail,
+              isCachedOffline: true,
+              audioUrl,
+              audioMimeType: s.fileType,
+              fileSize: s.fileSize || s.blob?.size || 0,
+            };
+          })
+        );
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteCachedTrackAudio(id: string): Promise<void> {
+  try {
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_CACHED_YT)) return;
+    if (activeBlobUrls.has(id)) {
+      try {
+        URL.revokeObjectURL(activeBlobUrls.get(id)!);
+      } catch {}
+      activeBlobUrls.delete(id);
+    }
+    activeBlobs.delete(id);
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction([STORE_CACHED_YT], 'readwrite');
+      const store = tx.objectStore(STORE_CACHED_YT);
+      const req = store.delete(id);
+      req.onsuccess = () => {
+        notifyCachedYtChanged();
+        resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  } catch {}
+}
+
+export async function clearAllCachedTrackAudios(): Promise<void> {
+  try {
+    const db = await openOfflineDB();
+    if (!db.objectStoreNames.contains(STORE_CACHED_YT)) return;
+    const ids = await getCachedTrackAudioIds();
+    ids.forEach((id) => {
+      if (activeBlobUrls.has(id)) {
+        try {
+          URL.revokeObjectURL(activeBlobUrls.get(id)!);
+        } catch {}
+        activeBlobUrls.delete(id);
+      }
+      activeBlobs.delete(id);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction([STORE_CACHED_YT], 'readwrite');
+      const store = tx.objectStore(STORE_CACHED_YT);
+      const req = store.clear();
+      req.onsuccess = () => {
+        notifyCachedYtChanged();
+        resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  } catch {}
+}
+
+export interface OfflineStorageStats {
+  localCount: number;
+  localBytes: number;
+  cachedYtCount: number;
+  cachedYtBytes: number;
+  sharedCount: number;
+  sharedBytes: number;
+  totalOfflineBytes: number;
+  quotaUsageBytes?: number;
+  quotaTotalBytes?: number;
+  persisted: boolean;
+}
+
+export async function requestPersistentStorage(): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.persist === 'function') {
+      return await navigator.storage.persist();
+    }
+  } catch {}
+  return false;
+}
+
+export async function getOfflineStorageStats(): Promise<OfflineStorageStats> {
+  const stats: OfflineStorageStats = {
+    localCount: 0,
+    localBytes: 0,
+    cachedYtCount: 0,
+    cachedYtBytes: 0,
+    sharedCount: 0,
+    sharedBytes: 0,
+    totalOfflineBytes: 0,
+    persisted: false,
+  };
+  try {
+    const db = await openOfflineDB();
+    const readStoreSizes = (storeName: string): Promise<{ count: number; bytes: number }> =>
+      new Promise((resolve) => {
+        if (!db.objectStoreNames.contains(storeName)) {
+          resolve({ count: 0, bytes: 0 });
+          return;
+        }
+        const tx = db.transaction([storeName], 'readonly');
+        const store = tx.objectStore(storeName);
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const rows = (req.result as any[]) || [];
+          let bytes = 0;
+          for (const r of rows) {
+            bytes += Number(r?.fileSize || r?.blob?.size || 0);
+          }
+          resolve({ count: rows.length, bytes });
+        };
+        req.onerror = () => resolve({ count: 0, bytes: 0 });
+      });
+
+    const [loc, yt, sh] = await Promise.all([
+      readStoreSizes(STORE_TRACKS),
+      readStoreSizes(STORE_CACHED_YT),
+      readStoreSizes(STORE_SHARED),
+    ]);
+    stats.localCount = loc.count;
+    stats.localBytes = loc.bytes;
+    stats.cachedYtCount = yt.count;
+    stats.cachedYtBytes = yt.bytes;
+    stats.sharedCount = sh.count;
+    stats.sharedBytes = sh.bytes;
+    stats.totalOfflineBytes = loc.bytes + yt.bytes + sh.bytes;
+  } catch {}
+
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage) {
+      if (typeof navigator.storage.estimate === 'function') {
+        const est = await navigator.storage.estimate();
+        stats.quotaUsageBytes = est.usage;
+        stats.quotaTotalBytes = est.quota;
+      }
+      if (typeof navigator.storage.persisted === 'function') {
+        stats.persisted = await navigator.storage.persisted();
+      }
+    }
+  } catch {}
+
+  return stats;
+}
+
+/**
+ * Prepare an offline track, cached YT track, or shared offline track for active playback,
  * preferring IndexedDB blob URLs so playback works seamlessly even offline.
  */
 export async function getPlayableOfflineTrack(track: Track): Promise<Track> {
-  if (!track.isLocal && !track.isSharedOffline) return track;
-
   const existingUrl = activeBlobUrls.get(track.id);
-  if (existingUrl && track.audioUrl === existingUrl) {
-    return track;
+  const existingBlob = activeBlobs.get(track.id);
+  if (existingUrl && existingBlob && existingBlob.size > 0 && track.audioUrl === existingUrl) {
+    return {
+      ...track,
+      isLocal: true,
+      isCachedOffline: true,
+      audioMimeType: track.audioMimeType || existingBlob.type || undefined,
+    };
   }
 
   // Handle Shared Offline tracks (shared_*)
   if (track.isSharedOffline || track.id.startsWith('shared_')) {
     const cached = await getCachedSharedOfflineTrack(track.id);
-    if (cached?.blob) {
-      activeBlobs.set(track.id, cached.blob);
+    if (cached?.blob && cached.blob.size > 0) {
+      const safeBlob = normalizeAudioBlob(cached.blob, cached.fileType, cached.fileName);
+      activeBlobs.set(track.id, safeBlob);
       let url = activeBlobUrls.get(track.id);
       if (!url) {
-        url = URL.createObjectURL(cached.blob);
+        url = URL.createObjectURL(safeBlob);
         activeBlobUrls.set(track.id, url);
+      }
+      if (cached.thumbnail && !isLegacyPlaceholderThumbnail(cached.thumbnail)) {
+        activeSharedThumbs.set(track.id, cached.thumbnail);
+      }
+      if (
+        (typeof navigator === 'undefined' || navigator.onLine) &&
+        (!cached.thumbnail ||
+          isLegacyPlaceholderThumbnail(cached.thumbnail) ||
+          !cached.thumbnail.startsWith('data:image/'))
+      ) {
+        refreshSharedOfflineThumbnailCache(track.id, track.thumbnail).catch(() => {});
       }
       return {
         ...track,
+        thumbnail: resolveSharedTrackDisplayThumbnail(track.id, cached.thumbnail, track.thumbnail),
         isLocal: true,
         isSharedOffline: true,
         isCachedOffline: true,
+        audioMimeType: safeBlob.type || cached.fileType,
         audioUrl: url,
+      };
+    }
+
+    // Fallback to Service Worker CacheStorage if it was cached by Workbox before IndexedDB sync finished
+    const swBlob = await recoverSharedBlobFromSwCache(track.id);
+    if (swBlob && swBlob.size > 0) {
+      const coverUrl = resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail);
+      const blobUrl = await saveSharedOfflineBlob(
+        {
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          duration: track.duration,
+          durationSeconds: track.durationSeconds,
+          thumbnail: coverUrl,
+          fileName: track.fileName || `${track.title}.${track.fileExt || 'mp3'}`,
+          fileType: swBlob.type,
+          fileSize: track.fileSize || swBlob.size,
+          uploadedBy: track.uploadedBy,
+          uploadedAt: track.uploadedAt,
+        },
+        swBlob
+      ).catch(() => {
+        const fallbackUrl = URL.createObjectURL(swBlob);
+        activeBlobs.set(track.id, swBlob);
+        activeBlobUrls.set(track.id, fallbackUrl);
+        return fallbackUrl;
+      });
+      return {
+        ...track,
+        thumbnail: resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail, coverUrl),
+        isLocal: true,
+        isSharedOffline: true,
+        isCachedOffline: true,
+        audioMimeType: swBlob.type,
+        audioUrl: blobUrl,
       };
     }
 
@@ -507,64 +1080,103 @@ export async function getPlayableOfflineTrack(track: Track): Promise<Track> {
       try {
         const res = await fetch(`/api/shared-offline/file/${encodeURIComponent(track.id)}`);
         if (res.ok) {
-          const blob = await res.blob();
-          const blobUrl = await saveSharedOfflineBlob(
-            {
-              id: track.id,
-              title: track.title,
-              artist: track.artist,
-              album: track.album,
-              duration: track.duration,
-              durationSeconds: track.durationSeconds,
-              thumbnail: track.thumbnail,
-              fileSize: track.fileSize || blob.size,
-              uploadedBy: track.uploadedBy,
-              uploadedAt: track.uploadedAt,
-            },
-            blob
-          );
-          return {
-            ...track,
-            isLocal: true,
-            isSharedOffline: true,
-            isCachedOffline: true,
-            audioUrl: blobUrl,
-          };
+          const rawBlob = await res.blob();
+          if (rawBlob && rawBlob.size >= 32 && !rawBlob.type.includes('text/html')) {
+            const coverUrl = resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail);
+            const blobUrl = await saveSharedOfflineBlob(
+              {
+                id: track.id,
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                duration: track.duration,
+                durationSeconds: track.durationSeconds,
+                thumbnail: coverUrl,
+                fileName: track.fileName || `${track.title}.${track.fileExt || 'mp3'}`,
+                fileType: rawBlob.type || res.headers.get('content-type') || undefined,
+                fileSize: track.fileSize || rawBlob.size,
+                uploadedBy: track.uploadedBy,
+                uploadedAt: track.uploadedAt,
+              },
+              rawBlob
+            );
+            return {
+              ...track,
+              thumbnail: resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail, coverUrl),
+              isLocal: true,
+              isSharedOffline: true,
+              isCachedOffline: true,
+              audioMimeType: inferAudioMimeType(rawBlob.type, track.fileName),
+              audioUrl: blobUrl,
+            };
+          }
         }
       } catch {}
     }
 
-    return track;
+    // Offline and genuinely uncached: clear dead network audioUrl so callers handle gracefully
+    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    return {
+      ...track,
+      thumbnail: resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail),
+      isLocal: true,
+      isSharedOffline: true,
+      isCachedOffline: false,
+      audioUrl: isOffline ? undefined : track.audioUrl,
+    };
   }
 
-  // Standard local offline track
-  if (track.audioUrl && activeBlobUrls.has(track.id)) {
-    return track;
+  // Standard local offline track (offline_*)
+  if (track.isLocal) {
+    if (track.audioUrl && activeBlobUrls.has(track.id)) {
+      return track;
+    }
+
+    try {
+      const db = await openOfflineDB();
+      return await new Promise((resolve) => {
+        const tx = db.transaction([STORE_TRACKS], 'readonly');
+        const store = tx.objectStore(STORE_TRACKS);
+        const req = store.get(track.id);
+
+        req.onsuccess = () => {
+          const item = req.result as StoredOfflineTrack;
+          if (item && item.blob) {
+            const url = URL.createObjectURL(item.blob);
+            activeBlobUrls.set(track.id, url);
+            activeBlobs.set(track.id, item.blob);
+            resolve({ ...track, isCachedOffline: true, audioUrl: url });
+          } else {
+            resolve(track);
+          }
+        };
+
+        req.onerror = () => resolve(track);
+      });
+    } catch {
+      return track;
+    }
   }
 
-  try {
-    const db = await openOfflineDB();
-    return new Promise((resolve) => {
-      const tx = db.transaction([STORE_TRACKS], 'readonly');
-      const store = tx.objectStore(STORE_TRACKS);
-      const req = store.get(track.id);
-
-      req.onsuccess = () => {
-        const item = req.result as StoredOfflineTrack;
-        if (item && item.blob) {
-          const url = URL.createObjectURL(item.blob);
-          activeBlobUrls.set(track.id, url);
-          resolve({ ...track, audioUrl: url });
-        } else {
-          resolve(track);
-        }
-      };
-
-      req.onerror = () => resolve(track);
-    });
-  } catch {
-    return track;
+  // Cached streaming/YouTube track by original track.id
+  const cachedYt = await getCachedTrackAudioRecord(track.id);
+  if (cachedYt?.blob) {
+    activeBlobs.set(track.id, cachedYt.blob);
+    let url = activeBlobUrls.get(track.id);
+    if (!url) {
+      url = URL.createObjectURL(cachedYt.blob);
+      activeBlobUrls.set(track.id, url);
+    }
+    return {
+      ...track,
+      isCachedOffline: true,
+      audioUrl: url,
+      audioMimeType: cachedYt.fileType || track.audioMimeType,
+      fileSize: cachedYt.fileSize || cachedYt.blob.size,
+    };
   }
+
+  return track;
 }
 
 /**

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
-import { LyricsData, SyncedLine } from '../types/music';
+import { LyricsData, LyricsTranslationLine, SyncedLine } from '../types/music';
 import { SafeImage } from './SafeImage';
 import { isSameArtist } from '../utils/artistNames';
 import {
@@ -23,6 +23,7 @@ import {
   UserCheck,
   AlertTriangle,
   ArrowLeftRight,
+  Languages,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -70,6 +71,14 @@ export const LyricsDrawer: React.FC = () => {
   const lastSearchedTrackIdRef = useRef<string | null>(null);
   const lastTriggerRef = useRef<number>(0);
 
+  // Translation & Pronunciation guide state
+  const [translatePanelOpen, setTranslatePanelOpen] = useState(false);
+  const [targetLang, setTargetLang] = useState<'ja' | 'en' | 'ko' | 'zh'>('ja');
+  const [pronunciationMode, setPronunciationMode] = useState<'romaji' | 'furigana' | 'katakana'>('furigana');
+  const [translationLines, setTranslationLines] = useState<LyricsTranslationLine[] | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const userScrollTimeoutRef = useRef<any>(null);
   const activeLineElementRef = useRef<HTMLDivElement | null>(null);
@@ -86,6 +95,8 @@ export const LyricsDrawer: React.FC = () => {
     setTimingOffset(0);
     setSearchOpen(false);
     setSearchResults([]);
+    setTranslationLines(null);
+    setTranslateError(null);
     lastSearchedTrackIdRef.current = null;
   }, [currentTrack?.id]);
 
@@ -237,9 +248,49 @@ export const LyricsDrawer: React.FC = () => {
       matchedTrackName: `${item.trackName}${item.artistName ? ` - ${item.artistName}` : ''}`,
     };
     overrideCurrentLyrics(currentTrack.id, nextLyrics);
+    setTranslationLines(null);
+    setTranslateError(null);
     setViewMode(item.isSynced ? 'synced' : 'plain');
     setSearchOpen(false);
     setUserScrolled(false);
+  };
+
+  const plainLyricsList = useMemo(() => {
+    if (!data?.lyrics) return [];
+    return data.lyrics
+      .split(/\r?\n/)
+      .map((s) => s.trimEnd());
+  }, [data?.lyrics]);
+
+  const handleFetchTranslation = async (
+    langOverride?: 'ja' | 'en' | 'ko' | 'zh',
+    pronOverride?: 'romaji' | 'furigana' | 'katakana'
+  ) => {
+    const lang = langOverride || targetLang;
+    const pron = pronOverride || pronunciationMode;
+    const rawLines =
+      data?.syncedLyrics && data.syncedLyrics.length > 0 && viewMode === 'synced'
+        ? data.syncedLyrics.map((l) => l.text)
+        : plainLyricsList;
+
+    if (!rawLines || rawLines.length === 0) return;
+    setTranslating(true);
+    setTranslateError(null);
+    try {
+      const res = await api.translateLyricsGuide({
+        videoId: currentTrack?.id,
+        trackTitle: currentTrack?.title,
+        artist: currentTrack?.artist,
+        lines: rawLines,
+        targetLang: lang,
+        pronunciationMode: pron,
+      });
+      setTranslationLines(res.lines || []);
+    } catch (err: any) {
+      setTranslateError(err?.message || '翻訳・発音ガイドの生成に失敗しました');
+    } finally {
+      setTranslating(false);
+    }
   };
 
   return (
@@ -302,6 +353,29 @@ export const LyricsDrawer: React.FC = () => {
           >
             <Search className="w-4 h-4" />
           </button>
+
+          {/* Translation & Pronunciation Guide Toggle */}
+          {(data?.available || (data?.syncedLyrics && data.syncedLyrics.length > 0)) && (
+            <button
+              type="button"
+              onClick={() => {
+                const nextOpen = !translatePanelOpen;
+                setTranslatePanelOpen(nextOpen);
+                if (nextOpen && !translationLines && !translating) {
+                  handleFetchTranslation();
+                }
+              }}
+              className={`p-1.5 rounded-lg text-xs transition-colors flex items-center gap-1 cursor-pointer ${
+                translatePanelOpen || translationLines
+                  ? 'bg-sky-600/30 text-sky-300 border border-sky-500/40'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+              title="歌詞の翻訳・発音ガイドを表示"
+            >
+              <Languages className="w-4 h-4" />
+              <span className="hidden md:inline font-bold">翻訳・発音</span>
+            </button>
+          )}
 
           {/* Timing Offset Toggle */}
           {data?.isSynced && (
@@ -787,6 +861,91 @@ export const LyricsDrawer: React.FC = () => {
               )}
             </div>
           )}
+
+          {/* Translation & Pronunciation Control Toolbar */}
+          {translatePanelOpen && (
+            <div className="pt-2.5 mt-2 border-t border-neutral-800/80 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-sky-300 font-bold flex items-center gap-1">
+                    <Languages className="w-3.5 h-3.5" />
+                    翻訳:
+                  </span>
+                  {(
+                    [
+                      { id: 'ja', label: '日本語' },
+                      { id: 'en', label: 'EN' },
+                      { id: 'ko', label: 'KO' },
+                      { id: 'zh', label: 'ZH' },
+                    ] as const
+                  ).map((l) => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() => {
+                        setTargetLang(l.id);
+                        handleFetchTranslation(l.id, pronunciationMode);
+                      }}
+                      className={`px-2 py-0.5 rounded font-bold cursor-pointer transition-colors ${
+                        targetLang === l.id
+                          ? 'bg-sky-600 text-white'
+                          : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                      }`}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-neutral-400 font-semibold">発音:</span>
+                  {(
+                    [
+                      { id: 'furigana', label: 'ふりがな' },
+                      { id: 'romaji', label: 'ローマ字' },
+                      { id: 'katakana', label: 'カタカナ' },
+                    ] as const
+                  ).map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setPronunciationMode(p.id);
+                        handleFetchTranslation(targetLang, p.id);
+                      }}
+                      className={`px-2 py-0.5 rounded font-bold cursor-pointer transition-colors ${
+                        pronunciationMode === p.id
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {translating && (
+                <div className="flex items-center gap-2 text-[11px] text-sky-300">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>行ごとの翻訳・発音ガイドを生成中...</span>
+                </div>
+              )}
+
+              {translateError && (
+                <div className="p-2.5 rounded-lg bg-red-950/50 border border-red-700/50 text-[11px] text-red-200 flex items-center justify-between gap-2">
+                  <span>{translateError}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleFetchTranslation()}
+                    className="px-2 py-0.5 rounded bg-red-600/40 hover:bg-red-600/60 text-white font-bold shrink-0 cursor-pointer"
+                  >
+                    再試行
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -996,33 +1155,49 @@ export const LyricsDrawer: React.FC = () => {
                         </span>
                       )}
 
-                      <p
-                        style={
-                          isActive
-                            ? {
-                                textShadow:
-                                  '0 0 16px rgba(255, 255, 255, 0.9), 0 0 32px rgba(239, 68, 68, 0.85), 0 0 60px rgba(220, 38, 38, 0.6)',
-                              }
-                            : undefined
-                        }
-                        className={`leading-relaxed tracking-normal font-sans transition-all duration-200 flex-1 ${
-                          isActive
-                            ? 'text-white font-black text-2xl sm:text-3xl tracking-wide'
-                            : isPast
-                            ? pastDistance === 1
-                              ? 'text-neutral-400 font-medium text-lg sm:text-xl'
-                              : pastDistance === 2
-                              ? 'text-neutral-500 font-normal text-base sm:text-lg'
-                              : 'text-neutral-600 font-normal text-sm sm:text-base'
-                            : futureDistance === 1
-                            ? 'text-neutral-300 font-medium text-lg sm:text-xl'
-                            : futureDistance === 2
-                            ? 'text-neutral-400 font-normal text-base sm:text-lg'
-                            : 'text-neutral-500 font-normal text-sm sm:text-base'
-                        } ${fontSize === 'large' ? 'sm:scale-105' : ''}`}
-                      >
-                        {line.text}
-                      </p>
+                      <div className="flex-1 min-w-0">
+                        <p
+                          style={
+                            isActive
+                              ? {
+                                  textShadow:
+                                    '0 0 16px rgba(255, 255, 255, 0.9), 0 0 32px rgba(239, 68, 68, 0.85), 0 0 60px rgba(220, 38, 38, 0.6)',
+                                }
+                              : undefined
+                          }
+                          className={`leading-relaxed tracking-normal font-sans transition-all duration-200 ${
+                            isActive
+                              ? 'text-white font-black text-2xl sm:text-3xl tracking-wide'
+                              : isPast
+                              ? pastDistance === 1
+                                ? 'text-neutral-400 font-medium text-lg sm:text-xl'
+                                : pastDistance === 2
+                                ? 'text-neutral-500 font-normal text-base sm:text-lg'
+                                : 'text-neutral-600 font-normal text-sm sm:text-base'
+                              : futureDistance === 1
+                              ? 'text-neutral-300 font-medium text-lg sm:text-xl'
+                              : futureDistance === 2
+                              ? 'text-neutral-400 font-normal text-base sm:text-lg'
+                              : 'text-neutral-500 font-normal text-sm sm:text-base'
+                          } ${fontSize === 'large' ? 'sm:scale-105 origin-left' : ''}`}
+                        >
+                          {line.text}
+                        </p>
+                        {translatePanelOpen && translationLines?.[idx] && (
+                          <div className="mt-1 space-y-0.5">
+                            {translationLines[idx].pronunciation && (
+                              <p className="text-[11px] font-mono text-emerald-300/90 leading-snug">
+                                {translationLines[idx].pronunciation}
+                              </p>
+                            )}
+                            {translationLines[idx].translation && (
+                              <p className="text-xs sm:text-sm text-sky-200/95 leading-snug">
+                                {translationLines[idx].translation}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -1086,13 +1261,43 @@ export const LyricsDrawer: React.FC = () => {
                 <span>同期歌詞を検索</span>
               </button>
             </div>
-            <div
-              className={`leading-relaxed whitespace-pre-line font-sans text-neutral-200 px-2 ${
-                fontSize === 'large' ? 'text-lg md:text-xl font-medium' : 'text-sm md:text-base'
-              }`}
-            >
-              {data.lyrics}
-            </div>
+            {translatePanelOpen && translationLines ? (
+              <div className="space-y-3 px-2">
+                {plainLyricsList.map((rawLine, idx) => (
+                  <div key={idx} className="space-y-0.5">
+                    <p
+                      className={`leading-relaxed font-sans text-neutral-100 ${
+                        fontSize === 'large' ? 'text-lg md:text-xl font-medium' : 'text-sm md:text-base'
+                      }`}
+                    >
+                      {rawLine || '\u00A0'}
+                    </p>
+                    {rawLine.trim() && translationLines[idx] && (
+                      <>
+                        {translationLines[idx].pronunciation && (
+                          <p className="text-xs font-mono text-emerald-300/90">
+                            {translationLines[idx].pronunciation}
+                          </p>
+                        )}
+                        {translationLines[idx].translation && (
+                          <p className="text-xs sm:text-sm text-sky-200/95">
+                            {translationLines[idx].translation}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                className={`leading-relaxed whitespace-pre-line font-sans text-neutral-200 px-2 ${
+                  fontSize === 'large' ? 'text-lg md:text-xl font-medium' : 'text-sm md:text-base'
+                }`}
+              >
+                {data.lyrics}
+              </div>
+            )}
             {data.footer && (
               <p className="pt-6 text-xs text-neutral-500 italic border-t border-neutral-800/60">
                 {data.footer}

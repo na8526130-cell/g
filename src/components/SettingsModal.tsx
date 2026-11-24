@@ -18,8 +18,23 @@ import {
   ChevronRight,
   HelpCircle,
   Sliders,
+  Globe,
+  Music2,
+  Disc3,
+  Car,
+  Watch,
+  Award,
+  HardDrive,
+  Play,
+  Sparkles,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
+import { CatalogRegion } from '../types/music';
+import {
+  isStartupSplashEnabled,
+  setStartupSplashEnabled,
+  triggerStartupSplashReplay,
+} from './StartupSplash';
 
 export const SettingsModal: React.FC = () => {
   const {
@@ -54,7 +69,21 @@ export const SettingsModal: React.FC = () => {
     navigateTo,
     setTermsModalOpen,
     showToast,
+    catalogRegion,
+    setCatalogRegion,
+    setClassicalModalOpen,
+    setDjMixerOpen,
+    setCarModeOpen,
+    setCompanionModalOpen,
+    setCompanionMode,
+    setWrappedModalOpen,
+    offlinePreferCache,
+    setOfflinePreferCache,
+    cachedOfflineIds,
+    setLibraryTab,
   } = usePlayer();
+
+  const [splashEnabled, setSplashEnabled] = React.useState<boolean>(() => isStartupSplashEnabled());
 
   useEffect(() => {
     if (!settingsModalOpen) return;
@@ -163,6 +192,48 @@ export const SettingsModal: React.FC = () => {
                   <span>パソコン版</span>
                 </button>
               </div>
+            </div>
+
+            {/* Startup Splash Toggle & Preview */}
+            <div className="p-3.5 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Sparkles className="w-4 h-4 text-red-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-white">起動画面（スプラッシュ演出）</p>
+                    <p className="text-xs text-neutral-400 truncate">
+                      アプリ起動時にロゴ＆サウンドウェーブ演出を表示
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={splashEnabled}
+                  onClick={() => {
+                    const next = !splashEnabled;
+                    setSplashEnabled(next);
+                    setStartupSplashEnabled(next);
+                  }}
+                  className={`relative w-11 h-6 rounded-full transition-colors shrink-0 cursor-pointer ${
+                    splashEnabled ? 'bg-red-600' : 'bg-neutral-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                      splashEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => closeAndRun(() => triggerStartupSplashReplay())}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>起動画面を今すぐプレビュー再生</span>
+              </button>
             </div>
 
             {/* DM UI Toggle */}
@@ -432,6 +503,94 @@ export const SettingsModal: React.FC = () => {
               </button>
             </div>
 
+            {/* Offline Prefer Cache & Storage Link */}
+            <div className="p-3.5 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <HardDrive className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-white">保存済み曲はオフラインキャッシュ優先</p>
+                    <p className="text-xs text-neutral-400 truncate">
+                      オンライン時も端末内の保存音源から高速再生（通信量節約）
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={offlinePreferCache}
+                  onClick={() => setOfflinePreferCache(!offlinePreferCache)}
+                  className={`relative w-11 h-6 rounded-full transition-colors shrink-0 cursor-pointer ${
+                    offlinePreferCache ? 'bg-cyan-500' : 'bg-neutral-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                      offlinePreferCache ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  closeAndRun(() => {
+                    setLibraryTab('local');
+                    navigateTo('library');
+                  })
+                }
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200 transition-colors cursor-pointer"
+              >
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>オフラインストレージ管理を開く（保存済み配信曲 {cachedOfflineIds.size}曲）</span>
+              </button>
+            </div>
+
+            {/* Overseas / Regional Catalog Selector */}
+            <div className="p-3.5 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Globe className="w-4 h-4 text-sky-400 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-white">海外・地域カタログ (サービス対象外地域対応)</p>
+                    <p className="text-xs text-neutral-400 truncate">
+                      Explore / 検索 / クラシックの取得地域を切り替え
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[11px] font-mono font-bold text-sky-300 shrink-0">
+                  {catalogRegion}
+                </span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {(
+                  [
+                    { id: 'JP', label: '🇯🇵 日本' },
+                    { id: 'US', label: '🇺🇸 米国' },
+                    { id: 'KR', label: '🇰🇷 韓国' },
+                    { id: 'GB', label: '🇬🇧 英国' },
+                    { id: 'GLOBAL', label: '🌐 世界' },
+                  ] as { id: CatalogRegion; label: string }[]
+                ).map((reg) => (
+                  <button
+                    key={reg.id}
+                    type="button"
+                    onClick={() => {
+                      setCatalogRegion(reg.id);
+                      showToast(`カタログ地域を ${reg.label} に切り替えました`, 'info', 2000);
+                    }}
+                    className={`py-2 px-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer truncate ${
+                      catalogRegion === reg.id
+                        ? 'bg-sky-600 text-white border-sky-400'
+                        : 'bg-neutral-950/60 text-neutral-300 border-neutral-800 hover:bg-neutral-800'
+                    }`}
+                  >
+                    {reg.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Freemake Download & Converter */}
             <button
               type="button"
@@ -446,6 +605,83 @@ export const SettingsModal: React.FC = () => {
                 </div>
               </div>
               <ChevronRight className="w-4 h-4 text-neutral-500 shrink-0" />
+            </button>
+          </section>
+
+          {/* Section 2.5: 専門館・DJ・車載・コンパニオン・振り返り */}
+          <section className="space-y-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 px-1">
+              専門館・コンパニオン・振り返り
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => closeAndRun(() => setClassicalModalOpen(true))}
+                className="p-3 rounded-xl bg-amber-950/25 hover:bg-amber-950/45 border border-amber-500/25 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+              >
+                <Music2 className="w-4 h-4 text-amber-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Zero Classical 専門館</p>
+                  <p className="text-[10px] text-neutral-400 truncate">作曲家・時代・作品番号</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => closeAndRun(() => setDjMixerOpen(true))}
+                className="p-3 rounded-xl bg-purple-950/25 hover:bg-purple-950/45 border border-purple-500/25 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+              >
+                <Disc3 className="w-4 h-4 text-purple-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">DJ ミキサー & ソフト連携</p>
+                  <p className="text-[10px] text-neutral-400 truncate">2デッキ & M3U8/CUE 出力</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => closeAndRun(() => setCarModeOpen(true))}
+                className="p-3 rounded-xl bg-emerald-950/25 hover:bg-emerald-950/45 border border-emerald-500/25 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+              >
+                <Car className="w-4 h-4 text-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">車載ドライブモード</p>
+                  <p className="text-[10px] text-neutral-400 truncate">CarPlay / Android Auto風UI</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  closeAndRun(() => {
+                    setCompanionMode('watch');
+                    setCompanionModalOpen(true);
+                  })
+                }
+                className="p-3 rounded-xl bg-sky-950/25 hover:bg-sky-950/45 border border-sky-500/25 flex items-center gap-2.5 text-left transition-colors cursor-pointer"
+              >
+                <Watch className="w-4 h-4 text-sky-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Watch / ゲーム機コンパニオン</p>
+                  <p className="text-[10px] text-neutral-400 truncate">ウォッチ & PS5/Xbox/TV 操作</p>
+                </div>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => closeAndRun(() => setWrappedModalOpen(true))}
+              className="w-full p-3.5 rounded-xl bg-gradient-to-r from-red-950/35 to-amber-950/25 hover:from-red-950/55 hover:to-amber-950/45 border border-red-500/30 flex items-center justify-between gap-2 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Award className="w-4 h-4 text-red-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-white truncate">年間・季節・月別 Recap (Wrapped)</p>
+                  <p className="text-[11px] text-neutral-400 truncate">再生時間・トップアーティストを振り返り</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-neutral-400 shrink-0" />
             </button>
           </section>
 
