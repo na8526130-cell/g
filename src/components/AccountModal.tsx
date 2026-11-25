@@ -26,8 +26,10 @@ import {
   Disc3,
   MessageSquare,
   EyeOff,
+  AlertTriangle,
 } from 'lucide-react';
 import { Track } from '../types/music';
+import { UserBackupJsonPanel } from './UserBackupJsonPanel';
 
 export const AccountModal: React.FC = () => {
   const {
@@ -57,6 +59,7 @@ export const AccountModal: React.FC = () => {
     syncAccountNow,
     dmUiVisible,
     toggleDmUiVisible,
+    siteSettings,
   } = usePlayer();
 
   const [authMode, setAuthMode] = useState<'register' | 'login' | 'admin'>('register');
@@ -122,8 +125,14 @@ export const AccountModal: React.FC = () => {
 
   if (!accountModalOpen) return null;
 
+  const registrationsDisabled = siteSettings?.allowNewRegistrations === false;
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (registrationsDisabled) {
+      showToast('現在、管理者により新規アカウント登録が一時停止されています');
+      return;
+    }
     const cleanUser = username.trim();
     const cleanPass = password.trim();
     const cleanMail = email.trim();
@@ -389,6 +398,12 @@ export const AccountModal: React.FC = () => {
                   onSubmit={handleRegister}
                   className="space-y-3.5 p-5 rounded-2xl bg-neutral-900/60 border border-neutral-800"
                 >
+                  {registrationsDisabled && (
+                    <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <span>現在、管理者により新規アカウント登録が一時停止されています。既存アカウントでのログインのみ利用できます。</span>
+                    </div>
+                  )}
                   <div>
                     <label className="block text-xs font-semibold text-neutral-300 mb-1.5 flex items-center gap-1.5">
                       <User className="w-3.5 h-3.5 text-red-500" />
@@ -400,7 +415,8 @@ export const AccountModal: React.FC = () => {
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       placeholder="ユーザー名"
-                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors"
+                      disabled={registrationsDisabled}
+                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors disabled:opacity-50"
                       required
                     />
                   </div>
@@ -416,7 +432,8 @@ export const AccountModal: React.FC = () => {
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="パスワード"
-                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors"
+                      disabled={registrationsDisabled}
+                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors disabled:opacity-50"
                       required
                     />
                   </div>
@@ -432,7 +449,8 @@ export const AccountModal: React.FC = () => {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="メールアドレス"
-                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors"
+                      disabled={registrationsDisabled}
+                      className="w-full bg-neutral-950 border border-neutral-700/80 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-red-500 transition-colors disabled:opacity-50"
                     />
                     <p className="text-[11px] text-neutral-400 mt-1">
                       メールアドレスを入力すると、新着楽曲やバックアップの通知を受け取ることができます。
@@ -441,7 +459,7 @@ export const AccountModal: React.FC = () => {
 
                   <button
                     type="submit"
-                    disabled={loading || !username.trim() || !password.trim()}
+                    disabled={registrationsDisabled || loading || !username.trim() || !password.trim()}
                     className="w-full py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs sm:text-sm font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/20 transition-all cursor-pointer mt-2"
                   >
                     {loading ? (
@@ -449,7 +467,7 @@ export const AccountModal: React.FC = () => {
                     ) : (
                       <CheckCircle2 className="w-4 h-4" />
                     )}
-                    <span>アカウントを作成して登録</span>
+                    <span>{registrationsDisabled ? '新規登録は現在停止中です' : 'アカウントを作成して登録'}</span>
                   </button>
 
                   <p className="text-[11px] text-neutral-400 text-center leading-relaxed pt-1">
@@ -940,6 +958,9 @@ export const AccountModal: React.FC = () => {
               )}
             </div>
           )}
+
+          {/* Regular-User JSON Export & Import Backup (Visible for both Guest and Logged-in Users) */}
+          <UserBackupJsonPanel compact />
 
           {/* UI Display Settings (Visible for both Guest and Logged-in Users) */}
           <div className="p-4 rounded-2xl bg-neutral-900/60 border border-neutral-800 flex items-center justify-between gap-3">

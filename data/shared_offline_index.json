@@ -1,5 +1,22 @@
 [
   {
+    "id": "shared_1795598292638_36jqh9",
+    "title": "Sanitizer",
+    "artist": "Official髭男dism",
+    "album": "Sanitizer",
+    "duration": "5:05",
+    "durationSeconds": 305,
+    "thumbnail": "/api/shared-offline/cover/shared_1795598292638_36jqh9",
+    "fileName": "Official髭男dism - Sanitizer.mp3",
+    "fileExt": ".mp3",
+    "mimeType": "audio/mpeg",
+    "fileSize": 12257890,
+    "uploadedBy": "自動復元",
+    "uploadedAt": "2026-11-25T09:18:12.638Z",
+    "isObfuscated": true,
+    "plays": 0
+  },
+  {
     "id": "shared_1795337473027_3edpe9",
     "title": "Shower",
     "artist": "Official髭男dism",

@@ -1,5 +1,5 @@
 {
-  "totalAccessCount": 139,
+  "totalAccessCount": 145,
   "accounts": [
     {
       "id": "usr_1793521133121_m6do1",
@@ -313,6 +313,19 @@
     }
   ],
   "bannedUsers": [],
+  "customNgWords": [],
+  "siteSettings": {
+    "announcement": {
+      "active": false,
+      "message": "",
+      "level": "info",
+      "updatedAt": "2026-11-25T08:53:46.204Z"
+    },
+    "allowNewRegistrations": true,
+    "sharedOfflineUploadEnabled": true,
+    "commentsEnabled": true,
+    "dmsEnabled": true
+  },
   "analytics": {
     "totalPlaybackSeconds": 4412,
     "totalTracksPlayed": 19,
@@ -482,7 +495,7 @@
       }
     },
     "hourlyVisits": {
-      "8": 9,
+      "8": 15,
       "9": 62,
       "10": 7,
       "11": 25,
@@ -493,15 +506,15 @@
     },
     "clientDevices": {
       "desktop": 1,
-      "mobile": 114,
+      "mobile": 120,
       "tablet": 0
     },
     "clientBrowsers": {
-      "Safari": 114,
+      "Safari": 120,
       "Other": 1
     },
     "clientOS": {
-      "macOS": 114,
+      "macOS": 120,
       "Other": 1
     },
     "lyricsStats": {

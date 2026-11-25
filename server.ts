@@ -3722,6 +3722,19 @@ export async function createApp(options?: {
     timestamp: string;
   }
 
+  interface SiteSettings {
+    announcement: {
+      active: boolean;
+      message: string;
+      level: 'info' | 'warning' | 'alert';
+      updatedAt: string;
+    };
+    allowNewRegistrations: boolean;
+    sharedOfflineUploadEnabled: boolean;
+    commentsEnabled: boolean;
+    dmsEnabled: boolean;
+  }
+
   interface StoredState {
     totalAccessCount: number;
     accounts: StoredAccount[];
@@ -3738,16 +3751,142 @@ export async function createApp(options?: {
     follows: Record<string, string[]>;
     activityFeed: ActivityFeedItem[];
     bannedUsers: string[];
+    customNgWords?: string[];
+    siteSettings?: SiteSettings;
     analytics: StoredAnalytics;
   }
 
-  const ADMIN_PASSWORD = '@zeromusic';
+  const DEFAULT_ADMIN_SCRYPT_HASH =
+    'scrypt:f9489419cbae6ef4052059d27057a913:afaf2004a6445014c1ceec791665eec90efce950413833f1b9f0855e900f5217e9740c933d0b4fd4d3e469d8d84d287b97b6fce36abb27f70bc5ffea7cfecbfd';
+  const ADMIN_SESSION_SECRET =
+    process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+  const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+  const activeAdminTokens = new Map<string, number>();
+  const adminLoginFailures = new Map<string, { count: number; resetAt: number }>();
+
+  function verifyAdminPassword(candidate: string): boolean {
+    const clean = String(candidate || '').trim();
+    if (!clean || clean.length > 256) return false;
+
+    const envPlain = process.env.ADMIN_PASSWORD?.trim();
+    if (envPlain) {
+      const a = crypto.createHash('sha256').update(clean).digest();
+      const b = crypto.createHash('sha256').update(envPlain).digest();
+      return crypto.timingSafeEqual(a, b);
+    }
+
+    const storedHash = (process.env.ADMIN_PASSWORD_HASH || DEFAULT_ADMIN_SCRYPT_HASH).trim();
+    const parts = storedHash.split(':');
+    if (parts.length !== 3 || parts[0] !== 'scrypt') {
+      return false;
+    }
+    const [, salt, expectedHex] = parts;
+    try {
+      const expectedBuf = Buffer.from(expectedHex, 'hex');
+      if (expectedBuf.length === 0) return false;
+      const derivedBuf = crypto.scryptSync(clean, salt, expectedBuf.length);
+      return crypto.timingSafeEqual(derivedBuf, expectedBuf);
+    } catch {
+      return false;
+    }
+  }
+
+  function pruneExpiredAdminTokens() {
+    const now = Date.now();
+    for (const [jti, exp] of activeAdminTokens.entries()) {
+      if (exp <= now) activeAdminTokens.delete(jti);
+    }
+  }
+
+  function issueAdminSessionToken(): string {
+    pruneExpiredAdminTokens();
+    const now = Date.now();
+    const exp = now + ADMIN_SESSION_TTL_MS;
+    const jti = crypto.randomBytes(16).toString('hex');
+    activeAdminTokens.set(jti, exp);
+    const payloadB64 = Buffer.from(
+      JSON.stringify({ role: 'admin', jti, iat: now, exp }),
+      'utf8'
+    ).toString('base64url');
+    const sig = crypto
+      .createHmac('sha256', ADMIN_SESSION_SECRET)
+      .update(payloadB64)
+      .digest('base64url');
+    return `${payloadB64}.${sig}`;
+  }
+
+  function parseValidAdminToken(token: string): { jti: string; exp: number } | null {
+    if (!token || !token.includes('.')) return null;
+    const dotIdx = token.indexOf('.');
+    const payloadB64 = token.slice(0, dotIdx);
+    const sigB64 = token.slice(dotIdx + 1);
+    if (!payloadB64 || !sigB64) return null;
+
+    const expectedSig = crypto
+      .createHmac('sha256', ADMIN_SESSION_SECRET)
+      .update(payloadB64)
+      .digest('base64url');
+
+    const a = Buffer.from(sigB64, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+    try {
+      const parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+      if (parsed?.role !== 'admin' || typeof parsed.jti !== 'string') return null;
+      const exp = Number(parsed.exp || 0);
+      if (!Number.isFinite(exp) || exp <= Date.now()) {
+        activeAdminTokens.delete(parsed.jti);
+        return null;
+      }
+      if (!activeAdminTokens.has(parsed.jti)) return null;
+      return { jti: parsed.jti, exp };
+    } catch {
+      return null;
+    }
+  }
+
+  function extractBearerToken(req: express.Request): string {
+    const authHeader = String(req.headers.authorization || '').trim();
+    if (!authHeader.toLowerCase().startsWith('bearer ')) return '';
+    return authHeader.slice(7).trim();
+  }
+
+  function isValidAdminRequest(req: express.Request): boolean {
+    const token = extractBearerToken(req);
+    return parseValidAdminToken(token) !== null;
+  }
+
+  const requireAdminAuth: express.RequestHandler = (req, res, next) => {
+    if (!isValidAdminRequest(req)) {
+      return res.status(401).json({ error: '管理者認証が必要です' });
+    }
+    next();
+  };
+
   const DEFAULT_NG_WORDS = ['死ね', '殺す', 'キエロ', 'クソ野郎', 'ゴミ屑', '詐欺サイト', 'spam.link'];
+
+  function defaultSiteSettings(): SiteSettings {
+    return {
+      announcement: {
+        active: false,
+        message: '',
+        level: 'info',
+        updatedAt: new Date(0).toISOString(),
+      },
+      allowNewRegistrations: true,
+      sharedOfflineUploadEnabled: true,
+      commentsEnabled: true,
+      dmsEnabled: true,
+    };
+  }
 
   function sanitizeText(text: string): { sanitized: string; flagged: boolean } {
     let flagged = false;
     let result = text || '';
-    for (const word of DEFAULT_NG_WORDS) {
+    const allNgWords = [...DEFAULT_NG_WORDS, ...(appState?.customNgWords || [])];
+    for (const word of allNgWords) {
+      if (!word) continue;
       if (result.includes(word)) {
         flagged = true;
         const mask = '*'.repeat(word.length);
@@ -3926,6 +4065,18 @@ export async function createApp(options?: {
           follows: parsed.follows && typeof parsed.follows === 'object' ? parsed.follows : {},
           activityFeed: Array.isArray(parsed.activityFeed) ? parsed.activityFeed : [],
           bannedUsers: Array.isArray(parsed.bannedUsers) ? parsed.bannedUsers : [],
+          customNgWords: Array.isArray(parsed.customNgWords) ? parsed.customNgWords : [],
+          siteSettings:
+            parsed.siteSettings && typeof parsed.siteSettings === 'object'
+              ? {
+                  ...defaultSiteSettings(),
+                  ...parsed.siteSettings,
+                  announcement: {
+                    ...defaultSiteSettings().announcement,
+                    ...(parsed.siteSettings.announcement || {}),
+                  },
+                }
+              : defaultSiteSettings(),
           analytics: parsed.analytics && typeof parsed.analytics === 'object' ? {
             ...defaultAnalytics(),
             ...parsed.analytics,
@@ -3953,6 +4104,8 @@ export async function createApp(options?: {
       follows: {},
       activityFeed: [],
       bannedUsers: [],
+      customNgWords: [],
+      siteSettings: defaultSiteSettings(),
       analytics: defaultAnalytics(),
     };
   }
@@ -4105,6 +4258,21 @@ export async function createApp(options?: {
     });
   });
 
+  function isUserBanned(identifier?: string): boolean {
+    const clean = String(identifier || '').trim().toLowerCase();
+    if (!clean) return false;
+    if (appState.bannedUsers.some((u) => u.toLowerCase() === clean)) {
+      return true;
+    }
+    const matched = appState.accounts.find(
+      (a) => a.username.toLowerCase() === clean || (a.email && a.email.toLowerCase() === clean)
+    );
+    if (matched && appState.bannedUsers.some((u) => u.toLowerCase() === matched.username.toLowerCase())) {
+      return true;
+    }
+    return false;
+  }
+
   // Get account profile & preferences
   app.get('/api/account/profile', (req, res) => {
     const username = String(req.query.username || req.query.email || '').trim().toLowerCase();
@@ -4116,6 +4284,12 @@ export async function createApp(options?: {
     );
     if (!acc) {
       return res.json({ exists: false, isGuest: true });
+    }
+    if (isUserBanned(acc.username)) {
+      return res.status(403).json({
+        error: 'このアカウントは管理者により利用停止（凍結）されています',
+        banned: true,
+      });
     }
     const userNotifs = appState.notifications.filter(
       (n) => (acc.email && n.email === acc.email) || (n.username && n.username === acc.username)
@@ -4143,6 +4317,11 @@ export async function createApp(options?: {
 
   // Register account: username (必須), password (必須), email (任意)
   app.post('/api/account/register', (req, res) => {
+    if (appState.siteSettings && !appState.siteSettings.allowNewRegistrations) {
+      return res.status(403).json({
+        error: '現在、管理者により新規アカウント登録が一時停止されています',
+      });
+    }
     const { username, password, email, playlists, library } = req.body;
     const cleanUsername = String(username || '').trim();
     const cleanPassword = String(password || '').trim();
@@ -4150,6 +4329,9 @@ export async function createApp(options?: {
 
     if (!cleanUsername || cleanUsername.length < 2) {
       return res.status(400).json({ error: 'ユーザー名は2文字以上で入力してください' });
+    }
+    if (isUserBanned(cleanUsername)) {
+      return res.status(403).json({ error: 'このユーザー名は利用停止されています' });
     }
     if (!cleanPassword || cleanPassword.length < 4) {
       return res.status(400).json({ error: 'パスワードは4文字以上で入力してください' });
@@ -4235,16 +4417,18 @@ export async function createApp(options?: {
       return res.status(400).json({ error: 'ユーザー名とパスワードを入力してください' });
     }
 
-    // Special master admin login bypass: password @zeromusic
-    if (cleanPassword === ADMIN_PASSWORD) {
+    // Admin authentication check (verified via salted scrypt hash)
+    if (verifyAdminPassword(cleanPassword)) {
+      const adminToken = issueAdminSessionToken();
       return res.json({
         success: true,
         message: '管理者としてログインしました',
         isAdmin: true,
+        adminToken,
         account: {
           id: 'admin_root',
           username: cleanId === 'admin' || !cleanId ? 'admin' : cleanId,
-          email: 'admin@zeromusic.local',
+          email: 'admin@system.local',
           registeredAt: '2026-01-01T00:00:00.000Z',
           playlists: [],
           library: {},
@@ -4264,6 +4448,10 @@ export async function createApp(options?: {
 
     if (!account) {
       return res.status(401).json({ error: 'ユーザー名またはパスワードが正しくありません' });
+    }
+
+    if (isUserBanned(account.username)) {
+      return res.status(403).json({ error: 'このアカウントはモデレーションにより利用停止されています', banned: true });
     }
 
     if (account.passwordHash !== hashPassword(cleanPassword)) {
@@ -4304,28 +4492,33 @@ export async function createApp(options?: {
     const acc = appState.accounts.find(
       (a) => a.username.toLowerCase() === cleanUser || (a.email && a.email.toLowerCase() === cleanUser)
     );
-    const now = new Date().toISOString();
-    if (acc) {
-      const nextLibrary: SyncedAccountLibrary = {
-        ...(acc.library || {}),
-        ...(library && typeof library === 'object' ? library : {}),
-      };
-      if (Array.isArray(playlists)) {
-        nextLibrary.playlists = playlists;
-        acc.playlists = playlists;
-      } else if (Array.isArray(nextLibrary.playlists)) {
-        acc.playlists = nextLibrary.playlists;
-      }
-      acc.library = nextLibrary;
-      acc.libraryUpdatedAt = now;
-      acc.lastActive = now;
-      saveStorage();
+    if (!acc) {
+      return res.status(404).json({ error: 'アカウントが見つかりません（削除済み）', deleted: true });
     }
+    if (isUserBanned(acc.username)) {
+      return res.status(403).json({ error: 'このアカウントは管理者により凍結されています', banned: true });
+    }
+
+    const now = new Date().toISOString();
+    const nextLibrary: SyncedAccountLibrary = {
+      ...(acc.library || {}),
+      ...(library && typeof library === 'object' ? library : {}),
+    };
+    if (Array.isArray(playlists)) {
+      nextLibrary.playlists = playlists;
+      acc.playlists = playlists;
+    } else if (Array.isArray(nextLibrary.playlists)) {
+      acc.playlists = nextLibrary.playlists;
+    }
+    acc.library = nextLibrary;
+    acc.libraryUpdatedAt = now;
+    acc.lastActive = now;
+    saveStorage();
 
     res.json({
       success: true,
-      count: playlists?.length || acc?.playlists?.length || 0,
-      libraryUpdatedAt: acc?.libraryUpdatedAt || now,
+      count: playlists?.length || acc.playlists?.length || 0,
+      libraryUpdatedAt: acc.libraryUpdatedAt || now,
       stats: {
         totalAccessCount: appState.totalAccessCount,
         totalAccountsCount: appState.accounts.length,
@@ -4455,20 +4648,46 @@ export async function createApp(options?: {
     res.json({ notifications: list });
   });
 
-  // --- ADMIN API & MASTER CONTROLS (管理者パスワード: @zeromusic) ---
+  // --- ADMIN API & MASTER CONTROLS ---
 
-  // Admin login check
+  // Admin login check (salted scrypt verification + signed Bearer token)
   app.post('/api/admin/login', (req, res) => {
-    const { password } = req.body;
-    if (String(password || '').trim() !== ADMIN_PASSWORD) {
+    const clientKey = String(req.ip || req.socket.remoteAddress || 'unknown');
+    const now = Date.now();
+    const failInfo = adminLoginFailures.get(clientKey);
+    if (failInfo && failInfo.resetAt > now && failInfo.count >= 15) {
+      return res.status(429).json({
+        error: '試行回数が上限に達しました。しばらく待ってから再度お試しください。',
+      });
+    }
+
+    const password = String(req.body?.password || '').trim();
+    if (!verifyAdminPassword(password)) {
+      const nextCount = failInfo && failInfo.resetAt > now ? failInfo.count + 1 : 1;
+      adminLoginFailures.set(clientKey, {
+        count: nextCount,
+        resetAt: failInfo && failInfo.resetAt > now ? failInfo.resetAt : now + 5 * 60 * 1000,
+      });
       return res.status(401).json({ error: '管理者パスワードが正しくありません' });
     }
+
+    adminLoginFailures.delete(clientKey);
+    const token = issueAdminSessionToken();
     res.json({
       success: true,
       role: 'admin',
-      token: `admin_session_${Date.now()}`,
+      token,
       message: '管理者として認証されました',
     });
+  });
+
+  app.post('/api/admin/logout', (req, res) => {
+    const token = extractBearerToken(req);
+    const parsed = parseValidAdminToken(token);
+    if (parsed) {
+      activeAdminTokens.delete(parsed.jti);
+    }
+    res.json({ success: true });
   });
 
   // --- TELEMETRY & RICH ANALYTICS INGESTION ---
@@ -4552,12 +4771,13 @@ export async function createApp(options?: {
   });
 
   // Admin overview dashboard metrics with deep telemetry
-  app.get('/api/admin/overview', (_req, res) => {
+  app.get('/api/admin/overview', requireAdminAuth, (_req, res) => {
     let totalPlaylistsCount = 0;
     appState.accounts.forEach((acc) => {
       totalPlaylistsCount += (acc.playlists || []).length;
     });
 
+    const bannedSet = new Set(appState.bannedUsers.map((u) => u.toLowerCase()));
     const sanitizedAccounts = appState.accounts.map((acc) => ({
       id: acc.id,
       username: acc.username,
@@ -4566,6 +4786,7 @@ export async function createApp(options?: {
       lastActive: acc.lastActive,
       playlistsCount: (acc.playlists || []).length,
       hasEmail: !!acc.email,
+      isBanned: bannedSet.has(acc.username.toLowerCase()),
     }));
 
     // Top played tracks ranking
@@ -4628,17 +4849,25 @@ export async function createApp(options?: {
       accounts: sanitizedAccounts,
       trackOffsets: appState.trackOffsets || {},
       recentApiLogs: apiLogs.slice(0, 15),
+      bannedUsers: appState.bannedUsers,
+      customNgWords: appState.customNgWords || [],
+      siteSettings: appState.siteSettings || defaultSiteSettings(),
       system: {
         nodeVersion: process.version,
         uptimeSeconds: Math.floor(process.uptime()),
         memoryUsageMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         lyricsCacheSize: lyricsMemoryCache.size,
+        kvCacheSize: kvCache.getStats().activeKeys,
+        activeAdminSessions: (() => {
+          pruneExpiredAdminTokens();
+          return activeAdminTokens.size;
+        })(),
       },
     });
   });
 
   // Delete user account
-  app.post('/api/admin/users/delete', (req, res) => {
+  app.post('/api/admin/users/delete', requireAdminAuth, (req, res) => {
     const { username } = req.body;
     const cleanUser = String(username || '').trim().toLowerCase();
     if (!cleanUser) {
@@ -4649,7 +4878,9 @@ export async function createApp(options?: {
       return res.status(404).json({ error: 'ユーザーが見つかりません' });
     }
     const deleted = appState.accounts.splice(idx, 1)[0];
+    appState.bannedUsers = appState.bannedUsers.filter((u) => u.toLowerCase() !== deleted.username.toLowerCase());
     saveStorage();
+    broadcast({ type: 'account:deleted', username: deleted.username });
     res.json({
       success: true,
       message: `ユーザー「${deleted.username}」を削除しました`,
@@ -4658,7 +4889,7 @@ export async function createApp(options?: {
   });
 
   // Reset user password
-  app.post('/api/admin/users/reset-password', (req, res) => {
+  app.post('/api/admin/users/reset-password', requireAdminAuth, (req, res) => {
     const { username, newPassword } = req.body;
     const cleanUser = String(username || '').trim().toLowerCase();
     const cleanPass = String(newPassword || '').trim();
@@ -4678,7 +4909,7 @@ export async function createApp(options?: {
   });
 
   // Global track offset override (for songs without intro where lyrics offset is required)
-  app.post('/api/admin/track-offset', (req, res) => {
+  app.post('/api/admin/track-offset', requireAdminAuth, (req, res) => {
     const { videoId, offsetSec, title, remove } = req.body;
     const cleanId = String(videoId || '').trim();
     if (!cleanId) {
@@ -4695,6 +4926,10 @@ export async function createApp(options?: {
       };
     }
     saveStorage();
+    broadcast({
+      type: 'offsets:updated',
+      trackOffsets: appState.trackOffsets,
+    });
     res.json({
       success: true,
       trackOffsets: appState.trackOffsets,
@@ -4706,8 +4941,8 @@ export async function createApp(options?: {
     res.json({ trackOffsets: appState.trackOffsets });
   });
 
-  // Broadcast notification to all email-registered users
-  app.post('/api/admin/broadcast-notification', (req, res) => {
+  // Broadcast notification to all registered users (both in-app drawer and notification log)
+  app.post('/api/admin/broadcast-notification', requireAdminAuth, (req, res) => {
     const { subject, body } = req.body;
     const cleanSub = String(subject || '').trim();
     const cleanBody = String(body || '').trim();
@@ -4716,23 +4951,31 @@ export async function createApp(options?: {
       return res.status(400).json({ error: 'タイトルと本文を入力してください' });
     }
 
-    const emailAccounts = appState.accounts.filter((a) => a.email);
     const now = new Date().toISOString();
     let sentCount = 0;
 
-    emailAccounts.forEach((acc) => {
+    appState.accounts.forEach((acc) => {
       const notif: StoredNotification = {
         id: `broadcast_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         username: acc.username,
-        email: acc.email!,
+        email: acc.email || '',
         subject: cleanSub,
         body: cleanBody,
         type: 'broadcast',
         timestamp: now,
         status: 'delivered',
-        deliveryMessageId: `broadcast_smtp_${Date.now()}_${sentCount}`,
+        deliveryMessageId: acc.email
+          ? `broadcast_smtp_${Date.now()}_${sentCount}`
+          : `broadcast_inapp_${Date.now()}_${sentCount}`,
       };
       appState.notifications.unshift(notif);
+      sendSocialNotification({
+        recipient: acc.username,
+        sender: '運営管理者',
+        type: 'broadcast',
+        title: cleanSub,
+        body: cleanBody,
+      });
       sentCount++;
     });
 
@@ -4741,6 +4984,12 @@ export async function createApp(options?: {
     }
 
     saveStorage();
+    broadcast({
+      type: 'admin:toast',
+      message: `${cleanSub}: ${cleanBody}`,
+      toastType: 'info',
+      timestamp: now,
+    });
     res.json({
       success: true,
       sentCount,
@@ -4749,9 +4998,127 @@ export async function createApp(options?: {
   });
 
   // Clear lyrics memory cache
-  app.post('/api/admin/cache/clear', (_req, res) => {
+  app.post('/api/admin/cache/clear', requireAdminAuth, (_req, res) => {
     lyricsMemoryCache.clear();
     res.json({ success: true, message: '歌詞キャッシュを消去しました' });
+  });
+
+  // Clear all InnerTube / API persistent KV cache
+  app.post('/api/admin/cache/clear-kv', requireAdminAuth, (_req, res) => {
+    kvCache.clear();
+    res.json({ success: true, message: 'InnerTube・検索キャッシュをすべて消去しました' });
+  });
+
+  // Clear playback error logs
+  app.post('/api/admin/logs/clear-errors', requireAdminAuth, (_req, res) => {
+    appState.analytics.playbackErrors = [];
+    saveStorage();
+    res.json({ success: true, message: '再生エラーログを消去しました' });
+  });
+
+  // Clear InnerTube API call logs
+  app.post('/api/admin/logs/clear-api', requireAdminAuth, (_req, res) => {
+    apiLogs.length = 0;
+    res.json({ success: true, message: 'API疎通ログを消去しました' });
+  });
+
+  // Revoke other active admin tokens (keep current caller token)
+  app.post('/api/admin/sessions/revoke-others', requireAdminAuth, (req, res) => {
+    const currentToken = parseValidAdminToken(extractBearerToken(req));
+    let revokedCount = 0;
+    for (const jti of Array.from(activeAdminTokens.keys())) {
+      if (!currentToken || jti !== currentToken.jti) {
+        activeAdminTokens.delete(jti);
+        revokedCount++;
+      }
+    }
+    res.json({
+      success: true,
+      revokedCount,
+      message:
+        revokedCount > 0
+          ? `他 ${revokedCount}件の管理者セッションを無効化しました`
+          : '他に有効な管理者セッションはありませんでした',
+    });
+  });
+
+  // Public site settings (announcement banner & feature availability)
+  app.get('/api/site-settings', (_req, res) => {
+    res.json({ settings: appState.siteSettings || defaultSiteSettings() });
+  });
+
+  // Admin get & update site settings / announcement banner
+  app.get('/api/admin/site-settings', requireAdminAuth, (_req, res) => {
+    res.json({ settings: appState.siteSettings || defaultSiteSettings() });
+  });
+
+  app.post('/api/admin/site-settings', requireAdminAuth, (req, res) => {
+    const body = req.body || {};
+    const current = appState.siteSettings || defaultSiteSettings();
+    const rawLevel = String(body.announcement?.level || current.announcement.level);
+    const level: 'info' | 'warning' | 'alert' =
+      rawLevel === 'warning' || rawLevel === 'alert' ? rawLevel : 'info';
+
+    const nextSettings: SiteSettings = {
+      announcement: {
+        active:
+          typeof body.announcement?.active === 'boolean'
+            ? body.announcement.active
+            : current.announcement.active,
+        message:
+          typeof body.announcement?.message === 'string'
+            ? body.announcement.message.trim().slice(0, 300)
+            : current.announcement.message,
+        level,
+        updatedAt: new Date().toISOString(),
+      },
+      allowNewRegistrations:
+        typeof body.allowNewRegistrations === 'boolean'
+          ? body.allowNewRegistrations
+          : current.allowNewRegistrations,
+      sharedOfflineUploadEnabled:
+        typeof body.sharedOfflineUploadEnabled === 'boolean'
+          ? body.sharedOfflineUploadEnabled
+          : current.sharedOfflineUploadEnabled,
+      commentsEnabled:
+        typeof body.commentsEnabled === 'boolean'
+          ? body.commentsEnabled
+          : current.commentsEnabled,
+      dmsEnabled:
+        typeof body.dmsEnabled === 'boolean' ? body.dmsEnabled : current.dmsEnabled,
+    };
+
+    appState.siteSettings = nextSettings;
+    saveStorage();
+    broadcast({ type: 'site:settings_updated', settings: nextSettings });
+    res.json({
+      success: true,
+      settings: nextSettings,
+      message: 'システム制御・お知らせ設定を更新しました',
+    });
+  });
+
+  // Instant real-time toast push to all online clients
+  app.post('/api/admin/push-toast', requireAdminAuth, (req, res) => {
+    const rawMsg = String(req.body?.message || '').trim().slice(0, 240);
+    if (!rawMsg) {
+      return res.status(400).json({ error: '通知メッセージを入力してください' });
+    }
+    const rawType = String(req.body?.toastType || 'info');
+    const toastType: 'info' | 'warning' | 'success' =
+      rawType === 'warning' || rawType === 'success' ? rawType : 'info';
+
+    broadcast({
+      type: 'admin:toast',
+      message: rawMsg,
+      toastType,
+      timestamp: new Date().toISOString(),
+    });
+    res.json({
+      success: true,
+      onlineCount: getOnlineCount(),
+      message: `接続中のクライアントへリアルタイム通知を送信しました`,
+    });
   });
 
   // Helper to record activity feed item
@@ -5379,6 +5746,11 @@ export async function createApp(options?: {
   });
 
   app.post('/api/comments/:videoId', (req, res) => {
+    if (appState.siteSettings && !appState.siteSettings.commentsEnabled) {
+      return res.status(403).json({
+        error: '現在、管理者によりコメント・弾幕投稿が一時停止されています',
+      });
+    }
     const { videoId } = req.params;
     const { text, timestampSec, formattedTime, username, color } = req.body;
     const cleanUser = String(username || 'ゲストリスナー').trim();
@@ -5388,7 +5760,7 @@ export async function createApp(options?: {
       return res.status(400).json({ error: 'コメント内容を入力してください' });
     }
 
-    if (appState.bannedUsers.includes(cleanUser.toLowerCase())) {
+    if (isUserBanned(cleanUser)) {
       return res.status(403).json({ error: 'アカウントがモデレーションにより停止されています' });
     }
 
@@ -5484,8 +5856,9 @@ export async function createApp(options?: {
 
   app.delete('/api/comments/:videoId/:id', (req, res) => {
     const { videoId, id } = req.params;
-    const { username, isAdmin } = req.body;
+    const { username } = req.body;
     const cleanUser = String(username || '').trim().toLowerCase();
+    const isVerifiedAdmin = isValidAdminRequest(req);
 
     const comments = appState.trackComments[videoId] || [];
     const idx = comments.findIndex((c) => c.id === id);
@@ -5494,7 +5867,7 @@ export async function createApp(options?: {
     }
 
     const c = comments[idx];
-    if (!isAdmin && c.username.toLowerCase() !== cleanUser) {
+    if (!isVerifiedAdmin && c.username.toLowerCase() !== cleanUser) {
       return res.status(403).json({ error: '自分のコメントのみ削除できます' });
     }
 
@@ -5612,6 +5985,11 @@ export async function createApp(options?: {
   });
 
   app.post('/api/dm/send', (req, res) => {
+    if (appState.siteSettings && !appState.siteSettings.dmsEnabled) {
+      return res.status(403).json({
+        error: '現在、管理者によりダイレクトメッセージ送信が一時停止されています',
+      });
+    }
     const { sender, recipient, content, trackCard, playlistCard } = req.body;
     const cleanSender = String(sender || '').trim();
     const cleanRecipient = String(recipient || '').trim();
@@ -5620,7 +5998,7 @@ export async function createApp(options?: {
       return res.status(400).json({ error: '送信者と受信者を指定してください' });
     }
 
-    if (appState.bannedUsers.includes(cleanSender.toLowerCase())) {
+    if (isUserBanned(cleanSender)) {
       return res.status(403).json({ error: 'アカウントが停止されています' });
     }
 
@@ -5747,6 +6125,9 @@ export async function createApp(options?: {
     const cleanHost = String(hostUsername || 'ホスト').trim();
 
     if (!cleanName) return res.status(400).json({ error: 'ルーム名を入力してください' });
+    if (isUserBanned(cleanHost)) {
+      return res.status(403).json({ error: 'アカウントが停止されているためルームを作成できません' });
+    }
 
     const roomId = `room_custom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const newRoom: ListeningPartyRoom = {
@@ -5917,7 +6298,7 @@ export async function createApp(options?: {
   });
 
   // --- Admin Moderation & Community Endpoints ---
-  app.get('/api/admin/moderation/overview', (_req, res) => {
+  app.get('/api/admin/moderation/overview', requireAdminAuth, (_req, res) => {
     let allCommentsCount = 0;
     const allCommentsList: any[] = [];
     for (const [vId, list] of Object.entries(appState.trackComments)) {
@@ -5936,10 +6317,138 @@ export async function createApp(options?: {
       totalRooms: Object.keys(appState.listeningRooms).length,
       rooms: Object.values(appState.listeningRooms),
       ngWords: DEFAULT_NG_WORDS,
+      customNgWords: appState.customNgWords || [],
     });
   });
 
-  app.post('/api/admin/moderation/resolve-report', (req, res) => {
+  // Add/Remove Custom NG Words
+  app.post('/api/admin/moderation/ng-words', requireAdminAuth, (req, res) => {
+    const word = String(req.body?.word || '').trim().slice(0, 60);
+    if (!word) {
+      return res.status(400).json({ error: '追加するNGワードを入力してください' });
+    }
+    if (!appState.customNgWords) appState.customNgWords = [];
+    if (
+      !DEFAULT_NG_WORDS.includes(word) &&
+      !appState.customNgWords.includes(word)
+    ) {
+      appState.customNgWords.push(word);
+      saveStorage();
+    }
+    res.json({
+      success: true,
+      ngWords: DEFAULT_NG_WORDS,
+      customNgWords: appState.customNgWords,
+      message: `NGワード「${word}」を登録しました`,
+    });
+  });
+
+  app.delete('/api/admin/moderation/ng-words', requireAdminAuth, (req, res) => {
+    const word = String(req.body?.word || req.query.word || '').trim();
+    if (!word) {
+      return res.status(400).json({ error: '削除するNGワードを指定してください' });
+    }
+    appState.customNgWords = (appState.customNgWords || []).filter((w) => w !== word);
+    saveStorage();
+    res.json({
+      success: true,
+      ngWords: DEFAULT_NG_WORDS,
+      customNgWords: appState.customNgWords,
+      message: `カスタムNGワード「${word}」を削除しました`,
+    });
+  });
+
+  // Admin Listening Rooms & Playlists Management
+  app.get('/api/admin/content/overview', requireAdminAuth, (_req, res) => {
+    const rooms = Object.values(appState.listeningRooms).map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      category: r.category,
+      hostUsername: r.hostUsername,
+      isPlaying: r.isPlaying,
+      currentTrack: r.currentTrack || null,
+      participantCount: (r.participants || []).length,
+      chatCount: (r.chatMessages || []).length,
+      queueCount: (r.queue || []).length,
+    }));
+
+    const sharedPlaylists = Object.values(appState.sharedPlaylists || {})
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((pl) => ({
+        id: pl.id,
+        name: pl.name,
+        author: pl.author || 'ゲスト',
+        trackCount: (pl.tracks || []).length,
+        createdAt: pl.createdAt,
+        views: pl.viewCount || 0,
+      }));
+
+    const collabPlaylists = Object.values(appState.collabPlaylists || {})
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .map((cp) => ({
+        code: cp.code,
+        name: cp.title,
+        owner: cp.hostUsername,
+        trackCount: (cp.tracks || []).length,
+        memberCount: (cp.members || []).length,
+        createdAt: cp.updatedAt,
+        updatedAt: cp.updatedAt,
+      }));
+
+    res.json({
+      rooms,
+      sharedPlaylists,
+      collabPlaylists,
+    });
+  });
+
+  app.post('/api/admin/rooms/:id/clear-chat', requireAdminAuth, (req, res) => {
+    const room = appState.listeningRooms[req.params.id];
+    if (!room) return res.status(404).json({ error: 'ルームが見つかりません' });
+    room.chatMessages = [
+      {
+        id: `sys_clear_${Date.now()}`,
+        username: 'System',
+        text: '管理者によりルームのチャット履歴が消去されました',
+        timestamp: new Date().toISOString(),
+        type: 'system',
+      },
+    ];
+    saveStorage();
+    broadcast({ type: 'party:chat_cleared', roomId: room.id, chatMessages: room.chatMessages });
+    res.json({ success: true, message: `「${room.name}」のチャット履歴を消去しました` });
+  });
+
+  app.delete('/api/admin/rooms/:id', requireAdminAuth, (req, res) => {
+    const id = req.params.id;
+    const room = appState.listeningRooms[id];
+    if (!room) return res.status(404).json({ error: 'ルームが見つかりません' });
+    delete appState.listeningRooms[id];
+    saveStorage();
+    broadcast({ type: 'party:room_deleted', roomId: id });
+    res.json({ success: true, message: `ルーム「${room.name}」を削除しました` });
+  });
+
+  app.delete('/api/admin/shared-playlists/:id', requireAdminAuth, (req, res) => {
+    const id = req.params.id;
+    const pl = appState.sharedPlaylists?.[id];
+    if (!pl) return res.status(404).json({ error: '共有プレイリストが見つかりません' });
+    delete appState.sharedPlaylists[id];
+    saveStorage();
+    res.json({ success: true, message: `共有プレイリスト「${pl.name}」を削除しました` });
+  });
+
+  app.delete('/api/admin/collab-playlists/:code', requireAdminAuth, (req, res) => {
+    const code = String(req.params.code || '').toUpperCase();
+    const cp = appState.collabPlaylists?.[code];
+    if (!cp) return res.status(404).json({ error: 'コラボプレイリストが見つかりません' });
+    delete appState.collabPlaylists![code];
+    saveStorage();
+    res.json({ success: true, message: `コラボプレイリスト「${cp.title}」を削除しました` });
+  });
+
+  app.post('/api/admin/moderation/resolve-report', requireAdminAuth, (req, res) => {
     const { reportId, status } = req.body;
     const rep = appState.moderationReports.find((r) => r.id === reportId);
     if (!rep) return res.status(404).json({ error: '通報が見つかりません' });
@@ -5948,7 +6457,7 @@ export async function createApp(options?: {
     res.json({ success: true, report: rep });
   });
 
-  app.post('/api/admin/moderation/toggle-ban', (req, res) => {
+  app.post('/api/admin/moderation/toggle-ban', requireAdminAuth, (req, res) => {
     const { username } = req.body;
     const cleanUser = String(username || '').trim().toLowerCase();
     if (!cleanUser) return res.status(400).json({ error: 'Username is required' });
@@ -5963,11 +6472,14 @@ export async function createApp(options?: {
       isBanned = false;
     }
     saveStorage();
+    if (isBanned) {
+      broadcast({ type: 'account:banned', username: cleanUser });
+    }
     res.json({ success: true, isBanned, bannedUsers: appState.bannedUsers });
   });
 
   // --- Admin Direct Messages Audit & Surveillance (全ユーザー間DM監視・監査) ---
-  app.get('/api/admin/dm/all', (req, res) => {
+  app.get('/api/admin/dm/all', requireAdminAuth, (req, res) => {
     // Group all direct messages by conversationId
     const convMap = new Map<string, {
       conversationId: string;
@@ -6012,7 +6524,7 @@ export async function createApp(options?: {
   });
 
   // Admin delete specific DM message
-  app.delete('/api/admin/dm/message/:id', (req, res) => {
+  app.delete('/api/admin/dm/message/:id', requireAdminAuth, (req, res) => {
     const { id } = req.params;
     const idx = appState.directMessages.findIndex((m) => m.id === id);
     if (idx === -1) {
@@ -6037,10 +6549,21 @@ export async function createApp(options?: {
   // --- Freemake Audio/Video Downloader & Conversion Engine ---
   registerFreemakeRoutes(app, getInnertube);
 
-  // --- Shared Offline Library (誰でもアップロード・みんなでオフライン再生) ---
-  registerSharedOfflineRoutes(app, DATA_DIR, (track) => {
-    broadcast({ type: 'shared_offline:added', track });
-  });
+  // --- Shared Offline Library (誰でもアップロード・みんなでオフライン再生 / 管理者のみ削除可) ---
+  registerSharedOfflineRoutes(
+    app,
+    DATA_DIR,
+    (track) => {
+      broadcast({ type: 'shared_offline:added', track });
+    },
+    {
+      requireAdminAuth,
+      onTrackDeleted: (trackId) => {
+        broadcast({ type: 'shared_offline:deleted', trackId });
+      },
+      canUpload: () => appState.siteSettings?.sharedOfflineUploadEnabled !== false,
+    }
+  );
 
   // --- Direct Audio Stream Proxy (Lossless/Hi-Res, Spatial Audio, Sing Vocal DSP, Dual-Deck Crossfade) ---
   registerAudioStreamRoutes(app, getInnertube);

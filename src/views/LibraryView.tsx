@@ -76,6 +76,7 @@ import {
   uploadSharedOfflineFile,
   publishOfflineTrackToShared,
   syncSharedTracksForOffline,
+  restoreLocalCachedSharedToServer,
   copySharedTrackToMyOffline,
   downloadSharedOfflineTrack,
   buildSharedDownloadFilename,
@@ -171,7 +172,10 @@ export const LibraryView: React.FC = () => {
     downloadCollectionOffline,
     refreshOfflineCaches,
     playAllOfflineSavedTracks,
+    siteSettings,
   } = usePlayer();
+
+  const sharedUploadPaused = siteSettings?.sharedOfflineUploadEnabled === false;
 
   const isOnline = useOnlineStatus();
   const [storageStats, setStorageStats] = useState<OfflineStorageStats | null>(null);
@@ -370,6 +374,12 @@ export const LibraryView: React.FC = () => {
 
   const handleSharedFilePick = (file: File | null | undefined) => {
     if (!file) return;
+    if (sharedUploadPaused) {
+      const msg = '現在、管理者により共有オフラインへの新規アップロードが一時停止されています';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
     if (isUploadingShared) {
       setSharedUploadError('アップロード中は別のファイルを選択できません。');
       return;
@@ -401,6 +411,12 @@ export const LibraryView: React.FC = () => {
   };
 
   const handleSharedFilesUpload = async (files: FileList | File[]) => {
+    if (sharedUploadPaused) {
+      const msg = '現在、管理者により共有オフラインへの新規アップロードが一時停止されています';
+      setSharedUploadError(msg);
+      showToast(msg, 'warning');
+      return;
+    }
     const pickedList = Array.from(files);
     const validFiles = pickedList.filter(isValidSharedFile);
     if (validFiles.length === 0) {
@@ -478,6 +494,10 @@ export const LibraryView: React.FC = () => {
   };
 
   const handlePublishLocalToShared = async (track: Track) => {
+    if (sharedUploadPaused) {
+      showToast('現在、管理者により共有オフラインへの新規アップロードが一時停止されています', 'warning');
+      return;
+    }
     if (!navigator.onLine) {
       showToast('オフライン中は共有公開できません', 'warning');
       return;
@@ -507,6 +527,10 @@ export const LibraryView: React.FC = () => {
     }
     setSyncingShared(true);
     try {
+      const restored = await restoreLocalCachedSharedToServer().catch(() => ({
+        checked: 0,
+        restoredCount: 0,
+      }));
       const fresh = await loadSharedOfflineTracks();
       setSharedTracks(fresh.tracks);
       const res = await syncSharedTracksForOffline(fresh.tracks, (cached, total) => {
@@ -514,10 +538,14 @@ export const LibraryView: React.FC = () => {
       });
       const after = await loadSharedOfflineTracks();
       setSharedTracks(after.tracks);
+      const restoreMsg =
+        restored.restoredCount > 0
+          ? `・サーバーへ ${restored.restoredCount}曲復元`
+          : '';
       showToast(
-        `共有オフライン同期完了（${res.cached} / ${res.total}曲がオフライン再生可能）`,
+        `共有オフライン同期完了（${res.cached} / ${res.total}曲がオフライン再生可能${restoreMsg}）`,
         'success',
-        3200
+        3400
       );
     } finally {
       setSyncingShared(false);
@@ -3643,8 +3671,9 @@ export const LibraryView: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isUploadingShared}
+                disabled={isUploadingShared || sharedUploadPaused}
                 onClick={() => {
+                  if (sharedUploadPaused) return;
                   if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
                   sharedFileInputRef.current?.click();
                 }}
@@ -3658,6 +3687,8 @@ export const LibraryView: React.FC = () => {
                 <span>
                   {isUploadingShared
                     ? `アップロード中${sharedUploadProgress !== null ? ` (${sharedUploadProgress}%)` : '...'}`
+                    : sharedUploadPaused
+                    ? 'アップロード一時停止中'
                     : 'ファイルを選択'}
                 </span>
               </button>
@@ -3688,6 +3719,15 @@ export const LibraryView: React.FC = () => {
             </div>
           </div>
 
+          {sharedUploadPaused && (
+            <div className="p-4 rounded-xl bg-amber-950/45 border border-amber-500/40 text-xs text-amber-200 flex items-center gap-2.5">
+              <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                現在、管理者により共有オフラインへの新規アップロードが一時停止されています（既に登録された楽曲の再生・オフライン同期は引き続き利用できます）。
+              </span>
+            </div>
+          )}
+
           {/* Shared Upload Panel (No Expiration / 1 MiB Chunked Upload) */}
           <div className="p-5 sm:p-6 rounded-2xl bg-neutral-900/60 border border-neutral-800/90 shadow-xl space-y-5">
             <div
@@ -3696,11 +3736,11 @@ export const LibraryView: React.FC = () => {
               aria-label="共有オフライン ファイル選択エリア"
               onDragEnter={(e) => {
                 e.preventDefault();
-                if (!isUploadingShared) setIsDraggingShared(true);
+                if (!isUploadingShared && !sharedUploadPaused) setIsDraggingShared(true);
               }}
               onDragOver={(e) => {
                 e.preventDefault();
-                if (!isUploadingShared) setIsDraggingShared(true);
+                if (!isUploadingShared && !sharedUploadPaused) setIsDraggingShared(true);
               }}
               onDragLeave={(e) => {
                 e.preventDefault();
@@ -3708,24 +3748,26 @@ export const LibraryView: React.FC = () => {
               }}
               onDrop={handleSharedDrop}
               onClick={() => {
-                if (isUploadingShared) return;
+                if (isUploadingShared || sharedUploadPaused) return;
                 if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
                 sharedFileInputRef.current?.click();
               }}
               onKeyDown={(e) => {
-                if (isUploadingShared) return;
+                if (isUploadingShared || sharedUploadPaused) return;
                 if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
                   e.preventDefault();
                   if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
                   sharedFileInputRef.current?.click();
                 }
               }}
-              className={`border-2 rounded-2xl p-6 text-center transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-400/60 ${
-                isDraggingShared
-                  ? 'border-dashed border-emerald-400 bg-emerald-950/35 scale-[1.01]'
+              className={`border-2 rounded-2xl p-6 text-center transition-all focus:outline-none focus:ring-2 focus:ring-emerald-400/60 ${
+                sharedUploadPaused
+                  ? 'border-dashed border-neutral-800 bg-neutral-950/30 opacity-60 cursor-not-allowed'
+                  : isDraggingShared
+                  ? 'border-dashed border-emerald-400 bg-emerald-950/35 scale-[1.01] cursor-pointer'
                   : sharedPickedFile
-                  ? 'border-solid border-emerald-500/50 bg-emerald-950/20'
-                  : 'border-dashed border-emerald-700/45 hover:border-emerald-500/75 bg-neutral-950/40'
+                  ? 'border-solid border-emerald-500/50 bg-emerald-950/20 cursor-pointer'
+                  : 'border-dashed border-emerald-700/45 hover:border-emerald-500/75 bg-neutral-950/40 cursor-pointer'
               }`}
             >
               <div className="max-w-lg mx-auto space-y-2.5">
@@ -3737,7 +3779,9 @@ export const LibraryView: React.FC = () => {
                   )}
                 </div>
                 <h3 className="text-sm sm:text-base font-bold text-white break-all">
-                  {sharedPickedFile
+                  {sharedUploadPaused
+                    ? '現在、新規アップロードが一時停止されています'
+                    : sharedPickedFile
                     ? sharedPickedFile.name
                     : 'ファイルをここにドロップ'}
                 </h3>
@@ -3748,9 +3792,10 @@ export const LibraryView: React.FC = () => {
                 </p>
                 <button
                   type="button"
-                  disabled={isUploadingShared}
+                  disabled={isUploadingShared || sharedUploadPaused}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (sharedUploadPaused) return;
                     if (sharedFileInputRef.current) sharedFileInputRef.current.value = '';
                     sharedFileInputRef.current?.click();
                   }}

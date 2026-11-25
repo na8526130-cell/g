@@ -712,6 +712,28 @@ export async function deleteCachedSharedOfflineTrack(id: string): Promise<void> 
   } catch {}
 }
 
+export async function removeDeletedSharedOfflineCaches(id: string): Promise<void> {
+  activeSharedThumbs.delete(id);
+  await deleteCachedSharedOfflineTrack(id);
+  if (typeof window !== 'undefined' && 'caches' in window) {
+    try {
+      const fileUrl = `/api/shared-offline/file/${encodeURIComponent(id)}`;
+      const coverUrl = `/api/shared-offline/cover/${encodeURIComponent(id)}`;
+      const cacheNames = await window.caches.keys();
+      await Promise.all(
+        cacheNames.map(async (name) => {
+          try {
+            const cache = await window.caches.open(name);
+            await cache.delete(fileUrl);
+            await cache.delete(coverUrl);
+          } catch {}
+        })
+      );
+    } catch {}
+  }
+  notifySharedOfflineChanged();
+}
+
 /**
  * Save a downloaded streaming/YouTube track's audio Blob into IndexedDB keyed by its original track.id
  */
@@ -996,11 +1018,18 @@ export async function getOfflineStorageStats(): Promise<OfflineStorageStats> {
 export async function getPlayableOfflineTrack(track: Track): Promise<Track> {
   const existingUrl = activeBlobUrls.get(track.id);
   const existingBlob = activeBlobs.get(track.id);
-  if (existingUrl && existingBlob && existingBlob.size > 0 && track.audioUrl === existingUrl) {
+  if (existingUrl && existingBlob && existingBlob.size > 0) {
+    const isShared = Boolean(track.isSharedOffline || track.id.startsWith('shared_'));
+    const isLocal = isShared || Boolean(track.isLocal);
     return {
       ...track,
-      isLocal: true,
+      thumbnail: isShared
+        ? resolveSharedTrackDisplayThumbnail(track.id, track.thumbnail)
+        : track.thumbnail,
+      isLocal,
+      ...(isShared ? { isSharedOffline: true } : {}),
       isCachedOffline: true,
+      audioUrl: existingUrl,
       audioMimeType: track.audioMimeType || existingBlob.type || undefined,
     };
   }

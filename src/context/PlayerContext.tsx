@@ -64,9 +64,14 @@ function getPeriodKeyAndLabel(ts: string, period: RecapPeriod): { key: string; l
   return { key: `${year}-${mm}`, label: `${year}年${month}月` };
 }
 import { ConnectDeviceInfo, ConnectCommandPayload } from '../types/social';
-import { api, SyncedAccountLibrary } from '../services/api';
+import { api, SiteSettings, SyncedAccountLibrary } from '../services/api';
 import { socialSocket } from '../services/socialSocket';
 import { audioDspEngine } from '../services/audioDspEngine';
+import {
+  downloadUserBackupJson,
+  inspectUserBackupJson,
+  UserBackupPreview,
+} from '../utils/userBackupJson';
 import {
   CACHED_YT_CHANGED_EVENT,
   deleteCachedTrackAudio,
@@ -76,12 +81,19 @@ import {
   getAllOfflineTracks,
   getCachedTrackAudioIds,
   getPlayableOfflineTrack,
+  warmSharedOfflineBlobUrls,
 } from '../services/offlineStorage';
 import {
   downloadCollectionForOffline,
   downloadTrackForOffline,
 } from '../services/offlineManager';
-import { syncSharedTracksForOffline } from '../services/sharedOffline';
+import {
+  exportAllSharedOfflineForBackup,
+  removeDeletedSharedOfflineTrackLocal,
+  restoreLocalCachedSharedToServer,
+  restoreSharedOfflineFromBackup,
+  syncSharedTracksForOffline,
+} from '../services/sharedOffline';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { normalizeArtistName } from '../utils/artistNames';
 
@@ -417,13 +429,36 @@ interface PlayerContextType {
   onlineCount: number;
   refreshStats: () => Promise<void>;
 
-  // Admin Master Control (パスワード: @zeromusic)
+  // Admin Master Control & Site Settings
   isAdmin: boolean;
   adminModalOpen: boolean;
   setAdminModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   adminLoginWithPassword: (password: string) => Promise<any>;
   trackOffsets: Record<string, { offsetSec: number; title?: string }>;
   refreshTrackOffsets: () => Promise<void>;
+  siteSettings: SiteSettings | null;
+  setSiteSettings: React.Dispatch<React.SetStateAction<SiteSettings | null>>;
+  refreshSiteSettings: () => Promise<void>;
+
+  // Regular-User JSON Backup Export / Import
+  exportUserDataJson: () => Promise<{
+    filename: string;
+    bytes: number;
+    playlistsCount: number;
+    likedTracksCount: number;
+    sharedOfflineCount: number;
+    omittedForSizeCount: number;
+  }>;
+  inspectUserBackupFile: (rawText: string) => UserBackupPreview;
+  importUserDataJson: (
+    rawText: string,
+    mode: 'merge' | 'replace'
+  ) => Promise<{
+    playlistsCount: number;
+    likedTracksCount: number;
+    sharedOfflineCount: number;
+    sharedRestoredServerCount: number;
+  }>;
 
   // Add to Playlist Modal
   addToPlaylistModalOpen: boolean;
@@ -919,12 +954,22 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const isMutedRef = useRef<boolean>(isMuted);
   isMutedRef.current = isMuted;
   const isTransitioningEarlyRef = useRef<boolean>(false);
+  const autoAdvanceLockRef = useRef<{ fromTrackId: string; ts: number } | null>(null);
+  const nextTrackInFlightRef = useRef<boolean>(false);
+  const trackActivatedAtRef = useRef<number>(0);
   const isFetchingRadioRef = useRef<boolean>(false);
   const lastAutoEmptyAtRef = useRef<number>(0);
   const [isAutoSelectingQueue, setIsAutoSelectingQueue] = useState<boolean>(false);
 
   // Intent tracker: true when user actively intends playback, false ONLY when user pressed pause
   const userIntendedPlayingRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    isTransitioningEarlyRef.current = false;
+    autoAdvanceLockRef.current = null;
+    nextTrackInFlightRef.current = false;
+    trackActivatedAtRef.current = Date.now();
+  }, [currentTrack?.id]);
 
   // Background playback & Wakelock state
   const [backgroundPlaybackEnabled, setBackgroundPlaybackEnabled] = useState<boolean>(() => {
@@ -1780,6 +1825,43 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
   }, [currentTrack]);
 
+  const isAdminRef = useRef<boolean>(false);
+  const logoutAccountRef = useRef<() => void>(() => {});
+
+  const refreshSiteSettings = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    try {
+      const res = await api.getSiteSettings();
+      if (res?.settings) {
+        setSiteSettings(res.settings);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    refreshSiteSettings();
+    const onFocusOrOnline = () => {
+      if (document.visibilityState === 'visible') {
+        refreshSiteSettings();
+        refreshTrackOffsets();
+      }
+    };
+    window.addEventListener('focus', onFocusOrOnline);
+    window.addEventListener('online', onFocusOrOnline);
+    document.addEventListener('visibilitychange', onFocusOrOnline);
+    const pollId = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refreshSiteSettings();
+      }
+    }, 20000);
+    return () => {
+      window.removeEventListener('focus', onFocusOrOnline);
+      window.removeEventListener('online', onFocusOrOnline);
+      document.removeEventListener('visibilitychange', onFocusOrOnline);
+      clearInterval(pollId);
+    };
+  }, [refreshSiteSettings, refreshTrackOffsets]);
+
   useEffect(() => {
     const unsub = socialSocket.on('notification:new', () => {
       refreshNotifications();
@@ -1789,25 +1871,84 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         syncSharedTracksForOffline().catch(() => {});
       }
     });
+    const unsubSharedDeleted = socialSocket.on('shared_offline:deleted', (payload: any) => {
+      const deletedId = String(payload?.trackId || '').trim();
+      if (deletedId) {
+        removeDeletedSharedOfflineTrackLocal(deletedId).catch(() => {});
+      }
+    });
+    const unsubSiteSettings = socialSocket.on('site:settings_updated', (payload: any) => {
+      if (payload?.settings) {
+        setSiteSettings(payload.settings);
+      }
+    });
+    const unsubOffsets = socialSocket.on('offsets:updated', (payload: any) => {
+      if (payload?.trackOffsets && typeof payload.trackOffsets === 'object') {
+        setTrackOffsets(payload.trackOffsets);
+      } else {
+        refreshTrackOffsets();
+      }
+    });
+    const unsubAccountBanned = socialSocket.on('account:banned', (payload: any) => {
+      const targetUser = String(payload?.username || '').trim().toLowerCase();
+      if (
+        targetUser &&
+        currentUser &&
+        !isAdminRef.current &&
+        currentUser.username.toLowerCase() === targetUser
+      ) {
+        logoutAccountRef.current();
+        showToast('このアカウントは管理者により凍結されたためログアウトしました', 'warning', 7000);
+      }
+    });
+    const unsubAccountDeleted = socialSocket.on('account:deleted', (payload: any) => {
+      const targetUser = String(payload?.username || '').trim().toLowerCase();
+      if (
+        targetUser &&
+        currentUser &&
+        !isAdminRef.current &&
+        currentUser.username.toLowerCase() === targetUser
+      ) {
+        logoutAccountRef.current();
+        showToast('このアカウントは管理者により削除されたためログアウトしました', 'warning', 7000);
+      }
+    });
+    const unsubAdminToast = socialSocket.on('admin:toast', (payload: any) => {
+      const msg = String(payload?.message || '').trim();
+      if (!msg) return;
+      const t = payload?.toastType;
+      const validType: 'info' | 'success' | 'warning' =
+        t === 'success' || t === 'warning' ? t : 'info';
+      showToast(msg, validType, 6500);
+    });
     return () => {
       unsub();
       unsubShared();
+      unsubSharedDeleted();
+      unsubSiteSettings();
+      unsubOffsets();
+      unsubAccountBanned();
+      unsubAccountDeleted();
+      unsubAdminToast();
     };
-  }, [refreshNotifications]);
+  }, [refreshNotifications, refreshTrackOffsets, showToast, currentUser]);
 
-  // Background auto-sync of Shared Offline tracks into IndexedDB while online
+  // Pre-warm IndexedDB shared offline blobs on startup (works offline) & sync/restore when online
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (navigator.onLine) {
-        syncSharedTracksForOffline().catch(() => {});
-      }
-    }, 800);
-    const onOnline = () => {
-      syncSharedTracksForOffline().catch(() => {});
+    warmSharedOfflineBlobUrls().catch(() => {});
+    const runOnlineSync = () => {
+      if (!navigator.onLine) return;
+      restoreLocalCachedSharedToServer()
+        .catch(() => {})
+        .finally(() => {
+          syncSharedTracksForOffline().catch(() => {});
+        });
     };
+    const timer = setTimeout(runOnlineSync, 800);
+    const onOnline = () => runOnlineSync();
     const onVisibility = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-        syncSharedTracksForOffline().catch(() => {});
+      if (document.visibilityState === 'visible') {
+        runOnlineSync();
       }
     };
     window.addEventListener('online', onOnline);
@@ -2322,46 +2463,56 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
       if (res.isAdmin || res.account?.role === 'admin') {
         setIsAdmin(true);
-        try {
-          localStorage.setItem('yt_music_is_admin_v1', 'true');
-        } catch {}
       }
 
       if (res.stats) {
         setStats(res.stats);
       }
 
-      try {
-        localStorage.setItem('yt_music_user_session_v1', JSON.stringify(user));
-        if (user.email) {
-          localStorage.setItem('yt_music_user_email_v1', user.email);
-        }
-      } catch {}
+      if (!res.isAdmin && res.account?.role !== 'admin') {
+        try {
+          localStorage.setItem('yt_music_user_session_v1', JSON.stringify(user));
+          if (user.email) {
+            localStorage.setItem('yt_music_user_email_v1', user.email);
+          }
+        } catch {}
+      }
 
       return res;
     },
     [mergeCloudAndLocalLibrary, applyLibrarySnapshot, recordSyncTimestamp]
   );
 
-  // Admin Master Login with password @zeromusic
-  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('yt_music_is_admin_v1') === 'true';
-    } catch {
-      return false;
-    }
-  });
+  // Admin Master Login (session kept strictly in memory)
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  isAdminRef.current = isAdmin;
   const [adminModalOpen, setAdminModalOpen] = useState<boolean>(false);
+  const [siteSettings, setSiteSettings] = useState<SiteSettings | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.removeItem('yt_music_is_admin_v1');
+      const rawSession = localStorage.getItem('yt_music_user_session_v1');
+      if (rawSession) {
+        const parsed = JSON.parse(rawSession);
+        if (parsed?.username === 'admin') {
+          localStorage.removeItem('yt_music_user_session_v1');
+        }
+      }
+    } catch {}
+    api.setOnAdminAuthExpired(() => {
+      setIsAdmin(false);
+    });
+    return () => {
+      api.setOnAdminAuthExpired(null);
+    };
+  }, []);
 
   const adminLoginWithPassword = useCallback(async (password: string) => {
     const res = await api.adminLogin(password);
     if (res.success) {
       setIsAdmin(true);
-      setCurrentUser({ username: 'admin', email: 'admin@zeromusic.local' });
-      try {
-        localStorage.setItem('yt_music_is_admin_v1', 'true');
-        localStorage.setItem('yt_music_user_session_v1', JSON.stringify({ username: 'admin', email: 'admin@zeromusic.local' }));
-      } catch {}
+      setCurrentUser({ username: 'admin', email: 'admin@system.local' });
     }
     return res;
   }, []);
@@ -2376,12 +2527,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setLastCloudSyncAt(null);
     setCurrentUser(null);
     setIsAdmin(false);
+    api.clearAdminSession();
     try {
       localStorage.removeItem('yt_music_user_session_v1');
       localStorage.removeItem('yt_music_user_email_v1');
       localStorage.removeItem('yt_music_is_admin_v1');
     } catch {}
   }, []);
+  logoutAccountRef.current = logoutAccount;
 
   // Pull newer cloud library updates from another device (or merge once if first time syncing this browser)
   const pullCloudLibraryIfNewer = useCallback(async (): Promise<boolean> => {
@@ -2389,7 +2542,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!uname || uname === 'admin') return false;
     try {
       const profile = await api.getAccountProfile(uname);
-      if (!profile?.exists || !profile.account) return false;
+      if (!profile?.exists || !profile.account) {
+        logoutAccount();
+        showToast('アカウントが見つからないためログアウトしました', 'warning', 6000);
+        return false;
+      }
       const serverUpdatedAt: string | undefined = profile.account.libraryUpdatedAt;
       const cloudLib: SyncedAccountLibrary = profile.account.library || {
         playlists: profile.account.playlists || [],
@@ -2426,10 +2583,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       return false;
-    } catch {
+    } catch (err: any) {
+      if (err?.banned) {
+        logoutAccount();
+        showToast('このアカウントは管理者により凍結されたためログアウトしました', 'warning', 7000);
+      } else if (err?.deleted) {
+        logoutAccount();
+        showToast('このアカウントは管理者により削除されました', 'warning', 7000);
+      }
       return false;
     }
-  }, [currentUser?.username, mergeCloudAndLocalLibrary, applyLibrarySnapshot, recordSyncTimestamp]);
+  }, [currentUser?.username, mergeCloudAndLocalLibrary, applyLibrarySnapshot, recordSyncTimestamp, logoutAccount, showToast]);
 
   const syncAccountNow = useCallback(async (): Promise<boolean> => {
     const uname = currentUser?.username;
@@ -2443,12 +2607,128 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         recordSyncTimestamp(uname, res?.libraryUpdatedAt);
       }
       return true;
-    } catch {
+    } catch (err: any) {
+      if (err?.banned) {
+        logoutAccount();
+        showToast('このアカウントは管理者により凍結されたためログアウトしました', 'warning', 7000);
+      } else if (err?.deleted) {
+        logoutAccount();
+        showToast('このアカウントは管理者により削除されました', 'warning', 7000);
+      }
       return false;
     } finally {
       setIsSyncingCloud(false);
     }
-  }, [currentUser?.username, pullCloudLibraryIfNewer, recordSyncTimestamp]);
+  }, [currentUser?.username, pullCloudLibraryIfNewer, recordSyncTimestamp, logoutAccount, showToast]);
+
+  // Regular-User JSON Backup Export / Preview / Import
+  const exportUserDataJson = useCallback(async () => {
+    const snapshot = snapshotRef.current;
+    const sharedBackup = await exportAllSharedOfflineForBackup().catch(() => ({
+      tracks: [],
+      omittedForSizeCount: 0,
+    }));
+    const { filename, bytes } = downloadUserBackupJson(
+      snapshot,
+      currentUser?.username || 'guest',
+      sharedBackup.tracks
+    );
+    const playlistsCount = snapshot.playlists?.length ?? 0;
+    const likedTracksCount = snapshot.likedTracks?.length ?? 0;
+    const sharedOfflineCount = sharedBackup.tracks.length;
+    showToast(
+      sharedOfflineCount > 0
+        ? `JSONバックアップを書き出しました (${filename} / 共有オフライン ${sharedOfflineCount}曲含む)`
+        : `JSONバックアップを書き出しました (${filename})`,
+      'success',
+      4200
+    );
+    return {
+      filename,
+      bytes,
+      playlistsCount,
+      likedTracksCount,
+      sharedOfflineCount,
+      omittedForSizeCount: sharedBackup.omittedForSizeCount,
+    };
+  }, [currentUser?.username, showToast]);
+
+  const inspectUserBackupFile = useCallback((rawText: string): UserBackupPreview => {
+    return inspectUserBackupJson(rawText);
+  }, []);
+
+  const importUserDataJson = useCallback(
+    async (
+      rawText: string,
+      mode: 'merge' | 'replace'
+    ): Promise<{
+      playlistsCount: number;
+      likedTracksCount: number;
+      sharedOfflineCount: number;
+      sharedRestoredServerCount: number;
+    }> => {
+      const preview = inspectUserBackupJson(rawText);
+      const nextLib =
+        mode === 'merge'
+          ? mergeCloudAndLocalLibrary(snapshotRef.current, preview.normalizedLibrary).merged
+          : {
+              ...preview.normalizedLibrary,
+              playlists:
+                preview.normalizedLibrary.playlists && preview.normalizedLibrary.playlists.length > 0
+                  ? preview.normalizedLibrary.playlists
+                  : [],
+            };
+
+      applyLibrarySnapshot(nextLib);
+
+      let sharedRestore = { restoredLocalCount: 0, restoredServerCount: 0 };
+      if (preview.sharedOfflineTracks.length > 0) {
+        sharedRestore = await restoreSharedOfflineFromBackup(preview.sharedOfflineTracks, {
+          uploadToServer: typeof navigator === 'undefined' || navigator.onLine,
+        });
+      }
+
+      const uname = currentUser?.username;
+      if (uname && uname !== 'admin' && typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+          const syncRes = await api.syncAccountLibrary(uname, nextLib);
+          hasPendingLocalPushRef.current = false;
+          recordSyncTimestamp(uname, syncRes?.libraryUpdatedAt);
+        } catch (err: any) {
+          if (err?.banned || err?.deleted) {
+            logoutAccount();
+          }
+        }
+      }
+
+      const playlistsCount = nextLib.playlists?.length ?? 0;
+      const likedTracksCount = nextLib.likedTracks?.length ?? 0;
+      const sharedOfflineCount = sharedRestore.restoredLocalCount;
+      const sharedSuffix =
+        sharedOfflineCount > 0 ? ` / 共有オフライン ${sharedOfflineCount}曲` : '';
+      showToast(
+        mode === 'merge'
+          ? `JSONデータを統合しました（プレイリスト ${playlistsCount}件 / いいね ${likedTracksCount}曲${sharedSuffix}）`
+          : `JSONデータから復元しました（プレイリスト ${playlistsCount}件 / いいね ${likedTracksCount}曲${sharedSuffix}）`,
+        'success',
+        4500
+      );
+      return {
+        playlistsCount,
+        likedTracksCount,
+        sharedOfflineCount,
+        sharedRestoredServerCount: sharedRestore.restoredServerCount,
+      };
+    },
+    [
+      currentUser?.username,
+      mergeCloudAndLocalLibrary,
+      applyLibrarySnapshot,
+      recordSyncTimestamp,
+      logoutAccount,
+      showToast,
+    ]
+  );
 
   // Debounced auto-push whenever local library/favorites/history/settings change while logged in
   useEffect(() => {
@@ -2471,7 +2751,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const res = await api.syncAccountLibrary(uname, snapshotRef.current);
         hasPendingLocalPushRef.current = false;
         recordSyncTimestamp(uname, res?.libraryUpdatedAt);
-      } catch {
+      } catch (err: any) {
+        if (err?.banned) {
+          logoutAccount();
+          showToast('このアカウントは管理者により凍結されたためログアウトしました', 'warning', 7000);
+        } else if (err?.deleted) {
+          logoutAccount();
+          showToast('このアカウントは管理者により削除されました', 'warning', 7000);
+        }
       } finally {
         setIsSyncingCloud(false);
       }
@@ -2605,15 +2892,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     if (win.__ytPlayer && typeof win.__ytPlayer.playVideo === 'function') {
       win.__ytPlayer.playVideo();
+      return;
     }
-    const iframes = document.querySelectorAll('iframe');
-    iframes.forEach((ifr) => {
+    const mainIframe = document.querySelector('iframe#yt-player-frame-mount') as HTMLIFrameElement | null;
+    if (mainIframe?.contentWindow) {
       try {
-        ifr.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+        mainIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
       } catch {
         // ignore
       }
-    });
+    }
   }, []);
 
   const dispatchPauseCommand = useCallback(() => {
@@ -2626,15 +2914,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     if (win.__ytPlayer && typeof win.__ytPlayer.pauseVideo === 'function') {
       win.__ytPlayer.pauseVideo();
+      return;
     }
-    const iframes = document.querySelectorAll('iframe');
-    iframes.forEach((ifr) => {
+    const mainIframe = document.querySelector('iframe#yt-player-frame-mount') as HTMLIFrameElement | null;
+    if (mainIframe?.contentWindow) {
       try {
-        ifr.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+        mainIframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
       } catch {
         // ignore
       }
-    });
+    }
   }, []);
 
   const fetchAutoSelectedTracks = useCallback(
@@ -2738,6 +3027,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audioDspEngine.unlock();
       userIntendedPlayingRef.current = true;
       isTransitioningEarlyRef.current = false;
+      autoAdvanceLockRef.current = null;
+      nextTrackInFlightRef.current = false;
 
       const isCurrentlyOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       const needsOfflineHydration =
@@ -2748,11 +3039,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cachedOfflineIdsRef.current.has(track.id) ||
         isCurrentlyOffline;
 
-      // Synchronously start playback if we already hold an in-memory blob: URL so the user gesture never expires
+      // Synchronously start playback if we already hold a live in-memory blob: URL so the user gesture never expires
+      const activeMemUrl = getActiveOfflineBlobUrl(track.id);
       const syncBlobUrl =
-        track.audioUrl?.startsWith('blob:')
+        activeMemUrl ||
+        (track.audioUrl?.startsWith('blob:') &&
+        !track.isSharedOffline &&
+        !track.id.startsWith('shared_')
           ? track.audioUrl
-          : getActiveOfflineBlobUrl(track.id);
+          : undefined);
       if (syncBlobUrl && needsOfflineHydration) {
         audioDspEngine.loadAndPlay({
           trackId: track.id,
@@ -2941,7 +3236,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       digestJumpedTrackRef.current = null;
       digestStartPlaySecRef.current = null;
 
-      // Auto-fetch emotion-matched & related songs in background so queue stays richly populated (20+ tracks)
+      // Auto-fetch emotion-matched & related songs in background so upcoming queue stays richly populated
       if (
         endlessRadioActive &&
         !resolvedTrack.isLocal &&
@@ -2953,7 +3248,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           .then((picked) => {
             if (picked.length > 0) {
               setQueue((curr) => {
-                if (curr.length <= 18) {
+                const activeIdx = curr.findIndex((t) => t.id === resolvedTrack.id);
+                const upcomingCount = activeIdx >= 0 ? curr.length - 1 - activeIdx : 0;
+                if (upcomingCount < 12) {
                   const existingIds = new Set(curr.map((t) => t.id));
                   const fresh = picked.filter((r) => r.id && !existingIds.has(r.id)).slice(0, 22);
                   return fresh.length > 0 ? [...curr, ...fresh] : curr;
@@ -2996,6 +3293,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const seekTo = useCallback((seconds: number) => {
     const clamped = Math.max(0, seconds);
+    isTransitioningEarlyRef.current = false;
+    autoAdvanceLockRef.current = null;
     setProgress(clamped);
     if (digestStartPlaySecRef.current !== null) {
       digestStartPlaySecRef.current = clamped;
@@ -3022,11 +3321,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const repeatCurrentTrack = useCallback(() => {
     if (!currentTrack) return;
     isTransitioningEarlyRef.current = false;
+    autoAdvanceLockRef.current = null;
     setProgress(0);
     userIntendedPlayingRef.current = true;
     setIsPlaying(true);
 
     const win = window as any;
+    if (shouldUseDirectDspRef.current) {
+      audioDspEngine.seekTo(0);
+      audioDspEngine.play();
+      return;
+    }
     if (win.__ytPlayer) {
       if (typeof win.__ytPlayer.setVolume === 'function') {
         win.__ytPlayer.setVolume(targetVolumeRef.current);
@@ -3037,6 +3342,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (typeof win.__ytPlayer.playVideo === 'function') {
         win.__ytPlayer.playVideo();
       }
+      return;
     }
     dispatchPlayCommand();
   }, [currentTrack, dispatchPlayCommand]);
@@ -3045,13 +3351,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     (isManualSkip = false) => {
       audioDspEngine.unlock();
       if (queue.length === 0) return;
-      isTransitioningEarlyRef.current = false;
+      if (isManualSkip) {
+        isTransitioningEarlyRef.current = false;
+        autoAdvanceLockRef.current = null;
+        nextTrackInFlightRef.current = false;
+      } else if (nextTrackInFlightRef.current) {
+        return;
+      }
       digestJumpedTrackRef.current = null;
       digestStartPlaySecRef.current = null;
 
       if (repeatMode === 'one' && !isManualSkip && currentTrack) {
         repeatCurrentTrack();
         return;
+      }
+
+      if (currentTrack?.id && !isManualSkip) {
+        autoAdvanceLockRef.current = { fromTrackId: currentTrack.id, ts: Date.now() };
       }
 
       let nextIdx = queueIndex + 1;
@@ -3088,42 +3404,50 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           cachedOfflineIdsRef.current.has(target.id) ||
           isOffline;
         if (needsOffline) {
+          nextTrackInFlightRef.current = true;
           (async () => {
-            const resolved = normalizeTrack(await getPlayableOfflineTrack(target));
-            const playable =
-              !isOffline ||
-              Boolean(
-                resolved.audioUrl &&
-                  (resolved.audioUrl.startsWith('blob:') ||
-                    resolved.audioUrl.startsWith('data:'))
-              );
-            if (playable) {
-              setCurrentTrack(resolved);
-              dispatchPlayCommand();
-              return;
-            }
-            for (let i = startSearchIdx + 1; i < queue.length; i++) {
-              const cand = queue[i];
-              if (!cand || isTrackBlocked(cand)) continue;
-              const resCand = normalizeTrack(await getPlayableOfflineTrack(cand));
-              if (
-                resCand.audioUrl &&
-                (resCand.audioUrl.startsWith('blob:') ||
-                  resCand.audioUrl.startsWith('data:'))
-              ) {
-                setQueueIndex(i);
-                setCurrentTrack(resCand);
-                dispatchPlayCommand();
+            try {
+              const resolved = normalizeTrack(await getPlayableOfflineTrack(target));
+              const playable =
+                !isOffline ||
+                Boolean(
+                  resolved.audioUrl &&
+                    (resolved.audioUrl.startsWith('blob:') ||
+                      resolved.audioUrl.startsWith('data:'))
+                );
+              if (playable) {
+                setCurrentTrack(resolved);
+                userIntendedPlayingRef.current = true;
+                setIsPlaying(true);
                 return;
               }
+              for (let i = startSearchIdx + 1; i < queue.length; i++) {
+                const cand = queue[i];
+                if (!cand || isTrackBlocked(cand)) continue;
+                const resCand = normalizeTrack(await getPlayableOfflineTrack(cand));
+                if (
+                  resCand.audioUrl &&
+                  (resCand.audioUrl.startsWith('blob:') ||
+                    resCand.audioUrl.startsWith('data:'))
+                ) {
+                  setQueueIndex(i);
+                  setCurrentTrack(resCand);
+                  userIntendedPlayingRef.current = true;
+                  setIsPlaying(true);
+                  return;
+                }
+              }
+              userIntendedPlayingRef.current = false;
+              setIsPlaying(false);
+              showToast('オフライン再生可能な次の曲が見つかりませんでした', 'warning', 2800);
+            } finally {
+              nextTrackInFlightRef.current = false;
             }
-            userIntendedPlayingRef.current = false;
-            setIsPlaying(false);
-            showToast('オフライン再生可能な次の曲が見つかりませんでした', 'warning', 2800);
           })();
         } else {
           setCurrentTrack(target);
           const isPodcastRss = target.trackType === 'podcast' && Boolean(target.audioUrl);
+          let loadedYtSynchronously = false;
           if (!isPodcastRss) {
             const win = window as any;
             const targetYtId = target.podcastVideoId || target.id;
@@ -3137,10 +3461,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               if (typeof win.__ytPlayer.loadVideoById === 'function') {
                 win.__ytManualLoadAt = { videoId: targetYtId, ts: Date.now() };
                 win.__ytPlayer.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
+                loadedYtSynchronously = true;
               }
             }
           }
-          dispatchPlayCommand();
+          if (!loadedYtSynchronously && !isPodcastRss) {
+            dispatchPlayCommand();
+          }
         }
       };
 
@@ -3166,6 +3493,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         navigator.onLine
       ) {
         // Endless Emotion Radio: immediately fetch 18+ matching tracks when hitting queue end
+        nextTrackInFlightRef.current = true;
         (async () => {
           try {
             const existingIds = new Set(queue.map((t) => t.id));
@@ -3178,17 +3506,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               setProgress(0);
               digestJumpedTrackRef.current = null;
               digestStartPlaySecRef.current = null;
-              setCurrentTrack(nextItem);
               userIntendedPlayingRef.current = true;
               setIsPlaying(true);
-              const win = window as any;
-              if (win.__ytPlayer && typeof win.__ytPlayer.loadVideoById === 'function') {
-                win.__ytPlayer.loadVideoById(nextItem.id);
-              }
-              dispatchPlayCommand();
+              loadTargetTrack(nextItem, queue.length);
               return;
             }
-          } catch {}
+          } catch {} finally {
+            nextTrackInFlightRef.current = false;
+          }
           userIntendedPlayingRef.current = false;
           setIsPlaying(false);
         })();
@@ -3213,6 +3538,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const prevTrack = useCallback(() => {
     audioDspEngine.unlock();
     isTransitioningEarlyRef.current = false;
+    autoAdvanceLockRef.current = null;
+    nextTrackInFlightRef.current = false;
     digestJumpedTrackRef.current = null;
     digestStartPlaySecRef.current = null;
     if (progress > 3) {
@@ -3235,14 +3562,40 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cachedOfflineIdsRef.current.has(rawPrev.id) ||
         (typeof navigator !== 'undefined' && !navigator.onLine);
       if (needsOffline) {
-        getPlayableOfflineTrack(rawPrev).then((resolved) => {
-          const norm = normalizeTrack(resolved);
-          setCurrentTrack(norm);
-          dispatchPlayCommand();
-        });
+        (async () => {
+          const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+          const resolved = normalizeTrack(await getPlayableOfflineTrack(rawPrev));
+          const playable =
+            !isOfflineNow ||
+            Boolean(
+              resolved.audioUrl &&
+                (resolved.audioUrl.startsWith('blob:') || resolved.audioUrl.startsWith('data:'))
+            );
+          if (playable) {
+            setCurrentTrack(resolved);
+            return;
+          }
+          for (let i = prevIdx - 1; i >= 0; i--) {
+            const cand = queue[i];
+            if (!cand || isTrackBlocked(cand)) continue;
+            const resCand = normalizeTrack(await getPlayableOfflineTrack(cand));
+            if (
+              resCand.audioUrl &&
+              (resCand.audioUrl.startsWith('blob:') || resCand.audioUrl.startsWith('data:'))
+            ) {
+              setQueueIndex(i);
+              setCurrentTrack(resCand);
+              return;
+            }
+          }
+          userIntendedPlayingRef.current = false;
+          setIsPlaying(false);
+          showToast('オフライン再生可能な前の曲が見つかりませんでした', 'warning', 2800);
+        })();
       } else {
         setCurrentTrack(rawPrev);
         const isPodcastRss = rawPrev.trackType === 'podcast' && Boolean(rawPrev.audioUrl);
+        let loadedYtSynchronously = false;
         if (!isPodcastRss) {
           const win = window as any;
           const targetYtId = rawPrev.podcastVideoId || rawPrev.id;
@@ -3256,10 +3609,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             if (typeof win.__ytPlayer.loadVideoById === 'function') {
               win.__ytManualLoadAt = { videoId: targetYtId, ts: Date.now() };
               win.__ytPlayer.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
+              loadedYtSynchronously = true;
             }
           }
         }
-        dispatchPlayCommand();
+        if (!loadedYtSynchronously && !isPodcastRss) {
+          dispatchPlayCommand();
+        }
       }
     } else {
       seekTo(0);
@@ -4825,14 +5181,25 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         : crossfadeDuration > 0
         ? Math.min(1.0, crossfadeDuration * 0.25)
         : 0.4;
+      const alreadyTransitioningSameTrack =
+        Boolean(
+          currentTrack?.id &&
+            autoAdvanceLockRef.current?.fromTrackId === currentTrack.id &&
+            Date.now() - autoAdvanceLockRef.current.ts < 8000
+        );
+      const isPastTrackActivationGrace = Date.now() - trackActivatedAtRef.current >= 3500;
       if (
+        currentTrack &&
         total > 15 &&
+        isPastTrackActivationGrace &&
         total - current <= earlyCutoff &&
         !isTransitioningEarlyRef.current &&
+        !alreadyTransitioningSameTrack &&
         userIntendedPlayingRef.current
       ) {
         isTransitioningEarlyRef.current = true;
-        nextTrack();
+        autoAdvanceLockRef.current = { fromTrackId: currentTrack.id, ts: Date.now() };
+        nextTrack(false);
       }
 
       // 4. Endless Emotion Radio auto-replenish queue (keep 12-30+ upcoming tracks ready)
@@ -4876,6 +5243,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setTimeout(dispatchPlayCommand, 300);
           return;
         }
+        userIntendedPlayingRef.current = false;
         setIsPlaying(false);
       } else {
         setIsPlaying(true);
@@ -5104,8 +5472,19 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   playAllOfflineSavedTracksRef.current = playAllOfflineSavedTracks;
 
   const onPlayerTrackEnded = useCallback(() => {
-    nextTrack();
-  }, [nextTrack]);
+    if (
+      currentTrack?.id &&
+      autoAdvanceLockRef.current?.fromTrackId === currentTrack.id &&
+      Date.now() - autoAdvanceLockRef.current.ts < 6000
+    ) {
+      // Early crossfade/cutoff already initiated transition for this track
+      return;
+    }
+    if (currentTrack?.id) {
+      autoAdvanceLockRef.current = { fromTrackId: currentTrack.id, ts: Date.now() };
+    }
+    nextTrack(false);
+  }, [currentTrack?.id, nextTrack]);
 
   return (
     <PlayerContext.Provider
@@ -5325,6 +5704,13 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         adminLoginWithPassword,
         trackOffsets,
         refreshTrackOffsets,
+        siteSettings,
+        setSiteSettings,
+        refreshSiteSettings,
+
+        exportUserDataJson,
+        inspectUserBackupFile,
+        importUserDataJson,
 
         addToPlaylistModalOpen,
         setAddToPlaylistModalOpen,

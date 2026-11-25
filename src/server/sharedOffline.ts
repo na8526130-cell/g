@@ -159,27 +159,65 @@ function resolveExtension(rawFilename: string, rawMime: string): string | null {
   return null;
 }
 
-async function probeDurationSeconds(filePath: string): Promise<number> {
+interface ProbedMediaMeta {
+  durationSeconds: number;
+  title?: string;
+  artist?: string;
+  album?: string;
+  hasMediaStream: boolean;
+}
+
+async function probeMediaMetaWithFfprobe(filePath: string): Promise<ProbedMediaMeta> {
   try {
     const { stdout } = await execFileAsync(
       'ffprobe',
       [
         '-v',
         'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
+        '-print_format',
+        'json',
+        '-show_format',
+        '-show_streams',
         filePath,
       ],
-      { timeout: 10000 }
+      { timeout: 12000 }
     );
-    const parsed = parseFloat(String(stdout || '').trim());
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return Math.round(parsed);
+    const parsed = JSON.parse(String(stdout || '{}'));
+    const fmt = parsed?.format || {};
+    const streams = Array.isArray(parsed?.streams) ? parsed.streams : [];
+    const rawDur = parseFloat(String(fmt.duration || '0'));
+    const durationSeconds = Number.isFinite(rawDur) && rawDur > 0 ? Math.round(rawDur) : 0;
+
+    const tagsRaw = fmt.tags && typeof fmt.tags === 'object' ? fmt.tags : {};
+    const tagsLower: Record<string, string> = {};
+    for (const [k, v] of Object.entries(tagsRaw)) {
+      if (typeof v === 'string' && v.trim()) {
+        tagsLower[k.toLowerCase()] = v.trim();
+      }
     }
-  } catch {}
-  return 0;
+
+    const title = tagsLower.title || tagsLower.tit2 || undefined;
+    const artist = tagsLower.artist || tagsLower.tpe1 || tagsLower.album_artist || undefined;
+    const album = tagsLower.album || tagsLower.talb || undefined;
+    const hasMediaStream = streams.some(
+      (s: any) => s?.codec_type === 'audio' || s?.codec_type === 'video'
+    );
+
+    return {
+      durationSeconds,
+      title,
+      artist,
+      album,
+      hasMediaStream,
+    };
+  } catch {
+    return { durationSeconds: 0, hasMediaStream: false };
+  }
+}
+
+async function probeDurationSeconds(filePath: string): Promise<number> {
+  const probed = await probeMediaMetaWithFfprobe(filePath);
+  return probed.durationSeconds;
 }
 
 async function extractEmbeddedCoverWithFfmpeg(
@@ -248,6 +286,8 @@ async function lookupItunesCoverUrl(title: string, artist: string): Promise<stri
 
 interface UploadSessionMeta {
   uploadId: string;
+  preserveId?: string;
+  uploadedAt?: string;
   filename: string;
   mimeType: string;
   ext: string;
@@ -263,15 +303,38 @@ interface UploadSessionMeta {
   createdAt: number;
 }
 
+function normalizeValidSharedId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || path.basename(trimmed) !== trimmed) return null;
+  if (!/^shared_[a-zA-Z0-9_-]{3,80}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function normalizeValidIsoDate(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 48) return null;
+  const ms = Date.parse(trimmed);
+  if (!Number.isFinite(ms) || ms < 1500000000000) return null;
+  return new Date(ms).toISOString();
+}
+
 export function registerSharedOfflineRoutes(
   app: Express,
   dataDir: string,
-  onTrackAdded?: (track: SharedOfflineTrackMeta) => void
+  onTrackAdded?: (track: SharedOfflineTrackMeta) => void,
+  options?: {
+    requireAdminAuth?: express.RequestHandler;
+    onTrackDeleted?: (trackId: string) => void;
+    canUpload?: () => boolean;
+  }
 ) {
   const filesDir = path.resolve(dataDir, 'shared_offline_files');
   const coversDir = path.resolve(dataDir, 'shared_offline_covers');
   const tmpDir = path.resolve(dataDir, 'shared_offline_tmp');
   const indexFile = path.resolve(dataDir, 'shared_offline_index.json');
+  const deletedFile = path.resolve(dataDir, 'shared_offline_deleted.json');
   const inFlightCoverResolves = new Map<string, Promise<string | null>>();
   const failedCoverLookupAt = new Map<string, number>();
 
@@ -420,6 +483,45 @@ export function registerSharedOfflineRoutes(
 
   let lastIndexMtimeMs = 0;
 
+  const loadDeletedIds = (): Set<string> => {
+    try {
+      ensureDirs();
+      if (fs.existsSync(deletedFile)) {
+        const raw = fs.readFileSync(deletedFile, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return new Set(
+            parsed.filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_-]{3,80}$/.test(id))
+          );
+        }
+      }
+    } catch {}
+    return new Set();
+  };
+
+  const deletedIds: Set<string> = loadDeletedIds();
+
+  const saveDeletedIds = () => {
+    try {
+      ensureDirs();
+      fs.writeFileSync(deletedFile, JSON.stringify(Array.from(deletedIds), null, 2), 'utf8');
+    } catch (err) {
+      console.warn('[SharedOffline] Failed to save deleted tombstones:', err);
+    }
+  };
+
+  const markDeletedId = (id: string) => {
+    if (!id) return;
+    deletedIds.add(id);
+    saveDeletedIds();
+  };
+
+  const unmarkDeletedId = (id: string) => {
+    if (deletedIds.delete(id)) {
+      saveDeletedIds();
+    }
+  };
+
   const loadIndex = (): SharedOfflineTrackMeta[] => {
     try {
       seedFromBundledDataIfNeeded();
@@ -481,6 +583,170 @@ export function registerSharedOfflineRoutes(
     }
   };
 
+  const hasUnindexedDiskFiles = (): boolean => {
+    try {
+      ensureDirs();
+      const entries = fs.readdirSync(filesDir, { withFileTypes: true });
+      const indexedIds = new Set(sharedTracks.map((t) => t.id));
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const parsed = path.parse(entry.name);
+        const ext = parsed.ext.toLowerCase();
+        if (!ALLOWED_EXTENSIONS.has(ext)) continue;
+        const id = normalizeValidSharedId(parsed.name);
+        if (!id) continue;
+        if (!indexedIds.has(id) && !deletedIds.has(id)) {
+          return true;
+        }
+      }
+    } catch {}
+    return false;
+  };
+
+  let activeRecoveryPromise: Promise<number> | null = null;
+
+  const recoverOrphanedFilesToIndex = async (includeTombstoned = false): Promise<number> => {
+    if (activeRecoveryPromise) return activeRecoveryPromise;
+    activeRecoveryPromise = (async () => {
+      let recoveredCount = 0;
+      try {
+        ensureDirs();
+        reloadIndexIfChanged();
+        const entries = await fs.promises.readdir(filesDir, { withFileTypes: true });
+        const indexedIds = new Set(sharedTracks.map((t) => t.id));
+
+        for (const entry of entries) {
+          if (!entry.isFile()) continue;
+          const parsed = path.parse(entry.name);
+          const ext = parsed.ext.toLowerCase();
+          if (!ALLOWED_EXTENSIONS.has(ext)) continue;
+          const id = normalizeValidSharedId(parsed.name);
+          if (!id) continue;
+          if (indexedIds.has(id)) continue;
+          if (!includeTombstoned && deletedIds.has(id)) continue;
+
+          const diskPath = path.join(filesDir, entry.name);
+          let st: fs.Stats;
+          try {
+            st = await fs.promises.stat(diskPath);
+          } catch {
+            continue;
+          }
+          if (!st.isFile() || st.size < 32) continue;
+
+          let plainTmpPath: string | null = null;
+          try {
+            plainTmpPath = path.join(tmpDir, `recover_${id}_${Date.now()}${ext}`);
+            await new Promise<void>((resolve, reject) => {
+              const rs = fs.createReadStream(diskPath);
+              const ws = fs.createWriteStream(plainTmpPath!);
+              rs.on('error', reject);
+              ws.on('error', reject);
+              ws.on('finish', resolve);
+              rs.pipe(createXorTransformStream(0)).pipe(ws);
+            });
+
+            let probed = await probeMediaMetaWithFfprobe(plainTmpPath);
+            let isObfuscated = true;
+            let bestPlainPath = plainTmpPath;
+
+            if (!probed.hasMediaStream && probed.durationSeconds <= 0) {
+              const directProbed = await probeMediaMetaWithFfprobe(diskPath);
+              if (directProbed.hasMediaStream || directProbed.durationSeconds > 0) {
+                probed = directProbed;
+                isObfuscated = false;
+                bestPlainPath = diskPath;
+              }
+            }
+
+            let uploadedAt = st.mtime.toISOString();
+            const idParts = id.split('_');
+            const idTs = Number(idParts[1]);
+            if (Number.isFinite(idTs) && idTs > 1500000000000) {
+              uploadedAt = new Date(idTs).toISOString();
+            }
+
+            const title = sanitizeText(probed.title, id, 120);
+            const artist = sanitizeText(probed.artist, '共有アップロード', 80);
+            const album = sanitizeText(probed.album, '共有オフライン', 80);
+            const durationSeconds = probed.durationSeconds > 0 ? probed.durationSeconds : 180;
+            const duration = formatDurationLabel(durationSeconds);
+            const mimeType = EXT_TO_MIME[ext] || 'audio/mpeg';
+
+            await resolveAndSaveCoverForTrack(
+              {
+                id,
+                title,
+                artist,
+                fileExt: ext,
+                isObfuscated,
+              },
+              {
+                plainAudioPath: fs.existsSync(bestPlainPath) ? bestPlainPath : undefined,
+              }
+            ).catch(() => null);
+
+            const cleanFileName = `${
+              artist !== '共有アップロード' && title !== id
+                ? `${artist} - ${title}`
+                : title
+            }${ext}`.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
+
+            const recoveredMeta: SharedOfflineTrackMeta = {
+              id,
+              title,
+              artist,
+              album,
+              duration,
+              durationSeconds,
+              thumbnail: buildCoverApiUrl(id),
+              fileName: cleanFileName,
+              fileExt: ext,
+              mimeType,
+              fileSize: st.size,
+              uploadedBy: '自動復元',
+              uploadedAt,
+              isObfuscated,
+              plays: 0,
+            };
+
+            if (!sharedTracks.some((t) => t.id === id)) {
+              sharedTracks.push(recoveredMeta);
+              indexedIds.add(id);
+              recoveredCount++;
+            }
+            if (includeTombstoned) {
+              unmarkDeletedId(id);
+            }
+          } catch (err) {
+            console.warn(`[SharedOffline] Orphan recovery failed for ${entry.name}:`, err);
+          } finally {
+            if (plainTmpPath) {
+              fs.promises.unlink(plainTmpPath).catch(() => {});
+            }
+          }
+        }
+
+        if (recoveredCount > 0) {
+          sharedTracks.sort(
+            (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+          );
+          saveIndex();
+          console.log(`[SharedOffline] Recovered ${recoveredCount} orphaned audio track(s) from disk into index.`);
+        }
+      } finally {
+        activeRecoveryPromise = null;
+      }
+      return recoveredCount;
+    })();
+    return activeRecoveryPromise;
+  };
+
+  // Run initial orphan scan on server boot so unindexed files are immediately available
+  recoverOrphanedFilesToIndex().catch((err) => {
+    console.warn('[SharedOffline] Startup recovery error:', err);
+  });
+
   const cleanupStaleTmpDirs = async () => {
     try {
       ensureDirs();
@@ -524,6 +790,7 @@ export function registerSharedOfflineRoutes(
     albumInput?: unknown;
     thumbnailInput?: unknown;
     uploadedByInput?: unknown;
+    uploadedAtInput?: unknown;
     durationSecondsInput?: unknown;
     durationInput?: unknown;
     probedDurationSeconds?: number;
@@ -575,6 +842,9 @@ export function registerSharedOfflineRoutes(
       }
     ).catch(() => null);
 
+    const uploadedAt =
+      normalizeValidIsoDate(params.uploadedAtInput) || new Date().toISOString();
+
     const meta: SharedOfflineTrackMeta = {
       id: params.id,
       title,
@@ -588,12 +858,13 @@ export function registerSharedOfflineRoutes(
       mimeType,
       fileSize: params.fileSize,
       uploadedBy,
-      uploadedAt: new Date().toISOString(),
+      uploadedAt,
       isObfuscated: params.isObfuscated,
       plays: 0,
     };
 
-    sharedTracks.unshift(meta);
+    sharedTracks = [meta, ...sharedTracks.filter((t) => t.id !== meta.id)];
+    unmarkDeletedId(meta.id);
     saveIndex();
 
     if (onTrackAdded) {
@@ -606,9 +877,14 @@ export function registerSharedOfflineRoutes(
   };
 
   // 1. List all shared offline tracks (stored indefinitely with no expiry)
-  app.get('/api/shared-offline', (_req: Request, res: Response) => {
+  app.get('/api/shared-offline', async (_req: Request, res: Response) => {
     reloadIndexIfChanged();
     pruneMissingFiles();
+    if (activeRecoveryPromise) {
+      await activeRecoveryPromise.catch(() => 0);
+    } else if (hasUnindexedDiskFiles()) {
+      await recoverOrphanedFilesToIndex().catch(() => 0);
+    }
     const sorted = [...sharedTracks]
       .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
       .map((t) => ({
@@ -620,6 +896,7 @@ export function registerSharedOfflineRoutes(
       tracks: sorted,
       totalCount: sorted.length,
       totalBytes,
+      deletedIds: Array.from(deletedIds),
     });
   });
 
@@ -630,6 +907,26 @@ export function registerSharedOfflineRoutes(
     async (req: Request, res: Response) => {
       let plainTmpPath = '';
       try {
+        const preserveId = normalizeValidSharedId(req.query.preserveId);
+        if (preserveId) {
+          const existing = findTrackById(preserveId);
+          if (existing && fs.existsSync(getTrackDiskPath(existing))) {
+            return res.json({
+              success: true,
+              track: {
+                ...existing,
+                thumbnail: existing.thumbnail || buildCoverApiUrl(existing.id),
+              },
+              alreadyExists: true,
+            });
+          }
+        }
+
+        if (options?.canUpload && !options.canUpload()) {
+          return res.status(403).json({
+            error: '現在、管理者により共有オフラインへの新規アップロードが一時停止されています',
+          });
+        }
         const bodyBuf = req.body as Buffer;
         if (!Buffer.isBuffer(bodyBuf) || bodyBuf.length < 32) {
           return res.status(400).json({ error: 'アップロードされた音声ファイルが空です' });
@@ -646,7 +943,9 @@ export function registerSharedOfflineRoutes(
         }
 
         ensureDirs();
-        const id = `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        const id =
+          preserveId ||
+          `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         const diskPath = path.join(filesDir, `${id}${ext}`);
         plainTmpPath = path.join(tmpDir, `plain_small_${id}${ext}`);
         await fs.promises.writeFile(plainTmpPath, bodyBuf);
@@ -673,6 +972,7 @@ export function registerSharedOfflineRoutes(
           albumInput: req.query.album,
           thumbnailInput: thumbInput,
           uploadedByInput: req.query.uploadedBy,
+          uploadedAtInput: req.query.uploadedAt,
           durationSecondsInput: req.query.durationSeconds,
           durationInput: req.query.duration,
         });
@@ -693,6 +993,26 @@ export function registerSharedOfflineRoutes(
   app.post('/api/shared-offline/upload-begin', async (req: Request, res: Response) => {
     try {
       const body = req.body || {};
+      const preserveId = normalizeValidSharedId(body.preserveId);
+      if (preserveId) {
+        const existing = findTrackById(preserveId);
+        if (existing && fs.existsSync(getTrackDiskPath(existing))) {
+          return res.json({
+            success: true,
+            alreadyExists: true,
+            track: {
+              ...existing,
+              thumbnail: existing.thumbnail || buildCoverApiUrl(existing.id),
+            },
+          });
+        }
+      }
+
+      if (options?.canUpload && !options.canUpload()) {
+        return res.status(403).json({
+          error: '現在、管理者により共有オフラインへの新規アップロードが一時停止されています',
+        });
+      }
       const rawFilename = sanitizeText(body.filename || body.fileName, 'shared_audio.mp3', 180);
       const headerMime = String(body.mimeType || '').toLowerCase();
       const fileSize = Number(body.fileSize || 0);
@@ -719,6 +1039,8 @@ export function registerSharedOfflineRoutes(
 
       const sessionMeta: UploadSessionMeta = {
         uploadId,
+        preserveId: preserveId || undefined,
+        uploadedAt: normalizeValidIsoDate(body.uploadedAt) || undefined,
         filename: rawFilename,
         mimeType: headerMime,
         ext,
@@ -843,7 +1165,26 @@ export function registerSharedOfflineRoutes(
         });
       }
 
-      const id = `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const preserveId =
+        normalizeValidSharedId(body.preserveId) ||
+        normalizeValidSharedId(sessionMeta.preserveId);
+      if (preserveId) {
+        const existing = findTrackById(preserveId);
+        if (existing && fs.existsSync(getTrackDiskPath(existing))) {
+          return res.json({
+            success: true,
+            track: {
+              ...existing,
+              thumbnail: existing.thumbnail || buildCoverApiUrl(existing.id),
+            },
+            alreadyExists: true,
+          });
+        }
+      }
+
+      const id =
+        preserveId ||
+        `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const diskPath = path.join(filesDir, `${id}${ext}`);
       const plainAssembledPath = path.join(sessionDir, `assembled${ext}`);
       const xorWriteStream = fs.createWriteStream(diskPath);
@@ -906,6 +1247,7 @@ export function registerSharedOfflineRoutes(
         albumInput: body.album ?? sessionMeta.album,
         thumbnailInput: body.thumbnail ?? sessionMeta.thumbnail,
         uploadedByInput: body.uploadedBy ?? sessionMeta.uploadedBy,
+        uploadedAtInput: body.uploadedAt ?? sessionMeta.uploadedAt,
         durationSecondsInput: body.durationSeconds ?? sessionMeta.durationSeconds,
         durationInput: body.duration ?? sessionMeta.duration,
       });
@@ -1125,8 +1467,106 @@ export function registerSharedOfflineRoutes(
     res.json({ success: true });
   });
 
-  // 5. Shared post deletion disabled
+  // 5. Shared post deletion (admin-only; disabled for general users)
   app.delete('/api/shared-offline/:id', (_req: Request, res: Response) => {
-    return res.status(403).json({ error: '共有投稿の削除は無効化されています' });
+    return res.status(403).json({ error: '共有投稿の削除は管理者のみ実行できます' });
+  });
+
+  const requireAdmin: express.RequestHandler =
+    options?.requireAdminAuth ||
+    ((_req, res) => {
+      res.status(403).json({ error: '管理者権限が必要です' });
+    });
+
+  // 6. Admin: list shared offline catalog (also recovers any unindexed disk files)
+  app.get('/api/admin/shared-offline', requireAdmin, async (_req: Request, res: Response) => {
+    reloadIndexIfChanged();
+    pruneMissingFiles();
+    if (hasUnindexedDiskFiles()) {
+      await recoverOrphanedFilesToIndex().catch(() => 0);
+    }
+    const sorted = [...sharedTracks]
+      .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+      .map((t) => ({
+        ...t,
+        thumbnail: t.thumbnail || buildCoverApiUrl(t.id),
+      }));
+    const totalBytes = sorted.reduce((acc, t) => acc + (t.fileSize || 0), 0);
+    res.json({
+      tracks: sorted,
+      totalCount: sorted.length,
+      totalBytes,
+      deletedIds: Array.from(deletedIds),
+    });
+  });
+
+  // 6b. Trigger disk recovery explicitly
+  app.post('/api/shared-offline/recover', async (_req: Request, res: Response) => {
+    const recoveredCount = await recoverOrphanedFilesToIndex(false).catch(() => 0);
+    const sorted = [...sharedTracks]
+      .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
+      .map((t) => ({
+        ...t,
+        thumbnail: t.thumbnail || buildCoverApiUrl(t.id),
+      }));
+    res.json({
+      success: true,
+      recoveredCount,
+      totalCount: sorted.length,
+      tracks: sorted,
+    });
+  });
+
+  // 7. Admin: delete a shared offline track (removes metadata, encrypted/obfuscated file, cover & adds tombstone)
+  app.delete('/api/admin/shared-offline/:id', requireAdmin, (req: Request, res: Response) => {
+    const rawId = String(req.params.id || '').trim();
+    const safeId = path.basename(rawId);
+    if (!/^[a-zA-Z0-9_-]{3,80}$/.test(safeId) || safeId !== rawId) {
+      return res.status(400).json({ error: '無効なIDです' });
+    }
+
+    reloadIndexIfChanged();
+    const idx = sharedTracks.findIndex((t) => t.id === safeId);
+    if (idx === -1) {
+      return res.status(404).json({ error: '共有オフライン音源が見つかりません' });
+    }
+
+    const removed = sharedTracks.splice(idx, 1)[0];
+    saveIndex();
+    markDeletedId(removed.id);
+    failedCoverLookupAt.delete(safeId);
+
+    const candidateAudioPath = path.resolve(filesDir, `${removed.id}${removed.fileExt || '.mp3'}`);
+    if (candidateAudioPath.startsWith(filesDir + path.sep) && fs.existsSync(candidateAudioPath)) {
+      try {
+        fs.unlinkSync(candidateAudioPath);
+      } catch (err) {
+        console.warn('[SharedOffline] Failed to unlink audio file:', err);
+      }
+    }
+
+    for (const cExt of ['.jpg', '.png']) {
+      const candidateCoverPath = path.resolve(coversDir, `${removed.id}${cExt}`);
+      if (candidateCoverPath.startsWith(coversDir + path.sep) && fs.existsSync(candidateCoverPath)) {
+        try {
+          fs.unlinkSync(candidateCoverPath);
+        } catch (err) {
+          console.warn('[SharedOffline] Failed to unlink cover file:', err);
+        }
+      }
+    }
+
+    if (options?.onTrackDeleted) {
+      try {
+        options.onTrackDeleted(removed.id);
+      } catch {}
+    }
+
+    res.json({
+      success: true,
+      deletedId: removed.id,
+      title: removed.title,
+      message: `共有オフライン曲「${removed.title}」を削除しました`,
+    });
   });
 }

@@ -22,6 +22,50 @@ import { toBase64Image } from '../utils/imageBase64';
 import { saveOfflineMeta } from './offlineStorage';
 import { getApiCacheEntry, setApiCacheEntry } from './apiCacheDb';
 
+// Admin session Bearer token kept strictly in JS memory (never persisted in localStorage/sessionStorage)
+let adminSessionToken: string | null = null;
+let onAdminAuthExpiredCb: (() => void) | null = null;
+
+function buildAdminHeaders(extra?: HeadersInit): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (extra && typeof extra === 'object' && !Array.isArray(extra) && !(extra instanceof Headers)) {
+    Object.assign(headers, extra);
+  }
+  if (adminSessionToken) {
+    headers['Authorization'] = `Bearer ${adminSessionToken}`;
+  }
+  return headers;
+}
+
+async function adminFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(url, {
+    ...init,
+    headers: buildAdminHeaders(init.headers),
+  });
+  if (res.status === 401) {
+    adminSessionToken = null;
+    if (onAdminAuthExpiredCb) {
+      try {
+        onAdminAuthExpiredCb();
+      } catch {}
+    }
+  }
+  return res;
+}
+
+export interface SiteSettings {
+  announcement: {
+    active: boolean;
+    message: string;
+    level: 'info' | 'warning' | 'alert';
+    updatedAt: string;
+  };
+  allowNewRegistrations: boolean;
+  sharedOfflineUploadEnabled: boolean;
+  commentsEnabled: boolean;
+  dmsEnabled: boolean;
+}
+
 export interface SyncedAccountLibrary {
   playlists?: any[];
   likedTracks?: Track[];
@@ -839,7 +883,13 @@ export const api = {
 
   async getAccountProfile(username: string) {
     const res = await fetch(`/api/account/profile?username=${encodeURIComponent(username)}`);
-    if (!res.ok) throw new Error('Failed to fetch profile');
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      const err: any = new Error(payload.error || 'Failed to fetch profile');
+      if (payload.banned || res.status === 403) err.banned = true;
+      if (payload.deleted || res.status === 404) err.deleted = true;
+      throw err;
+    }
     return res.json();
   },
 
@@ -872,7 +922,11 @@ export const api = {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'ログインに失敗しました');
     }
-    return res.json();
+    const json = await res.json();
+    if (json?.adminToken && typeof json.adminToken === 'string') {
+      adminSessionToken = json.adminToken;
+    }
+    return json;
   },
 
   async syncAccountPlaylists(username: string, playlists: any[]) {
@@ -891,7 +945,11 @@ export const api = {
       body: JSON.stringify({ username, playlists: library.playlists, library }),
     });
     if (!res.ok) {
-      throw new Error('ライブラリ同期に失敗しました');
+      const payload = await res.json().catch(() => ({}));
+      const err: any = new Error(payload.error || 'ライブラリ同期に失敗しました');
+      if (payload.banned || res.status === 403) err.banned = true;
+      if (payload.deleted || res.status === 404) err.deleted = true;
+      throw err;
     }
     return res.json();
   },
@@ -921,7 +979,26 @@ export const api = {
     return res.json();
   },
 
-  // Admin Master API methods (Password: @zeromusic)
+  // Admin Master API methods (Bearer token held strictly in memory)
+  setOnAdminAuthExpired(cb: (() => void) | null) {
+    onAdminAuthExpiredCb = cb;
+  },
+
+  clearAdminSession() {
+    const token = adminSessionToken;
+    adminSessionToken = null;
+    if (token) {
+      fetch('/api/admin/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
+  },
+
+  hasAdminSession(): boolean {
+    return Boolean(adminSessionToken);
+  },
+
   async adminLogin(password: string) {
     const res = await fetch('/api/admin/login', {
       method: 'POST',
@@ -932,17 +1009,21 @@ export const api = {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || '管理者パスワードが正しくありません');
     }
-    return res.json();
+    const json = await res.json();
+    if (json?.token && typeof json.token === 'string') {
+      adminSessionToken = json.token;
+    }
+    return json;
   },
 
   async getAdminOverview() {
-    const res = await fetch('/api/admin/overview');
+    const res = await adminFetch('/api/admin/overview');
     if (!res.ok) throw new Error('管理者情報の取得に失敗しました');
     return res.json();
   },
 
   async deleteUser(username: string) {
-    const res = await fetch('/api/admin/users/delete', {
+    const res = await adminFetch('/api/admin/users/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username }),
@@ -955,7 +1036,7 @@ export const api = {
   },
 
   async resetUserPassword(username: string, newPassword: string) {
-    const res = await fetch('/api/admin/users/reset-password', {
+    const res = await adminFetch('/api/admin/users/reset-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, newPassword }),
@@ -1007,7 +1088,7 @@ export const api = {
   },
 
   async setTrackOffset(data: { videoId: string; offsetSec: number; title?: string; remove?: boolean }) {
-    const res = await fetch('/api/admin/track-offset', {
+    const res = await adminFetch('/api/admin/track-offset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -1026,7 +1107,7 @@ export const api = {
   },
 
   async broadcastNotification(subject: string, body: string) {
-    const res = await fetch('/api/admin/broadcast-notification', {
+    const res = await adminFetch('/api/admin/broadcast-notification', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subject, body }),
@@ -1039,7 +1120,7 @@ export const api = {
   },
 
   async clearLyricsCache() {
-    const res = await fetch('/api/admin/cache/clear', { method: 'POST' });
+    const res = await adminFetch('/api/admin/cache/clear', { method: 'POST' });
     if (!res.ok) throw new Error('キャッシュ消去に失敗しました');
     return res.json();
   },
@@ -1127,11 +1208,11 @@ export const api = {
     return res.json();
   },
 
-  async deleteComment(videoId: string, commentId: string, username: string, isAdmin?: boolean) {
+  async deleteComment(videoId: string, commentId: string, username: string, _isAdmin?: boolean) {
     const res = await fetch(`/api/comments/${videoId}/${commentId}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, isAdmin }),
+      headers: buildAdminHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ username }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -1298,43 +1379,273 @@ export const api = {
 
   // --- Admin Moderation & Community Control ---
   async getModerationOverview() {
-    const res = await fetch('/api/admin/moderation/overview');
+    const res = await adminFetch('/api/admin/moderation/overview');
     if (!res.ok) throw new Error('モデレーション情報の取得に失敗しました');
     return res.json();
   },
 
   async resolveModerationReport(reportId: string, status: 'resolved' | 'dismissed') {
-    const res = await fetch('/api/admin/moderation/resolve-report', {
+    const res = await adminFetch('/api/admin/moderation/resolve-report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId, status }),
     });
+    if (!res.ok) throw new Error('通報の更新に失敗しました');
     return res.json();
   },
 
   async toggleBanUser(username: string) {
-    const res = await fetch('/api/admin/moderation/toggle-ban', {
+    const res = await adminFetch('/api/admin/moderation/toggle-ban', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username }),
     });
+    if (!res.ok) throw new Error('アカウント状態の更新に失敗しました');
     return res.json();
   },
 
   // --- Admin All Direct Messages Inspection (全ユーザー間DM監視・監査) ---
   async getAdminAllDms() {
-    const res = await fetch('/api/admin/dm/all');
+    const res = await adminFetch('/api/admin/dm/all');
     if (!res.ok) throw new Error('DMログの取得に失敗しました');
     return res.json();
   },
 
   async deleteAdminDmMessage(messageId: string) {
-    const res = await fetch(`/api/admin/dm/message/${encodeURIComponent(messageId)}`, {
+    const res = await adminFetch(`/api/admin/dm/message/${encodeURIComponent(messageId)}`, {
       method: 'DELETE',
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'メッセージの削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Admin Shared Offline Management ---
+  async getAdminSharedOfflineTracks() {
+    const res = await adminFetch('/api/admin/shared-offline');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '共有オフライン一覧の取得に失敗しました');
+    }
+    return res.json();
+  },
+
+  async deleteAdminSharedOfflineTrack(trackId: string) {
+    const res = await adminFetch(`/api/admin/shared-offline/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '共有オフライン曲の削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Site Settings, Feature Gates & Push Broadcasts ---
+  async getSiteSettings(): Promise<{ settings: SiteSettings }> {
+    const res = await fetch('/api/site-settings');
+    if (!res.ok) throw new Error('サイト設定の取得に失敗しました');
+    return res.json();
+  },
+
+  async getAdminSiteSettings(): Promise<{ settings: SiteSettings }> {
+    const res = await adminFetch('/api/admin/site-settings');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '管理者設定の取得に失敗しました');
+    }
+    return res.json();
+  },
+
+  async updateAdminSiteSettings(payload: {
+    announcement?: Partial<SiteSettings['announcement']>;
+    allowNewRegistrations?: boolean;
+    sharedOfflineUploadEnabled?: boolean;
+    commentsEnabled?: boolean;
+    dmsEnabled?: boolean;
+  }): Promise<{ success: boolean; settings: SiteSettings; message: string }> {
+    const res = await adminFetch('/api/admin/site-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '設定の保存に失敗しました');
+    }
+    return res.json();
+  },
+
+  async sendAdminPushToast(
+    message: string,
+    toastType: 'info' | 'warning' | 'success' = 'info'
+  ): Promise<{ success: boolean; onlineCount: number; message: string }> {
+    const res = await adminFetch('/api/admin/push-toast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, toastType }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'リアルタイム通知の送信に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Admin Custom NG Words ---
+  async addAdminNgWord(word: string): Promise<{
+    success: boolean;
+    ngWords: string[];
+    customNgWords: string[];
+    message: string;
+  }> {
+    const res = await adminFetch('/api/admin/moderation/ng-words', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'NGワードの追加に失敗しました');
+    }
+    return res.json();
+  },
+
+  async removeAdminNgWord(word: string): Promise<{
+    success: boolean;
+    ngWords: string[];
+    customNgWords: string[];
+    message: string;
+  }> {
+    const res = await adminFetch(`/api/admin/moderation/ng-words?word=${encodeURIComponent(word)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'NGワードの削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Admin Content Overview (Listening Rooms, Shared Playlists, Collab Playlists) ---
+  async getAdminContentOverview(): Promise<{
+    rooms: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      category?: string;
+      hostUsername: string;
+      isPlaying: boolean;
+      currentTrack: { title?: string; artist?: string } | null;
+      participantCount: number;
+      chatCount: number;
+      queueCount: number;
+    }>;
+    sharedPlaylists: Array<{
+      id: string;
+      name: string;
+      author: string;
+      trackCount: number;
+      createdAt: string;
+      views: number;
+    }>;
+    collabPlaylists: Array<{
+      code: string;
+      name: string;
+      owner: string;
+      trackCount: number;
+      memberCount: number;
+      createdAt: string;
+      updatedAt: string;
+    }>;
+  }> {
+    const res = await adminFetch('/api/admin/content/overview');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'コンテンツ管理一覧の取得に失敗しました');
+    }
+    return res.json();
+  },
+
+  async clearAdminRoomChat(roomId: string) {
+    const res = await adminFetch(`/api/admin/rooms/${encodeURIComponent(roomId)}/clear-chat`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'チャットの消去に失敗しました');
+    }
+    return res.json();
+  },
+
+  async deleteAdminRoom(roomId: string) {
+    const res = await adminFetch(`/api/admin/rooms/${encodeURIComponent(roomId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'ルームの削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  async deleteAdminSharedPlaylist(id: string) {
+    const res = await adminFetch(`/api/admin/shared-playlists/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '共有プレイリストの削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  async deleteAdminCollabPlaylist(code: string) {
+    const res = await adminFetch(`/api/admin/collab-playlists/${encodeURIComponent(code)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'コラボプレイリストの削除に失敗しました');
+    }
+    return res.json();
+  },
+
+  // --- Admin Maintenance & Security Session Tools ---
+  async clearAdminKvCache() {
+    const res = await adminFetch('/api/admin/cache/clear-kv', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'InnerTubeキャッシュの消去に失敗しました');
+    }
+    return res.json();
+  },
+
+  async clearAdminPlaybackErrors() {
+    const res = await adminFetch('/api/admin/logs/clear-errors', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'エラーログの消去に失敗しました');
+    }
+    return res.json();
+  },
+
+  async clearAdminApiLogs() {
+    const res = await adminFetch('/api/admin/logs/clear-api', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'APIログの消去に失敗しました');
+    }
+    return res.json();
+  },
+
+  async revokeOtherAdminSessions() {
+    const res = await adminFetch('/api/admin/sessions/revoke-others', { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || '他セッションの無効化に失敗しました');
     }
     return res.json();
   },

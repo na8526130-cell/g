@@ -21,6 +21,7 @@ import {
   User,
   Plus,
   EyeOff,
+  AlertTriangle,
 } from 'lucide-react';
 
 const REACTION_EMOJIS = ['❤️', '👍', '🔥', '😂', '😭', '🎸'];
@@ -38,7 +39,10 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
     addToUserPlaylist,
     setDmUiVisible,
     showToast,
+    siteSettings,
   } = usePlayer();
+
+  const dmsDisabled = siteSettings?.dmsEnabled === false;
 
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
@@ -123,11 +127,19 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
       loadConversations();
     });
 
+    const unsubDmDeleted = socialSocket.on('dm:deleted', (payload: any) => {
+      const deletedId = String(payload?.messageId || '').trim();
+      if (!deletedId) return;
+      setMessages((prev) => prev.filter((m) => m.id !== deletedId));
+      loadConversations();
+    });
+
     return () => {
       unsubDm();
       unsubReact();
       unsubRead();
       unsubPresence();
+      unsubDmDeleted();
     };
   }, [isOpen, currentUser?.username, selectedUser]);
 
@@ -139,6 +151,10 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (dmsDisabled) {
+      showToast('現在、管理者によりダイレクトメッセージ送信が一時停止されています', 'warning');
+      return;
+    }
     if (!currentUser || !selectedUser || !inputText.trim()) return;
 
     const textToSend = inputText.trim();
@@ -155,11 +171,15 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
       }
       loadConversations();
     } catch (err: any) {
-      alert(err.message || '送信に失敗しました');
+      showToast(err.message || '送信に失敗しました', 'warning');
     }
   };
 
   const handleShareCurrentTrack = async () => {
+    if (dmsDisabled) {
+      showToast('現在、管理者によりダイレクトメッセージ送信が一時停止されています', 'warning');
+      return;
+    }
     if (!currentUser || !selectedUser || !currentTrack) return;
     try {
       const res = await api.sendDirectMessage({
@@ -179,11 +199,15 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
       }
       loadConversations();
     } catch (err: any) {
-      alert(err.message || '曲のシェアに失敗しました');
+      showToast(err.message || '曲のシェアに失敗しました', 'warning');
     }
   };
 
   const handleSharePlaylist = async (pl: any) => {
+    if (dmsDisabled) {
+      showToast('現在、管理者によりダイレクトメッセージ送信が一時停止されています', 'warning');
+      return;
+    }
     if (!currentUser || !selectedUser) return;
     setPlaylistPickerOpen(false);
     try {
@@ -205,7 +229,7 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
       }
       loadConversations();
     } catch (err: any) {
-      alert(err.message || 'プレイリストのシェアに失敗しました');
+      showToast(err.message || 'プレイリストのシェアに失敗しました', 'warning');
     }
   };
 
@@ -219,7 +243,7 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
 
   const handleImportSharedPlaylist = (plCard: any) => {
     createUserPlaylist(`[受信] ${plCard.name}`);
-    alert(`プレイリスト「${plCard.name}」(${plCard.trackCount}曲) をライブラリに追加しました！`);
+    showToast(`プレイリスト「${plCard.name}」(${plCard.trackCount}曲) をライブラリに追加しました`, 'success');
   };
 
   const isUserBlocked = selectedUser && blockedUsers.includes(selectedUser.toLowerCase());
@@ -230,10 +254,11 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
       if (isUserBlocked) {
         await api.unblockUser(currentUser.username, selectedUser);
         setBlockedUsers((prev) => prev.filter((u) => u !== selectedUser.toLowerCase()));
+        showToast(`${selectedUser} のブロックを解除しました`, 'info');
       } else {
-        if (!confirm(`${selectedUser} をブロックしますか？相手からのメッセージを受け取らなくなります。`)) return;
         await api.blockUser(currentUser.username, selectedUser);
         setBlockedUsers((prev) => [...prev, selectedUser.toLowerCase()]);
+        showToast(`${selectedUser} をブロックしました（再度押すと解除できます）`, 'warning');
       }
     } catch {}
   };
@@ -608,77 +633,86 @@ export const DirectMessageModal: React.FC<{ isOpen: boolean; onClose: () => void
 
               {/* Chat Input & Share Action Bar */}
               <div className="p-3 bg-neutral-950 border-t border-neutral-800 flex flex-col gap-2">
-                {/* Quick Share Buttons */}
-                <div className="flex items-center gap-2 text-xs">
-                  {currentTrack && (
-                    <button
-                      type="button"
-                      onClick={handleShareCurrentTrack}
-                      title={`現在再生中の「${currentTrack.title}」をチャットで送信`}
-                      className="px-2.5 py-1 rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/40 flex items-center gap-1 font-semibold transition-colors cursor-pointer"
-                    >
-                      <Music2 className="w-3.5 h-3.5 text-red-400" />
-                      <span>今聴いてる曲をシェア</span>
-                    </button>
-                  )}
+                {dmsDisabled ? (
+                  <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs text-amber-200 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>現在、管理者によりダイレクトメッセージ送信が一時停止されています。</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Quick Share Buttons */}
+                    <div className="flex items-center gap-2 text-xs">
+                      {currentTrack && (
+                        <button
+                          type="button"
+                          onClick={handleShareCurrentTrack}
+                          title={`現在再生中の「${currentTrack.title}」をチャットで送信`}
+                          className="px-2.5 py-1 rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/40 flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+                        >
+                          <Music2 className="w-3.5 h-3.5 text-red-400" />
+                          <span>今聴いてる曲をシェア</span>
+                        </button>
+                      )}
 
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setPlaylistPickerOpen(!playlistPickerOpen)}
-                      className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 flex items-center gap-1 font-semibold transition-colors cursor-pointer"
-                    >
-                      <FolderPlus className="w-3.5 h-3.5 text-amber-400" />
-                      <span>プレイリスト送信</span>
-                    </button>
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setPlaylistPickerOpen(!playlistPickerOpen)}
+                          className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 flex items-center gap-1 font-semibold transition-colors cursor-pointer"
+                        >
+                          <FolderPlus className="w-3.5 h-3.5 text-amber-400" />
+                          <span>プレイリスト送信</span>
+                        </button>
 
-                    {playlistPickerOpen && (
-                      <div className="absolute bottom-8 left-0 w-64 bg-neutral-900 border border-neutral-700 rounded-xl p-2 shadow-2xl z-40 max-h-48 overflow-y-auto">
-                        <div className="text-[11px] font-bold text-neutral-400 px-2 py-1">
-                          送信するプレイリストを選択:
-                        </div>
-                        {userPlaylists.length === 0 ? (
-                          <div className="text-xs text-neutral-500 p-2">
-                            作成済みプレイリストがありません
+                        {playlistPickerOpen && (
+                          <div className="absolute bottom-8 left-0 w-64 bg-neutral-900 border border-neutral-700 rounded-xl p-2 shadow-2xl z-40 max-h-48 overflow-y-auto">
+                            <div className="text-[11px] font-bold text-neutral-400 px-2 py-1">
+                              送信するプレイリストを選択:
+                            </div>
+                            {userPlaylists.length === 0 ? (
+                              <div className="text-xs text-neutral-500 p-2">
+                                作成済みプレイリストがありません
+                              </div>
+                            ) : (
+                              userPlaylists.map((pl) => (
+                                <button
+                                  key={pl.id}
+                                  type="button"
+                                  onClick={() => handleSharePlaylist(pl)}
+                                  className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-neutral-800 text-xs text-white truncate flex items-center justify-between"
+                                >
+                                  <span className="truncate">{pl.name}</span>
+                                  <span className="text-[10px] text-neutral-400 font-mono">
+                                    {pl.tracks.length}曲
+                                  </span>
+                                </button>
+                              ))
+                            )}
                           </div>
-                        ) : (
-                          userPlaylists.map((pl) => (
-                            <button
-                              key={pl.id}
-                              type="button"
-                              onClick={() => handleSharePlaylist(pl)}
-                              className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-neutral-800 text-xs text-white truncate flex items-center justify-between"
-                            >
-                              <span className="truncate">{pl.name}</span>
-                              <span className="text-[10px] text-neutral-400 font-mono">
-                                {pl.tracks.length}曲
-                              </span>
-                            </button>
-                          ))
                         )}
                       </div>
-                    )}
-                  </div>
-                </div>
+                    </div>
 
-                {/* Input row */}
-                <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={inputText}
-                    onChange={(e) => setInputText(e.target.value)}
-                    placeholder={`${selectedUser} にメッセージを送信...`}
-                    className="flex-1 bg-neutral-900 border border-neutral-800 focus:border-red-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!inputText.trim()}
-                    className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-semibold text-sm flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-lg shadow-red-600/30"
-                  >
-                    <Send className="w-4 h-4" />
-                    <span className="hidden sm:inline">送信</span>
-                  </button>
-                </form>
+                    {/* Input row */}
+                    <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={inputText}
+                        onChange={(e) => setInputText(e.target.value)}
+                        placeholder={`${selectedUser} にメッセージを送信...`}
+                        className="flex-1 bg-neutral-900 border border-neutral-800 focus:border-red-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!inputText.trim()}
+                        className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-semibold text-sm flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-lg shadow-red-600/30"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span className="hidden sm:inline">送信</span>
+                      </button>
+                    </form>
+                  </>
+                )}
               </div>
             </>
           ) : (

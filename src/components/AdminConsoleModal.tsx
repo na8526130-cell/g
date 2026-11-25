@@ -1,41 +1,141 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
+import {
+  formatFileSizeLabel,
+  removeDeletedSharedOfflineTrackLocal,
+} from '../services/sharedOffline';
 import { SafeImage } from './SafeImage';
 import {
   X,
   ShieldCheck,
-  Activity,
+  LayoutDashboard,
+  BarChart3,
+  Megaphone,
   Users,
-  ListMusic,
-  BellRing,
-  Trash2,
+  ShieldAlert,
+  Layers,
+  Wrench,
   KeyRound,
-  Sliders,
-  Send,
   RefreshCw,
-  Server,
-  Database,
+  Download,
+  LogOut,
+  Search,
   CheckCircle2,
   AlertTriangle,
   Loader2,
-  Download,
-  LogOut,
-  TrendingUp,
-  Search,
-  Smartphone,
+  Trash2,
+  Ban,
+  Unlock,
+  Plus,
+  Send,
+  Radio,
+  Sliders,
+  Server,
   Monitor,
+  Smartphone,
   Tablet,
-  Globe,
-  Clock,
-  Music2,
-  Headphones,
-  CheckCircle,
-  FileText,
-  ShieldAlert,
-  MessageSquare,
-  Eye,
+  Eraser,
+  ArrowRight,
 } from 'lucide-react';
+
+type AdminNavSection =
+  | 'overview'
+  | 'analytics'
+  | 'announcements'
+  | 'users'
+  | 'safety'
+  | 'content'
+  | 'system';
+
+type AnalyticsSubTab = 'ranking' | 'traffic';
+type AnnouncementsSubTab = 'banner' | 'features' | 'email';
+type SafetySubTab = 'reports' | 'comments' | 'dms';
+type ContentSubTab = 'sharedOffline' | 'rooms' | 'playlists' | 'offsets';
+type SystemSubTab = 'maintenance' | 'diagnostics';
+type UserFilter = 'all' | 'banned' | 'withEmail';
+
+interface NavItemConfig {
+  id: AdminNavSection;
+  group: string;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const NAV_GROUPS: Array<{ title: string; items: NavItemConfig[] }> = [
+  {
+    title: '基本',
+    items: [
+      {
+        id: 'overview',
+        group: '基本',
+        label: '概要・ホーム',
+        description: '利用状況のサマリーや、未対応の確認事項をまとめて表示します。',
+        icon: LayoutDashboard,
+      },
+      {
+        id: 'analytics',
+        group: '基本',
+        label: '再生・アクセス分析',
+        description: 'よく聴かれている曲、検索キーワード、接続中ユーザーと端末の内訳を確認できます。',
+        icon: BarChart3,
+      },
+    ],
+  },
+  {
+    title: '運営・告知',
+    items: [
+      {
+        id: 'announcements',
+        group: '運営・告知',
+        label: 'お知らせ・機能制御',
+        description: '全ユーザー画面へのお知らせ表示、即時通知、各機能のON/OFF、一斉メールを管理します。',
+        icon: Megaphone,
+      },
+    ],
+  },
+  {
+    title: 'ユーザー・安全',
+    items: [
+      {
+        id: 'users',
+        group: 'ユーザー・安全',
+        label: 'ユーザー管理',
+        description: '登録ユーザーの検索、アカウント凍結・解除、パスワード変更、削除を行います。',
+        icon: Users,
+      },
+      {
+        id: 'safety',
+        group: 'ユーザー・安全',
+        label: '通報・コメント・DM監査',
+        description: 'ユーザーからの通報対応、コメント削除、NGワード設定、DM履歴の確認を行えます。',
+        icon: ShieldAlert,
+      },
+    ],
+  },
+  {
+    title: 'コンテンツ・保守',
+    items: [
+      {
+        id: 'content',
+        group: 'コンテンツ・保守',
+        label: '投稿コンテンツ・歌詞補正',
+        description: '共有オフライン曲、リスニングルーム、公開プレイリスト、歌詞タイミング補正を管理します。',
+        icon: Layers,
+      },
+      {
+        id: 'system',
+        group: 'コンテンツ・保守',
+        label: 'システム保守・診断',
+        description: 'サーバーキャッシュやログの消去、API疎通テスト、データのバックアップを行えます。',
+        icon: Wrench,
+      },
+    ],
+  },
+];
+
+const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
 export const AdminConsoleModal: React.FC = () => {
   const {
@@ -47,23 +147,40 @@ export const AdminConsoleModal: React.FC = () => {
     refreshTrackOffsets,
     refreshStats,
     currentTrack,
+    setSiteSettings,
   } = usePlayer();
 
-  const [activeTab, setActiveTab] = useState<
-    'overview' | 'ranking' | 'traffic' | 'diagnostics' | 'users' | 'offsets' | 'broadcast' | 'maintenance' | 'moderation' | 'dms'
-  >('overview');
+  // Primary navigation & sub-tabs
+  const [activeNav, setActiveNav] = useState<AdminNavSection>('overview');
+  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsSubTab>('ranking');
+  const [announcementsTab, setAnnouncementsTab] = useState<AnnouncementsSubTab>('banner');
+  const [safetyTab, setSafetyTab] = useState<SafetySubTab>('reports');
+  const [contentTab, setContentTab] = useState<ContentSubTab>('sharedOffline');
+  const [systemTab, setSystemTab] = useState<SystemSubTab>('maintenance');
 
-  // Login form for admin if not authenticated
+  // Admin authentication form
   const [adminPassInput, setAdminPassInput] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Overview data
+  // Toast feedback inside console
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  }, []);
+
+  // Core overview telemetry
   const [overviewData, setOverviewData] = useState<any>(null);
   const [loadingOverview, setLoadingOverview] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Admin DM Audit state
+  // Moderation & DMs
+  const [moderationData, setModerationData] = useState<any>(null);
+  const [loadingModeration, setLoadingModeration] = useState(false);
+  const [newNgWord, setNewNgWord] = useState('');
+  const [savingNgWord, setSavingNgWord] = useState(false);
+  const [confirmDeleteCommentId, setConfirmDeleteCommentId] = useState<string | null>(null);
+
   const [adminDmData, setAdminDmData] = useState<{
     totalMessages: number;
     totalConversations: number;
@@ -78,46 +195,92 @@ export const AdminConsoleModal: React.FC = () => {
   const [loadingAdminDms, setLoadingAdminDms] = useState(false);
   const [selectedAdminConvId, setSelectedAdminConvId] = useState<string | null>(null);
   const [dmSearchFilter, setDmSearchFilter] = useState('');
+  const [confirmDeleteDmId, setConfirmDeleteDmId] = useState<string | null>(null);
 
-  // Ping test state
-  const [pinging, setPinging] = useState(false);
-  const [pingResult, setPingResult] = useState<string | null>(null);
+  // Shared offline management
+  const [sharedOfflineData, setSharedOfflineData] = useState<{
+    tracks: any[];
+    totalCount: number;
+    totalBytes: number;
+  } | null>(null);
+  const [loadingSharedOffline, setLoadingSharedOffline] = useState(false);
+  const [sharedSearchFilter, setSharedSearchFilter] = useState('');
+  const [confirmDeleteSharedId, setConfirmDeleteSharedId] = useState<string | null>(null);
+  const [deletingSharedId, setDeletingSharedId] = useState<string | null>(null);
 
-  // Track offset state
+  // Rooms & Playlists management
+  const [contentOverview, setContentOverview] = useState<{
+    rooms: any[];
+    sharedPlaylists: any[];
+    collabPlaylists: any[];
+  } | null>(null);
+  const [loadingContentOverview, setLoadingContentOverview] = useState(false);
+  const [confirmDeleteContentKey, setConfirmDeleteContentKey] = useState<string | null>(null);
+
+  // Users management
+  const [userSearchFilter, setUserSearchFilter] = useState('');
+  const [userFilter, setUserFilter] = useState<UserFilter>('all');
+  const [userPasswordReset, setUserPasswordReset] = useState<{
+    username: string;
+    newPass: string;
+  } | null>(null);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<string | null>(null);
+
+  // Announcements, Feature switches & Email Broadcast
+  const [announcementActive, setAnnouncementActive] = useState(false);
+  const [announcementLevel, setAnnouncementLevel] = useState<'info' | 'warning' | 'alert'>('info');
+  const [announcementMessage, setAnnouncementMessage] = useState('');
+  const [allowNewRegistrations, setAllowNewRegistrations] = useState(true);
+  const [sharedOfflineUploadEnabled, setSharedOfflineUploadEnabled] = useState(true);
+  const [commentsEnabled, setCommentsEnabled] = useState(true);
+  const [dmsEnabled, setDmsEnabled] = useState(true);
+  const [savingSiteSettings, setSavingSiteSettings] = useState(false);
+
+  const [pushToastMessage, setPushToastMessage] = useState('');
+  const [pushToastType, setPushToastType] = useState<'info' | 'warning' | 'success'>('info');
+  const [sendingPushToast, setSendingPushToast] = useState(false);
+
+  const [broadcastSubject, setBroadcastSubject] = useState('');
+  const [broadcastBody, setBroadcastBody] = useState('');
+  const [sendingBroadcast, setSendingBroadcast] = useState(false);
+
+  // Track Offsets
   const [offsetVideoId, setOffsetVideoId] = useState('');
   const [offsetTitle, setOffsetTitle] = useState('');
   const [offsetSecVal, setOffsetSecVal] = useState('0');
   const [savingOffset, setSavingOffset] = useState(false);
 
-  // Broadcast email state
-  const [broadcastSubject, setBroadcastSubject] = useState('');
-  const [broadcastBody, setBroadcastBody] = useState('');
-  const [sendingBroadcast, setSendingBroadcast] = useState(false);
+  // System Maintenance & Ping
+  const [pinging, setPinging] = useState(false);
+  const [pingResult, setPingResult] = useState<string | null>(null);
+  const [runningMaintenanceKey, setRunningMaintenanceKey] = useState<string | null>(null);
 
-  // User actions
-  const [userPasswordReset, setUserPasswordReset] = useState<{ username: string; newPass: string } | null>(
-    null
-  );
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Moderation state
-  const [moderationData, setModerationData] = useState<any>(null);
-  const [loadingModeration, setLoadingModeration] = useState(false);
+  // Data loaders
+  const fetchOverview = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingOverview(true);
+    try {
+      const data = await api.getAdminOverview();
+      setOverviewData(data);
+    } catch (err) {
+      console.warn('Admin overview fetch error:', err);
+    } finally {
+      setLoadingOverview(false);
+    }
+  }, [isAdmin]);
 
   const fetchModeration = useCallback(async () => {
+    if (!isAdmin) return;
     setLoadingModeration(true);
     try {
       const data = await api.getModerationOverview();
       setModerationData(data);
     } catch {}
     setLoadingModeration(false);
-  }, []);
+  }, [isAdmin]);
 
   const fetchAdminDms = useCallback(async () => {
+    if (!isAdmin) return;
     setLoadingAdminDms(true);
     try {
       const data = await api.getAdminAllDms();
@@ -130,36 +293,111 @@ export const AdminConsoleModal: React.FC = () => {
     } finally {
       setLoadingAdminDms(false);
     }
-  }, [selectedAdminConvId]);
+  }, [isAdmin, selectedAdminConvId]);
 
-  const fetchOverview = useCallback(async () => {
+  const fetchAdminSharedOffline = useCallback(async () => {
     if (!isAdmin) return;
-    setLoadingOverview(true);
+    setLoadingSharedOffline(true);
     try {
-      const data = await api.getAdminOverview();
-      setOverviewData(data);
-    } catch (err: any) {
-      console.warn('Admin overview fetch error:', err);
+      const data = await api.getAdminSharedOfflineTracks();
+      setSharedOfflineData(data);
+    } catch (e) {
+      console.warn('Failed to load admin shared offline tracks:', e);
     } finally {
-      setLoadingOverview(false);
+      setLoadingSharedOffline(false);
     }
   }, [isAdmin]);
 
+  const fetchContentOverview = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingContentOverview(true);
+    try {
+      const data = await api.getAdminContentOverview();
+      setContentOverview(data);
+    } catch (e) {
+      console.warn('Failed to load admin content overview:', e);
+    } finally {
+      setLoadingContentOverview(false);
+    }
+  }, [isAdmin]);
+
+  const fetchSiteControlSettings = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await api.getAdminSiteSettings();
+      if (res?.settings) {
+        setAnnouncementActive(Boolean(res.settings.announcement?.active));
+        setAnnouncementLevel(res.settings.announcement?.level || 'info');
+        setAnnouncementMessage(res.settings.announcement?.message || '');
+        setAllowNewRegistrations(res.settings.allowNewRegistrations !== false);
+        setSharedOfflineUploadEnabled(res.settings.sharedOfflineUploadEnabled !== false);
+        setCommentsEnabled(res.settings.commentsEnabled !== false);
+        setDmsEnabled(res.settings.dmsEnabled !== false);
+        setSiteSettings(res.settings);
+      }
+    } catch {}
+  }, [isAdmin, setSiteSettings]);
+
+  const refreshCurrentSection = useCallback(() => {
+    fetchOverview();
+    if (activeNav === 'overview') {
+      fetchModeration();
+      fetchAdminSharedOffline();
+    } else if (activeNav === 'announcements') {
+      fetchSiteControlSettings();
+    } else if (activeNav === 'safety') {
+      fetchModeration();
+      if (safetyTab === 'dms') fetchAdminDms();
+    } else if (activeNav === 'content') {
+      fetchAdminSharedOffline();
+      fetchContentOverview();
+    }
+  }, [
+    activeNav,
+    safetyTab,
+    fetchOverview,
+    fetchModeration,
+    fetchAdminSharedOffline,
+    fetchSiteControlSettings,
+    fetchAdminDms,
+    fetchContentOverview,
+  ]);
+
   useEffect(() => {
     if (adminModalOpen && isAdmin) {
-      fetchOverview();
-      if (activeTab === 'moderation') {
-        fetchModeration();
-      }
-      if (activeTab === 'dms') {
-        fetchAdminDms();
-      }
+      refreshCurrentSection();
     }
-  }, [adminModalOpen, isAdmin, activeTab, fetchOverview, fetchModeration, fetchAdminDms]);
+  }, [adminModalOpen, isAdmin, activeNav, safetyTab, contentTab, refreshCurrentSection]);
+
+  const pendingReportsCount = useMemo(
+    () => (moderationData?.reports || []).filter((r: any) => r.status === 'pending').length,
+    [moderationData]
+  );
+
+  const filteredAccounts = useMemo(() => {
+    const accounts: any[] = overviewData?.accounts || [];
+    const q = userSearchFilter.trim().toLowerCase();
+    return accounts.filter((acc) => {
+      if (userFilter === 'banned' && !acc.isBanned) return false;
+      if (userFilter === 'withEmail' && !acc.hasEmail) return false;
+      if (!q) return true;
+      return (
+        String(acc.username || '').toLowerCase().includes(q) ||
+        String(acc.email || '').toLowerCase().includes(q)
+      );
+    });
+  }, [overviewData?.accounts, userSearchFilter, userFilter]);
 
   if (!adminModalOpen) return null;
 
-  // Direct login as Admin inside console modal
+  const currentNavMeta = ALL_NAV_ITEMS.find((i) => i.id === activeNav) || ALL_NAV_ITEMS[0];
+
+  const totalDeviceCount =
+    (overviewData?.traffic?.clientDevices?.desktop || 0) +
+      (overviewData?.traffic?.clientDevices?.mobile || 0) +
+      (overviewData?.traffic?.clientDevices?.tablet || 0) || 1;
+
+  // Handlers
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginLoading(true);
@@ -167,7 +405,7 @@ export const AdminConsoleModal: React.FC = () => {
     try {
       await adminLoginWithPassword(adminPassInput.trim());
       setAdminPassInput('');
-      showToast('管理者として認証されました');
+      showToast('管理者としてログインしました');
       fetchOverview();
     } catch (err: any) {
       setLoginError(err.message || 'パスワードが正しくありません');
@@ -176,50 +414,85 @@ export const AdminConsoleModal: React.FC = () => {
     }
   };
 
-  // Test InnerTube API Ping
-  const handleTestPing = async () => {
-    setPinging(true);
-    setPingResult(null);
-    const start = performance.now();
+  const handleSaveSiteSettings = async () => {
+    setSavingSiteSettings(true);
     try {
-      const res = await api.getHealth();
-      const ms = Math.round(performance.now() - start);
-      setPingResult(`疎通正常: ${ms}ms (${res.status || 'OK'})`);
-      fetchOverview();
+      const res = await api.updateAdminSiteSettings({
+        announcement: {
+          active: announcementActive,
+          level: announcementLevel,
+          message: announcementMessage.trim(),
+        },
+        allowNewRegistrations,
+        sharedOfflineUploadEnabled,
+        commentsEnabled,
+        dmsEnabled,
+      });
+      if (res?.settings) setSiteSettings(res.settings);
+      showToast(res.message || '設定を保存しました');
     } catch (err: any) {
-      setPingResult(`疎通エラー: ${err.message}`);
+      showToast(err?.message || '設定の保存に失敗しました');
     } finally {
-      setPinging(false);
+      setSavingSiteSettings(false);
     }
   };
 
-  // Delete User
+  const handleSendPushToast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pushToastMessage.trim()) return;
+    setSendingPushToast(true);
+    try {
+      const res = await api.sendAdminPushToast(pushToastMessage.trim(), pushToastType);
+      setPushToastMessage('');
+      showToast(res.message || '通知を送信しました');
+    } catch (err: any) {
+      showToast(err?.message || '送信に失敗しました');
+    } finally {
+      setSendingPushToast(false);
+    }
+  };
+
+  const handleSendBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastSubject.trim() || !broadcastBody.trim()) return;
+    setSendingBroadcast(true);
+    try {
+      const res = await api.broadcastNotification(broadcastSubject, broadcastBody);
+      showToast(res.message || '一斉メールを送信しました');
+      setBroadcastSubject('');
+      setBroadcastBody('');
+      fetchOverview();
+    } catch (err: any) {
+      showToast(err?.message || '送信に失敗しました');
+    } finally {
+      setSendingBroadcast(false);
+    }
+  };
+
   const handleDeleteUser = async (username: string) => {
-    if (!window.confirm(`ユーザー「${username}」を完全に削除しますか？`)) return;
     try {
       await api.deleteUser(username);
-      showToast(`ユーザー「${username}」を削除しました`);
+      setConfirmDeleteUser(null);
+      showToast(`「${username}」を削除しました`);
       fetchOverview();
       refreshStats();
     } catch (err: any) {
-      showToast(err.message || '削除に失敗しました');
+      showToast(err?.message || '削除に失敗しました');
     }
   };
 
-  // Reset User Password
   const handleResetUserPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!userPasswordReset) return;
     try {
       await api.resetUserPassword(userPasswordReset.username, userPasswordReset.newPass);
-      showToast(`「${userPasswordReset.username}」のパスワードをリセットしました`);
+      showToast(`「${userPasswordReset.username}」のパスワードを変更しました`);
       setUserPasswordReset(null);
     } catch (err: any) {
-      showToast(err.message || 'リセットに失敗しました');
+      showToast(err?.message || '変更に失敗しました');
     }
   };
 
-  // Save Track Offset (Global offset tuning for intro-less songs, etc.)
   const handleSaveTrackOffset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!offsetVideoId.trim()) return;
@@ -230,1008 +503,1280 @@ export const AdminConsoleModal: React.FC = () => {
         offsetSec: parseFloat(offsetSecVal) || 0,
         title: offsetTitle.trim() || offsetVideoId.trim(),
       });
-      showToast(`楽曲 [${offsetVideoId}] の同期オフセットを設定しました`);
+      showToast(`補正値（${offsetSecVal}秒）を保存しました`);
       setOffsetVideoId('');
       setOffsetTitle('');
       setOffsetSecVal('0');
       refreshTrackOffsets();
       fetchOverview();
     } catch (err: any) {
-      showToast(err.message || 'オフセット設定に失敗しました');
+      showToast(err?.message || '保存に失敗しました');
     } finally {
       setSavingOffset(false);
     }
   };
 
-  // Delete Track Offset
   const handleDeleteTrackOffset = async (videoId: string) => {
     try {
       await api.setTrackOffset({ videoId, offsetSec: 0, remove: true });
-      showToast(`楽曲 [${videoId}] の補正を解除しました`);
+      showToast('補正を解除しました');
       refreshTrackOffsets();
       fetchOverview();
     } catch (err: any) {
-      showToast(err.message || '解除に失敗しました');
+      showToast(err?.message || '解除に失敗しました');
     }
   };
 
-  // Broadcast Email
-  const handleSendBroadcast = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!broadcastSubject.trim() || !broadcastBody.trim()) return;
-    setSendingBroadcast(true);
+  const handleTestPing = async () => {
+    setPinging(true);
+    setPingResult(null);
+    const start = performance.now();
     try {
-      const res = await api.broadcastNotification(broadcastSubject, broadcastBody);
-      showToast(res.message || '一斉配信を完了しました');
-      setBroadcastSubject('');
-      setBroadcastBody('');
+      const res = await api.getHealth();
+      const ms = Math.round(performance.now() - start);
+      setPingResult(`正常に応答しました (${ms}ms / ${res.status || 'OK'})`);
       fetchOverview();
     } catch (err: any) {
-      showToast(err.message || '一斉配信に失敗しました');
+      setPingResult(`接続エラー: ${err.message}`);
     } finally {
-      setSendingBroadcast(false);
+      setPinging(false);
     }
   };
 
-  // Clear Cache
-  const handleClearCache = async () => {
-    try {
-      const res = await api.clearLyricsCache();
-      showToast(res.message);
-      fetchOverview();
-    } catch (err: any) {
-      showToast(err.message || 'キャッシュ消去に失敗しました');
-    }
-  };
-
-  // Export JSON
   const handleExportData = () => {
     if (!overviewData) return;
     const blob = new Blob([JSON.stringify(overviewData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `zeromusic_full_analytics_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `zeromusic_backup_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('システムデータをダウンロードしました');
+    showToast('バックアップファイルをダウンロードしました');
   };
 
-  const totalDeviceCount =
-    (overviewData?.traffic?.clientDevices?.desktop || 0) +
-    (overviewData?.traffic?.clientDevices?.mobile || 0) +
-    (overviewData?.traffic?.clientDevices?.tablet || 0) || 1;
+  const runMaintenanceAction = async (key: string, fn: () => Promise<{ message?: string }>) => {
+    setRunningMaintenanceKey(key);
+    try {
+      const res = await fn();
+      showToast(res.message || '完了しました');
+      fetchOverview();
+    } catch (err: any) {
+      showToast(err?.message || '処理に失敗しました');
+    } finally {
+      setRunningMaintenanceKey(null);
+    }
+  };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-sm"
       onClick={() => setAdminModalOpen(false)}
     >
       <div
-        className="w-full max-w-5xl bg-[#0b0b0e] border border-amber-500/30 rounded-2xl shadow-2xl relative overflow-hidden max-h-[94vh] flex flex-col"
+        className="w-full h-full sm:max-w-[1280px] sm:h-[90vh] bg-[#0A0B0E] sm:border border-white/[0.1] sm:rounded-2xl shadow-2xl relative overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Toast */}
+        {/* Toast Alert */}
         {toastMessage && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 px-4 py-2 bg-amber-600 text-white text-xs font-semibold rounded-full shadow-lg flex items-center gap-1.5 animate-in fade-in slide-in-from-top-2">
-            <CheckCircle2 className="w-4 h-4" />
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-[#161922] border border-amber-500/40 text-white text-xs font-medium rounded-lg shadow-xl flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
             <span>{toastMessage}</span>
           </div>
         )}
 
-        {/* Header */}
-        <div className="px-5 py-3.5 border-b border-neutral-800/80 bg-neutral-950 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
-              <ShieldCheck className="w-4.5 h-4.5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm sm:text-base font-black text-white tracking-wide">
-                  Zero Music <span className="text-amber-400">管理者コンソール & 詳細分析テレメトリ</span>
-                </h2>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  ROOT ADMIN
-                </span>
-              </div>
-              <p className="text-[11px] text-neutral-400">
-                実データ集計・再生行動分析・トラフィック診断・楽曲オフセット補正
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
+        {/* Top Bar Contract: Breadcrumb on Left, Action Buttons on Right */}
+        <header className="px-5 py-3.5 border-b border-white/[0.08] bg-[#0D0E13] flex items-center justify-between gap-6 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0 text-sm">
+            <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="font-semibold text-white whitespace-nowrap">管理ページ</span>
             {isAdmin && (
-              <button
-                type="button"
-                onClick={fetchOverview}
-                className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
-                title="データを再読み込み"
-              >
-                <RefreshCw className={`w-4 h-4 ${loadingOverview ? 'animate-spin' : ''}`} />
-              </button>
+              <>
+                <span className="text-neutral-600" aria-hidden="true">/</span>
+                <span className="text-neutral-400 whitespace-nowrap hidden sm:inline">{currentNavMeta.group}</span>
+                <span className="text-neutral-600 hidden sm:inline" aria-hidden="true">/</span>
+                <span className="text-neutral-200 font-medium truncate">{currentNavMeta.label}</span>
+              </>
             )}
-            <button
-              type="button"
-              onClick={() => setAdminModalOpen(false)}
-              className="p-1.5 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
-        </div>
 
-        {/* If not authenticated: dedicated login */}
-        {!isAdmin ? (
-          <div className="p-8 flex flex-col items-center justify-center text-center space-y-6">
-            <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-xl shadow-amber-500/10">
-              <KeyRound className="w-8 h-8" />
-            </div>
-            <div className="max-w-md space-y-1.5">
-              <h3 className="text-lg font-bold text-white">管理者マスター認証</h3>
-              <p className="text-xs text-neutral-400">
-                管理者専用パスワード（<span className="font-mono text-amber-400">@zeromusic</span>）を入力してください。
-              </p>
-            </div>
-
-            <form onSubmit={handleAdminAuth} className="w-full max-w-sm space-y-3">
-              <input
-                type="password"
-                value={adminPassInput}
-                onChange={(e) => setAdminPassInput(e.target.value)}
-                placeholder="管理者パスワード"
-                className="w-full bg-neutral-900 border border-neutral-700 text-sm text-white px-4 py-2.5 rounded-xl focus:outline-none focus:border-amber-500 transition-colors text-center tracking-widest font-mono"
-                autoFocus
-                required
-              />
-
-              {loginError && (
-                <p className="text-xs text-red-400 flex items-center justify-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>{loginError}</span>
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={loginLoading || !adminPassInput}
-                className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-600/20"
-              >
-                {loginLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                <span>管理者としてログイン</span>
-              </button>
-            </form>
-          </div>
-        ) : (
-          /* Logged-In Admin Dashboard */
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-            {/* Sidebar Navigation */}
-            <div className="w-full md:w-56 bg-neutral-950/80 border-b md:border-b-0 md:border-r border-neutral-800/80 p-2 sm:p-2.5 flex md:flex-col gap-1 overflow-x-auto shrink-0 text-xs">
-              <button
-                type="button"
-                onClick={() => setActiveTab('overview')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'overview'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Activity className="w-3.5 h-3.5" />
-                <span>総合稼働概要</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('ranking')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'ranking'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <TrendingUp className="w-3.5 h-3.5" />
-                <span>再生 & 検索分析</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('traffic')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'traffic'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                <span>端末・環境診断</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('diagnostics')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'diagnostics'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Server className="w-3.5 h-3.5" />
-                <span>API & エラー監視</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('users')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'users'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>ユーザー管理 ({overviewData?.accounts?.length ?? 0})</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('offsets')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'offsets'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Sliders className="w-3.5 h-3.5" />
-                <span>楽曲オフセット補正</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('broadcast')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'broadcast'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>メール一斉配信</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('maintenance')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'maintenance'
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Database className="w-3.5 h-3.5" />
-                <span>システム保守</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('moderation')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'moderation'
-                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-                <span>モデレーション & 通報</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('dms')}
-                className={`w-full text-left px-3 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'dms'
-                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <Eye className="w-3.5 h-3.5 text-purple-400" />
-                <span>全ユーザーDM監査</span>
-              </button>
-
-              <div className="mt-auto pt-2 border-t border-neutral-900 hidden md:block">
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={refreshCurrentSection}
+                  className="px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-neutral-200 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingOverview ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">最新に更新</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     logoutAccount();
-                    showToast('管理者からログアウトしました');
+                    showToast('ログアウトしました');
                   }}
-                  className="w-full text-left px-3 py-2 rounded-xl text-neutral-400 hover:text-red-400 hover:bg-neutral-900 flex items-center gap-2 transition-colors cursor-pointer"
+                  aria-label="管理者からログアウト"
+                  className="md:hidden px-2.5 py-1.5 rounded-lg bg-white/[0.05] hover:bg-red-500/15 border border-white/[0.08] text-xs font-medium text-neutral-300 hover:text-red-400 flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>ログアウト</span>
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setAdminModalOpen(false)}
+              aria-label="管理ページを閉じる"
+              className="px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-neutral-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <X className="w-4 h-4" />
+              <span className="hidden sm:inline">閉じる</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Unauthenticated Login Screen */}
+        {!isAdmin ? (
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="w-full max-w-sm bg-[#111318] border border-white/[0.08] rounded-xl p-6 space-y-5">
+              <div className="space-y-1.5 text-center">
+                <div className="w-11 h-11 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto mb-3">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <h2 className="text-base font-bold text-white">管理者ログイン</h2>
+                <p className="text-xs text-neutral-400">
+                  管理者パスワードを入力して開きます。
+                </p>
+              </div>
+
+              <form onSubmit={handleAdminAuth} className="space-y-3">
+                <input
+                  type="password"
+                  value={adminPassInput}
+                  onChange={(e) => setAdminPassInput(e.target.value)}
+                  placeholder="管理者パスワード"
+                  className="w-full bg-[#0A0B0E] border border-white/[0.12] text-sm text-white px-3.5 py-2.5 rounded-lg focus:outline-none focus:border-amber-500 text-center font-mono tracking-wider"
+                  autoFocus
+                  required
+                />
+
+                {loginError && (
+                  <p className="text-xs text-red-400 flex items-center justify-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{loginError}</span>
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loginLoading || !adminPassInput}
+                  className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black font-bold text-sm rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2"
+                >
+                  {loginLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4" />
+                  )}
+                  <span>ログイン</span>
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : (
+          /* Authenticated Workspace */
+          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+            {/* Grouped Sidebar Navigation */}
+            <aside className="w-full md:w-64 bg-[#0D0E13] border-b md:border-b-0 md:border-r border-white/[0.08] p-3 flex md:flex-col gap-4 overflow-x-auto md:overflow-y-auto shrink-0">
+              {NAV_GROUPS.map((group) => (
+                <div key={group.title} className="flex md:flex-col gap-1 shrink-0">
+                  <div className="px-2.5 py-1 text-[11px] font-semibold text-neutral-500 hidden md:block">
+                    {group.title}
+                  </div>
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeNav === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setActiveNav(item.id)}
+                        className={`px-3 py-2 rounded-lg text-xs font-medium flex items-center justify-between gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                          isActive
+                            ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                            : 'text-neutral-400 hover:text-white hover:bg-white/[0.04] border border-transparent'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Icon className="w-4 h-4 shrink-0" />
+                          <span>{item.label}</span>
+                        </span>
+                        {item.id === 'safety' && pendingReportsCount > 0 && (
+                          <span className="font-mono tabular-nums text-[11px] text-rose-400 font-bold">
+                            {pendingReportsCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+
+              <div className="hidden md:block mt-auto pt-3 border-t border-white/[0.08]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    logoutAccount();
+                    showToast('ログアウトしました');
+                  }}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-medium text-neutral-400 hover:text-red-400 hover:bg-white/[0.04] flex items-center gap-2 transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>管理者からログアウト</span>
                 </button>
               </div>
-            </div>
+            </aside>
 
-            {/* Content Pane */}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5 text-neutral-200">
-              {/* Tab 1: Overview & Metrics */}
-              {activeTab === 'overview' && (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Activity className="w-4 h-4 text-amber-400" />
-                      <span>全システム稼働実績テレメトリ（全数実データ・偽りなし）</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      サーバー実ストレージより集計された正確なアクセス・再生・稼働テレメトリです。
-                    </p>
-                  </div>
+            {/* Main Content Viewport */}
+            <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6">
+              {/* Page Title + Plain 1-Line Explanation */}
+              <div className="border-b border-white/[0.08] pb-4 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                <div>
+                  <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+                    {currentNavMeta.label}
+                  </h1>
+                  <p className="text-xs sm:text-sm text-neutral-400 mt-1">
+                    {currentNavMeta.description}
+                  </p>
+                </div>
+                {activeNav === 'overview' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveNav('announcements');
+                      setAnnouncementsTab('banner');
+                    }}
+                    className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap self-start sm:self-auto"
+                  >
+                    <Megaphone className="w-3.5 h-3.5" />
+                    <span>お知らせを出す</span>
+                  </button>
+                )}
+              </div>
 
-                  {/* 9 Stats Metrics Grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-emerald-500/40 relative overflow-hidden">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span className="text-emerald-300 font-semibold">現在オンライン中</span>
-                        <div className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              {/* ============================================================
+                  PAGE 1: OVERVIEW (概要・ホーム)
+                 ============================================================ */}
+              {activeNav === 'overview' && (
+                <div className="space-y-6">
+                  {/* Pending Alert Banner if unresolved reports exist */}
+                  {pendingReportsCount > 0 && (
+                    <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+                        <div className="text-xs sm:text-sm">
+                          <span className="font-bold text-white">
+                            未対応の通報が {pendingReportsCount}件 あります
+                          </span>
+                          <span className="text-neutral-300 block sm:inline sm:ml-2">
+                            内容を確認して解決またはアカウント凍結を行ってください。
+                          </span>
                         </div>
                       </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.onlineCount ?? 1}
-                        <span className="text-xs text-emerald-400 ml-1 font-normal">人接続</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>総アクセス回数</span>
-                        <Activity className="w-3.5 h-3.5 text-red-500" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalAccessCount?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">回</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>登録アカウント数</span>
-                        <Users className="w-3.5 h-3.5 text-emerald-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalAccountsCount?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">人</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>総楽曲再生数</span>
-                        <Headphones className="w-3.5 h-3.5 text-cyan-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalTracksPlayed?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">曲</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>総再生時間</span>
-                        <Clock className="w-3.5 h-3.5 text-amber-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalPlaybackMinutes?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">分</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>クラウドプレイリスト</span>
-                        <ListMusic className="w-3.5 h-3.5 text-blue-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalPlaylistsCount?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">個</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>歌詞表示回数</span>
-                        <Music2 className="w-3.5 h-3.5 text-purple-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalLyricsViews?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">回</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>LRC同期成功率</span>
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                      </div>
-                      <p className="text-xl font-black text-emerald-400 font-mono">
-                        {overviewData?.stats?.lyricsMatchRate ?? 100}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">%</span>
-                      </p>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-                      <div className="flex items-center justify-between text-neutral-400 text-xs mb-1">
-                        <span>配信通知ログ</span>
-                        <BellRing className="w-3.5 h-3.5 text-amber-400" />
-                      </div>
-                      <p className="text-xl font-black text-white font-mono">
-                        {overviewData?.stats?.totalNotificationsCount?.toLocaleString() ?? 0}
-                        <span className="text-xs text-neutral-400 ml-1 font-normal">件</span>
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* System Environment */}
-                  <div className="p-3.5 rounded-xl bg-neutral-900/40 border border-neutral-800/80 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono uppercase">Node.js ランタイム</span>
-                      <span className="font-mono text-white">{overviewData?.system?.nodeVersion || 'v22'}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono uppercase">プロセス連続稼働</span>
-                      <span className="font-mono text-white">
-                        {Math.floor((overviewData?.system?.uptimeSeconds || 0) / 60)} 分
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono uppercase">メモリ使用量</span>
-                      <span className="font-mono text-white">{overviewData?.system?.memoryUsageMb || 0} MB</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono uppercase">歌詞メモリキャッシュ</span>
-                      <span className="font-mono text-emerald-400">
-                        {overviewData?.system?.lyricsCacheSize || 0} 曲保持中
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 2: Ranking & Search Trends */}
-              {activeTab === 'ranking' && (
-                <div className="space-y-5">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <TrendingUp className="w-4 h-4 text-amber-400" />
-                      <span>再生ランキング & 検索クエリトレンド</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      実際に再生された楽曲の回数ランキングと、ユーザーが入力した検索キーワードの集計です。
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {/* Top Tracks */}
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-3">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-xs">
-                        <span className="font-bold text-white flex items-center gap-1.5">
-                          <Headphones className="w-4 h-4 text-cyan-400" />
-                          <span>再生回数 TOP15</span>
-                        </span>
-                        <span className="text-[11px] text-neutral-500">再生ログ実データ</span>
-                      </div>
-
-                      <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                        {!overviewData?.topTracks || overviewData.topTracks.length === 0 ? (
-                          <div className="py-8 text-center text-xs text-neutral-500">
-                            再生ログはまだありません
-                          </div>
-                        ) : (
-                          overviewData.topTracks.map((t: any, idx: number) => (
-                            <div
-                              key={t.videoId}
-                              className="p-2 rounded-lg bg-neutral-950/70 border border-neutral-800/80 flex items-center justify-between gap-3 text-xs"
-                            >
-                              <div className="flex items-center gap-2.5 truncate">
-                                <span
-                                  className={`w-5 h-5 rounded-md flex items-center justify-center font-bold text-[10px] shrink-0 font-mono ${
-                                    idx === 0
-                                      ? 'bg-amber-500 text-black'
-                                      : idx === 1
-                                      ? 'bg-neutral-300 text-black'
-                                      : idx === 2
-                                      ? 'bg-amber-700 text-white'
-                                      : 'bg-neutral-800 text-neutral-400'
-                                  }`}
-                                >
-                                  {idx + 1}
-                                </span>
-                                {t.thumbnail && (
-                                  <SafeImage
-                                    src={t.thumbnail}
-                                    alt={t.title}
-                                    className="w-8 h-8 rounded object-cover bg-neutral-800 shrink-0"
-                                  />
-                                )}
-                                <div className="truncate">
-                                  <p className="font-semibold text-white truncate">{t.title}</p>
-                                  <p className="text-[11px] text-neutral-400 truncate">{t.artist}</p>
-                                </div>
-                              </div>
-                              <div className="text-right shrink-0 font-mono">
-                                <span className="font-bold text-amber-400 text-sm">{t.playCount}</span>
-                                <span className="text-[10px] text-neutral-500 ml-1">回</span>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Top Searches */}
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-3">
-                      <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-xs">
-                        <span className="font-bold text-white flex items-center gap-1.5">
-                          <Search className="w-4 h-4 text-emerald-400" />
-                          <span>人気検索キーワード TOP15</span>
-                        </span>
-                        <span className="text-[11px] text-neutral-500">入力クエリ集計</span>
-                      </div>
-
-                      <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                        {!overviewData?.topSearches || overviewData.topSearches.length === 0 ? (
-                          <div className="py-8 text-center text-xs text-neutral-500">
-                            検索クエリログはまだありません
-                          </div>
-                        ) : (
-                          overviewData.topSearches.map((s: any, idx: number) => (
-                            <div
-                              key={s.query}
-                              className="p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800/80 flex items-center justify-between gap-3 text-xs"
-                            >
-                              <div className="flex items-center gap-2.5 truncate">
-                                <span className="w-5 h-5 rounded-md bg-neutral-800 text-neutral-400 flex items-center justify-center font-mono text-[10px] shrink-0 font-bold">
-                                  #{idx + 1}
-                                </span>
-                                <span className="font-semibold text-neutral-200 truncate">{s.query}</span>
-                              </div>
-                              <div className="text-right shrink-0 font-mono">
-                                <span className="font-bold text-emerald-400">{s.count}</span>
-                                <span className="text-[10px] text-neutral-500 ml-1">回検索</span>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 3: Traffic & Environment Diagnostics */}
-              {activeTab === 'traffic' && (
-                <div className="space-y-5">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Globe className="w-4 h-4 text-amber-400" />
-                      <span>リアルタイム接続・端末環境 & 時間帯別トラフィック</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      現在リアルタイム接続中のクライアント一覧および訪問者の端末・ブラウザ・OSの内訳です。
-                    </p>
-                  </div>
-
-                  {/* Real-time Active Connected Clients list */}
-                  <div className="p-4 rounded-xl bg-neutral-900/60 border border-emerald-500/30 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                        </span>
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                          現在オンライン中の実クライアント ({overviewData?.activeSessions?.length || 1}端末)
-                        </h4>
-                      </div>
-                      <span className="text-[11px] text-emerald-400 font-mono">
-                        ハートビート実セッション（偽りなし）
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                      {(overviewData?.activeSessions || []).map((sess: any, idx: number) => (
-                        <div
-                          key={idx}
-                          className="p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800 text-xs flex items-center justify-between gap-2"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5 font-mono text-[11px] text-neutral-200">
-                              <span className="font-bold text-white truncate">{sess.username || 'ゲスト'}</span>
-                              <span className="text-neutral-500 text-[10px]">({sess.sessionId})</span>
-                            </div>
-                            <div className="text-[10px] text-neutral-400 flex items-center gap-1.5 mt-0.5">
-                              <span>{sess.device}</span>
-                              <span>•</span>
-                              <span>{sess.browser}</span>
-                              <span>•</span>
-                              <span>{sess.os}</span>
-                            </div>
-                          </div>
-                          <div className="text-right text-[10px] font-mono shrink-0">
-                            <span className="text-emerald-400 block">{sess.lastSeenSecondsAgo}秒前</span>
-                            <span className="text-neutral-500 block">接続{sess.connectedDurationSeconds}秒</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Device breakdown cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
-                        <Monitor className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-neutral-400 uppercase font-mono">PC / デスクトップ</span>
-                        <p className="text-base font-bold text-white font-mono">
-                          {overviewData?.traffic?.clientDevices?.desktop || 0}
-                          <span className="text-xs text-neutral-500 ml-1.5 font-normal">
-                            ({Math.round(((overviewData?.traffic?.clientDevices?.desktop || 0) / totalDeviceCount) * 100)}%)
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
-                        <Smartphone className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-neutral-400 uppercase font-mono">スマートフォン</span>
-                        <p className="text-base font-bold text-white font-mono">
-                          {overviewData?.traffic?.clientDevices?.mobile || 0}
-                          <span className="text-xs text-neutral-500 ml-1.5 font-normal">
-                            ({Math.round(((overviewData?.traffic?.clientDevices?.mobile || 0) / totalDeviceCount) * 100)}%)
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800 flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center shrink-0">
-                        <Tablet className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-neutral-400 uppercase font-mono">タブレット</span>
-                        <p className="text-base font-bold text-white font-mono">
-                          {overviewData?.traffic?.clientDevices?.tablet || 0}
-                          <span className="text-xs text-neutral-500 ml-1.5 font-normal">
-                            ({Math.round(((overviewData?.traffic?.clientDevices?.tablet || 0) / totalDeviceCount) * 100)}%)
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Browser & OS Share */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {/* Browser share */}
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-2">
-                      <span className="text-xs font-bold text-white block pb-1 border-b border-neutral-800">
-                        ブラウザ種別シェア
-                      </span>
-                      <div className="space-y-1.5 pt-1 text-xs font-mono">
-                        {!overviewData?.traffic?.clientBrowsers || Object.keys(overviewData.traffic.clientBrowsers).length === 0 ? (
-                          <div className="py-4 text-center text-neutral-500">データ集計中</div>
-                        ) : (
-                          Object.entries(overviewData.traffic.clientBrowsers).map(([browser, count]: [string, any]) => (
-                            <div key={browser} className="flex items-center justify-between p-1.5 rounded bg-neutral-950/70">
-                              <span className="text-neutral-300">{browser}</span>
-                              <span className="text-amber-400 font-bold">{count} アクセス</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    {/* OS share */}
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-2">
-                      <span className="text-xs font-bold text-white block pb-1 border-b border-neutral-800">
-                        オペレーティングシステム (OS) シェア
-                      </span>
-                      <div className="space-y-1.5 pt-1 text-xs font-mono">
-                        {!overviewData?.traffic?.clientOS || Object.keys(overviewData.traffic.clientOS).length === 0 ? (
-                          <div className="py-4 text-center text-neutral-500">データ集計中</div>
-                        ) : (
-                          Object.entries(overviewData.traffic.clientOS).map(([os, count]: [string, any]) => (
-                            <div key={os} className="flex items-center justify-between p-1.5 rounded bg-neutral-950/70">
-                              <span className="text-neutral-300">{os}</span>
-                              <span className="text-cyan-400 font-bold">{count} アクセス</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Hourly 24h Distribution */}
-                  <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-3">
-                    <span className="text-xs font-bold text-white block">時間帯別アクセス分布 (24時間)</span>
-                    <div className="grid grid-cols-12 sm:grid-cols-24 gap-1 items-end h-24 pt-4 border-b border-neutral-800">
-                      {Array.from({ length: 24 }).map((_, h) => {
-                        const count = overviewData?.traffic?.hourlyVisits?.[String(h)] || 0;
-                        const maxH = Math.max(
-                          1,
-                          ...Object.values(overviewData?.traffic?.hourlyVisits || {}).map((v) => Number(v) || 0)
-                        );
-                        const heightPercent = Math.max(8, Math.round((count / maxH) * 100));
-                        return (
-                          <div key={h} className="flex flex-col items-center h-full justify-end group relative">
-                            <div
-                              style={{ height: `${heightPercent}%` }}
-                              className="w-full bg-amber-500/80 rounded-t group-hover:bg-amber-400 transition-all"
-                            />
-                            <span className="text-[9px] font-mono text-neutral-500 mt-1">{h}</span>
-                            {/* Tooltip */}
-                            <div className="absolute -top-7 hidden group-hover:block px-1.5 py-0.5 rounded bg-neutral-800 text-[10px] text-white font-mono whitespace-nowrap z-10 border border-neutral-700 shadow">
-                              {h}時: {count}回
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 4: API & Error Diagnostics */}
-              {activeTab === 'diagnostics' && (
-                <div className="space-y-5">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <Server className="w-4 h-4 text-amber-400" />
-                        <span>InnerTube API 疎通ログ & 再生エラー監視</span>
-                      </h3>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        YouTube InnerTubeクライアントのリアルタイム呼び出し所要時間とエラーの自動記録です。
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={handleTestPing}
-                        disabled={pinging}
-                        className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer border border-neutral-700 transition-colors"
+                        onClick={() => {
+                          setActiveNav('safety');
+                          setSafetyTab('reports');
+                        }}
+                        className="px-3.5 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap self-start sm:self-auto"
                       >
-                        {pinging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5 text-amber-400" />}
-                        <span>API 疎通テスト (Ping)</span>
+                        <span>通報を確認する</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 4-Column Primary KPIs */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                      <div className="text-xs text-neutral-400">現在オンライン中</div>
+                      <div className="text-2xl font-bold text-emerald-400 font-mono tabular-nums mt-1">
+                        {overviewData?.stats?.onlineCount ?? 1}
+                        <span className="text-xs font-sans font-normal text-neutral-400 ml-1">人</span>
+                      </div>
+                    </div>
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                      <div className="text-xs text-neutral-400">登録ユーザー数</div>
+                      <div className="text-2xl font-bold text-white font-mono tabular-nums mt-1">
+                        {(overviewData?.stats?.totalAccountsCount ?? 0).toLocaleString()}
+                        <span className="text-xs font-sans font-normal text-neutral-400 ml-1">人</span>
+                      </div>
+                    </div>
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                      <div className="text-xs text-neutral-400">総楽曲再生数</div>
+                      <div className="text-2xl font-bold text-white font-mono tabular-nums mt-1">
+                        {(overviewData?.stats?.totalTracksPlayed ?? 0).toLocaleString()}
+                        <span className="text-xs font-sans font-normal text-neutral-400 ml-1">曲</span>
+                      </div>
+                    </div>
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                      <div className="text-xs text-neutral-400">総アクセス数</div>
+                      <div className="text-2xl font-bold text-white font-mono tabular-nums mt-1">
+                        {(overviewData?.stats?.totalAccessCount ?? 0).toLocaleString()}
+                        <span className="text-xs font-sans font-normal text-neutral-400 ml-1">回</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick Shortcuts ("よく使う操作") */}
+                  <div className="space-y-2.5">
+                    <h2 className="text-xs font-semibold text-neutral-400">よく使う管理メニューへ移動</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveNav('users');
+                        }}
+                        className="p-3.5 rounded-xl bg-[#111318] hover:bg-[#161922] border border-white/[0.08] text-left transition-colors cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">ユーザーを管理</span>
+                          <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-amber-400 transition-colors" />
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-1">
+                          検索・アカウント凍結・パスワード変更
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveNav('content');
+                          setContentTab('sharedOffline');
+                        }}
+                        className="p-3.5 rounded-xl bg-[#111318] hover:bg-[#161922] border border-white/[0.08] text-left transition-colors cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">
+                            共有オフライン ({sharedOfflineData?.totalCount ?? 0}曲)
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-amber-400 transition-colors" />
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-1">
+                          投稿された音声ファイルの確認・削除
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveNav('announcements');
+                          setAnnouncementsTab('features');
+                        }}
+                        className="p-3.5 rounded-xl bg-[#111318] hover:bg-[#161922] border border-white/[0.08] text-left transition-colors cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">機能ON/OFF制御</span>
+                          <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-amber-400 transition-colors" />
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-1">
+                          新規登録・投稿・コメント・DMの制限
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveNav('system');
+                          setSystemTab('maintenance');
+                        }}
+                        className="p-3.5 rounded-xl bg-[#111318] hover:bg-[#161922] border border-white/[0.08] text-left transition-colors cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">キャッシュ・保守</span>
+                          <ArrowRight className="w-3.5 h-3.5 text-neutral-500 group-hover:text-amber-400 transition-colors" />
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-1">
+                          キャッシュ消去・ログ削除・バックアップ
+                        </p>
                       </button>
                     </div>
                   </div>
 
-                  {pingResult && (
-                    <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-700 text-xs font-mono flex items-center gap-2 animate-in fade-in">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>{pingResult}</span>
-                    </div>
-                  )}
-
-                  {/* Lyrics Sync Hits breakdown */}
-                  <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono">歌詞検索総数</span>
-                      <span className="font-mono text-white font-bold">{overviewData?.lyricsStats?.views || 0} 回</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono">高精度LRC同期ヒット</span>
-                      <span className="font-mono text-emerald-400 font-bold">{overviewData?.lyricsStats?.syncedHits || 0} 回</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono">通常テキスト歌詞ヒット</span>
-                      <span className="font-mono text-amber-400 font-bold">{overviewData?.lyricsStats?.plainHits || 0} 回</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px] font-mono">歌詞未検出</span>
-                      <span className="font-mono text-red-400 font-bold">{overviewData?.lyricsStats?.notFound || 0} 回</span>
-                    </div>
-                  </div>
-
-                  {/* Recent InnerTube API Call Logs */}
-                  <div className="space-y-2">
-                    <span className="text-xs font-bold text-neutral-300 uppercase tracking-wider block">
-                      直近 InnerTube API 疎通ログ (直近15件)
-                    </span>
-
-                    <div className="max-h-56 overflow-y-auto space-y-1.5 rounded-xl border border-neutral-800/80 bg-neutral-950 p-2 font-mono text-[11px]">
-                      {!overviewData?.recentApiLogs || overviewData.recentApiLogs.length === 0 ? (
-                        <div className="py-4 text-center text-neutral-500 text-xs">API呼び出しログはありません</div>
-                      ) : (
-                        overviewData.recentApiLogs.map((log: any) => (
-                          <div
-                            key={log.id}
-                            className="p-2 rounded bg-neutral-900/70 border border-neutral-800/60 flex items-center justify-between gap-3 text-xs"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <span
-                                className={`w-2 h-2 rounded-full shrink-0 ${
-                                  log.status === 'success' ? 'bg-emerald-400' : 'bg-red-500'
-                                }`}
-                              />
-                              <span className="text-amber-300 font-semibold truncate">{log.endpoint}</span>
-                              {log.itemCount !== undefined && (
-                                <span className="text-neutral-400 text-[10px]">({log.itemCount}件)</span>
-                              )}
+                  {/* Two-Column Summary: Top 5 Played Tracks + Server & Feature Summary */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-sm font-semibold text-white">人気再生ランキング (TOP 5)</h2>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveNav('analytics');
+                            setAnalyticsTab('ranking');
+                          }}
+                          className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer"
+                        >
+                          すべて見る →
+                        </button>
+                      </div>
+                      <div className="divide-y divide-white/[0.06]">
+                        {!overviewData?.topTracks || overviewData.topTracks.length === 0 ? (
+                          <p className="py-6 text-center text-xs text-neutral-500">
+                            再生データはまだありません
+                          </p>
+                        ) : (
+                          overviewData.topTracks.slice(0, 5).map((t: any, idx: number) => (
+                            <div key={t.videoId} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <span className="w-5 text-neutral-500 font-mono tabular-nums text-right shrink-0">
+                                  {idx + 1}.
+                                </span>
+                                <div className="min-w-0">
+                                  <p className="text-white font-medium truncate">{t.title}</p>
+                                  <p className="text-[11px] text-neutral-400 truncate">{t.artist}</p>
+                                </div>
+                              </div>
+                              <span className="font-mono tabular-nums text-neutral-300 shrink-0">
+                                {t.playCount}回
+                              </span>
                             </div>
-                            <div className="flex items-center gap-3 text-[10px] text-neutral-400 shrink-0">
-                              <span>{log.durationMs}ms</span>
-                              <span>{new Date(log.timestamp).toLocaleTimeString('ja-JP')}</span>
-                            </div>
-                          </div>
-                        ))
-                      )}
+                          ))
+                        )}
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Playback Errors */}
-                  <div className="space-y-2">
-                    <span className="text-xs font-bold text-neutral-300 uppercase tracking-wider block">
-                      再生エラー・埋め込みブロック発生ログ
-                    </span>
-                    <div className="max-h-48 overflow-y-auto space-y-1.5 rounded-xl border border-neutral-800 bg-neutral-950 p-2 font-mono text-[11px]">
-                      {!overviewData?.playbackErrors || overviewData.playbackErrors.length === 0 ? (
-                        <div className="py-4 text-center text-neutral-500 text-xs">
-                          エラーは発生していません（全曲正常再生中）
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-sm font-semibold text-white">サーバー稼働・統計データ</h2>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveNav('system');
+                            setSystemTab('diagnostics');
+                          }}
+                          className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer"
+                        >
+                          詳細を見る →
+                        </button>
+                      </div>
+                      <dl className="divide-y divide-white/[0.06] text-xs">
+                        <div className="py-2.5 flex items-center justify-between">
+                          <dt className="text-neutral-400">連続稼働時間</dt>
+                          <dd className="font-mono tabular-nums text-white">
+                            {Math.floor((overviewData?.system?.uptimeSeconds || 0) / 60)} 分
+                          </dd>
                         </div>
-                      ) : (
-                        overviewData.playbackErrors.map((err: any, idx: number) => (
-                          <div
-                            key={idx}
-                            className="p-2 rounded bg-red-950/20 border border-red-500/30 flex items-center justify-between gap-3 text-xs text-red-300"
-                          >
-                            <div className="truncate">
-                              <span className="font-bold text-white truncate">{err.title || err.videoId}</span>
-                              <span className="text-[10px] text-red-400 block truncate">{err.error}</span>
-                            </div>
-                            <span className="text-[10px] text-neutral-500 shrink-0">
-                              {new Date(err.timestamp).toLocaleTimeString('ja-JP')}
+                        <div className="py-2.5 flex items-center justify-between">
+                          <dt className="text-neutral-400">総再生時間</dt>
+                          <dd className="font-mono tabular-nums text-white">
+                            {(overviewData?.stats?.totalPlaybackMinutes ?? 0).toLocaleString()} 分
+                          </dd>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <dt className="text-neutral-400">歌詞表示回数 / LRC同期率</dt>
+                          <dd className="font-mono tabular-nums text-white">
+                            {(overviewData?.stats?.totalLyricsViews ?? 0).toLocaleString()} 回 ·{' '}
+                            <span className="text-emerald-400">
+                              {overviewData?.stats?.lyricsMatchRate ?? 100}%
                             </span>
-                          </div>
-                        ))
-                      )}
+                          </dd>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <dt className="text-neutral-400">メモリ使用量 / 実行環境</dt>
+                          <dd className="font-mono tabular-nums text-neutral-300">
+                            {overviewData?.system?.memoryUsageMb || 0} MB · {overviewData?.system?.nodeVersion || 'Node'}
+                          </dd>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <dt className="text-neutral-400">キャッシュ保持数</dt>
+                          <dd className="font-mono tabular-nums text-neutral-300">
+                            歌詞 {overviewData?.system?.lyricsCacheSize ?? 0}曲 · API {overviewData?.system?.kvCacheSize ?? 0}件
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Tab 5: Users Management */}
-              {activeTab === 'users' && (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Users className="w-4 h-4 text-amber-400" />
-                      <span>登録ユーザー一覧 ({overviewData?.accounts?.length ?? 0}アカウント)</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      登録された全アカウントの確認・削除・パスワード初期化が可能です。
-                    </p>
+              {/* ============================================================
+                  PAGE 2: ANALYTICS (再生・アクセス分析)
+                 ============================================================ */}
+              {activeNav === 'analytics' && (
+                <div className="space-y-6">
+                  {/* Segmented Sub-Tab Switch */}
+                  <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setAnalyticsTab('ranking')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        analyticsTab === 'ranking'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      人気曲・検索ワード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAnalyticsTab('traffic')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        analyticsTab === 'traffic'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      接続中の端末・時間帯別
+                    </button>
                   </div>
 
-                  {/* Password Reset Modal/Prompt Inline */}
+                  {analyticsTab === 'ranking' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      {/* Top 15 Tracks */}
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h2 className="text-sm font-semibold text-white">再生回数 TOP 15</h2>
+                        {!overviewData?.topTracks || overviewData.topTracks.length === 0 ? (
+                          <p className="py-10 text-center text-xs text-neutral-500">
+                            再生ログはまだありません
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-white/[0.06] max-h-[440px] overflow-y-auto pr-1">
+                            {overviewData.topTracks.map((t: any, idx: number) => (
+                              <div key={t.videoId} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-6 text-right font-mono tabular-nums text-neutral-400 shrink-0">
+                                    {idx + 1}
+                                  </span>
+                                  {t.thumbnail && (
+                                    <SafeImage
+                                      src={t.thumbnail}
+                                      alt={t.title}
+                                      className="w-9 h-9 rounded-md object-cover bg-neutral-800 shrink-0"
+                                    />
+                                  )}
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-white truncate">{t.title}</p>
+                                    <p className="text-[11px] text-neutral-400 truncate">{t.artist}</p>
+                                  </div>
+                                </div>
+                                <span className="font-mono tabular-nums font-semibold text-amber-400 shrink-0">
+                                  {t.playCount}回
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Top 15 Search Queries */}
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h2 className="text-sm font-semibold text-white">よく検索されているワード TOP 15</h2>
+                        {!overviewData?.topSearches || overviewData.topSearches.length === 0 ? (
+                          <p className="py-10 text-center text-xs text-neutral-500">
+                            検索ログはまだありません
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-white/[0.06] max-h-[440px] overflow-y-auto pr-1">
+                            {overviewData.topSearches.map((s: any, idx: number) => (
+                              <div key={s.query} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-6 text-right font-mono tabular-nums text-neutral-400 shrink-0">
+                                    {idx + 1}
+                                  </span>
+                                  <span className="text-neutral-200 truncate">{s.query}</span>
+                                </div>
+                                <span className="font-mono tabular-nums font-semibold text-emerald-400 shrink-0">
+                                  {s.count}回
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {analyticsTab === 'traffic' && (
+                    <div className="space-y-6">
+                      {/* Active Sessions */}
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h2 className="text-sm font-semibold text-white">
+                          現在オンライン中の端末 ({overviewData?.activeSessions?.length || 1}端末)
+                        </h2>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead className="border-b border-white/[0.08] text-neutral-400">
+                              <tr>
+                                <th className="py-2 px-2 font-medium">ユーザー</th>
+                                <th className="py-2 px-2 font-medium">端末 / 環境</th>
+                                <th className="py-2 px-2 font-medium text-right">最終応答</th>
+                                <th className="py-2 px-2 font-medium text-right">接続時間</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/[0.06]">
+                              {(overviewData?.activeSessions || []).map((sess: any, idx: number) => (
+                                <tr key={idx} className="hover:bg-white/[0.02]">
+                                  <td className="py-2.5 px-2 text-white font-medium">
+                                    {sess.username || 'ゲスト'}
+                                    <span className="text-neutral-500 font-mono text-[11px] ml-1.5">
+                                      ({sess.sessionId})
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-2 text-neutral-400">
+                                    {sess.device} · {sess.browser} · {sess.os}
+                                  </td>
+                                  <td className="py-2.5 px-2 text-right font-mono tabular-nums text-emerald-400">
+                                    {sess.lastSeenSecondsAgo}秒前
+                                  </td>
+                                  <td className="py-2.5 px-2 text-right font-mono tabular-nums text-neutral-400">
+                                    {sess.connectedDurationSeconds}秒
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Device Breakdown + Browser/OS */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center gap-3">
+                          <Monitor className="w-5 h-5 text-sky-400 shrink-0" />
+                          <div>
+                            <div className="text-xs text-neutral-400">パソコン (PC)</div>
+                            <div className="text-base font-bold text-white font-mono tabular-nums">
+                              {overviewData?.traffic?.clientDevices?.desktop || 0}{' '}
+                              <span className="text-xs font-normal text-neutral-500">
+                                ({Math.round(((overviewData?.traffic?.clientDevices?.desktop || 0) / totalDeviceCount) * 100)}%)
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center gap-3">
+                          <Smartphone className="w-5 h-5 text-emerald-400 shrink-0" />
+                          <div>
+                            <div className="text-xs text-neutral-400">スマートフォン</div>
+                            <div className="text-base font-bold text-white font-mono tabular-nums">
+                              {overviewData?.traffic?.clientDevices?.mobile || 0}{' '}
+                              <span className="text-xs font-normal text-neutral-500">
+                                ({Math.round(((overviewData?.traffic?.clientDevices?.mobile || 0) / totalDeviceCount) * 100)}%)
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center gap-3">
+                          <Tablet className="w-5 h-5 text-amber-400 shrink-0" />
+                          <div>
+                            <div className="text-xs text-neutral-400">タブレット</div>
+                            <div className="text-base font-bold text-white font-mono tabular-nums">
+                              {overviewData?.traffic?.clientDevices?.tablet || 0}{' '}
+                              <span className="text-xs font-normal text-neutral-500">
+                                ({Math.round(((overviewData?.traffic?.clientDevices?.tablet || 0) / totalDeviceCount) * 100)}%)
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-2.5">
+                          <h3 className="text-xs font-semibold text-white">ブラウザ別アクセス数</h3>
+                          <div className="divide-y divide-white/[0.06] text-xs">
+                            {!overviewData?.traffic?.clientBrowsers ||
+                            Object.keys(overviewData.traffic.clientBrowsers).length === 0 ? (
+                              <p className="py-4 text-neutral-500">集計データがありません</p>
+                            ) : (
+                              Object.entries(overviewData.traffic.clientBrowsers).map(([b, cnt]: [string, any]) => (
+                                <div key={b} className="py-2 flex items-center justify-between">
+                                  <span className="text-neutral-300">{b}</span>
+                                  <span className="font-mono tabular-nums text-white">{cnt}回</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-2.5">
+                          <h3 className="text-xs font-semibold text-white">OS別アクセス数</h3>
+                          <div className="divide-y divide-white/[0.06] text-xs">
+                            {!overviewData?.traffic?.clientOS ||
+                            Object.keys(overviewData.traffic.clientOS).length === 0 ? (
+                              <p className="py-4 text-neutral-500">集計データがありません</p>
+                            ) : (
+                              Object.entries(overviewData.traffic.clientOS).map(([os, cnt]: [string, any]) => (
+                                <div key={os} className="py-2 flex items-center justify-between">
+                                  <span className="text-neutral-300">{os}</span>
+                                  <span className="font-mono tabular-nums text-white">{cnt}回</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 24-Hour Distribution */}
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h3 className="text-xs font-semibold text-white">時間帯別アクセス分布 (24時間)</h3>
+                        <div className="grid grid-cols-12 sm:grid-cols-24 gap-1 items-end h-28 pt-4 border-b border-white/[0.08]">
+                          {Array.from({ length: 24 }).map((_, h) => {
+                            const count = overviewData?.traffic?.hourlyVisits?.[String(h)] || 0;
+                            const maxH = Math.max(
+                              1,
+                              ...Object.values(overviewData?.traffic?.hourlyVisits || {}).map((v) => Number(v) || 0)
+                            );
+                            const heightPercent = Math.max(8, Math.round((count / maxH) * 100));
+                            return (
+                              <div key={h} className="flex flex-col items-center h-full justify-end group relative">
+                                <div
+                                  style={{ height: `${heightPercent}%` }}
+                                  className="w-full bg-amber-500/75 rounded-t group-hover:bg-amber-400 transition-colors"
+                                />
+                                <span className="text-[10px] font-mono tabular-nums text-neutral-500 mt-1">{h}</span>
+                                <div className="absolute -top-7 hidden group-hover:block px-2 py-0.5 rounded bg-neutral-900 text-[10px] text-white font-mono whitespace-nowrap z-10 border border-white/10">
+                                  {h}時: {count}回
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ============================================================
+                  PAGE 3: ANNOUNCEMENTS & FEATURE CONTROLS (お知らせ・機能制御)
+                 ============================================================ */}
+              {activeNav === 'announcements' && (
+                <div className="space-y-6">
+                  <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg overflow-x-auto max-w-full">
+                    <button
+                      type="button"
+                      onClick={() => setAnnouncementsTab('banner')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        announcementsTab === 'banner'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      お知らせバナー & 即時通知
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAnnouncementsTab('features')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        announcementsTab === 'features'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      機能のON / OFF制御
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAnnouncementsTab('email')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        announcementsTab === 'email'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      メール一斉送信
+                    </button>
+                  </div>
+
+                  {announcementsTab === 'banner' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      {/* Screen-top Announcement Banner */}
+                      <div className="p-5 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h2 className="text-sm font-semibold text-white">画面上部のお知らせバナー</h2>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              開いている全ユーザーの画面最上部に表示されます。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={announcementActive}
+                            onClick={() => setAnnouncementActive((v) => !v)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                              announcementActive
+                                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                : 'bg-white/[0.05] text-neutral-400 border-white/[0.08]'
+                            }`}
+                          >
+                            {announcementActive ? '表示中 (ON)' : '非表示 (OFF)'}
+                          </button>
+                        </div>
+
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">重要度 (色)</label>
+                            <select
+                              value={announcementLevel}
+                              onChange={(e) => setAnnouncementLevel(e.target.value as 'info' | 'warning' | 'alert')}
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                            >
+                              <option value="info">通常のお知らせ (青)</option>
+                              <option value="warning">注意喚起 (黄)</option>
+                              <option value="alert">緊急・メンテナンス (赤)</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">
+                              表示するメッセージ (最大300文字)
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={announcementMessage}
+                              onChange={(e) => setAnnouncementMessage(e.target.value)}
+                              maxLength={300}
+                              placeholder="例: 本日23:00よりサーバーメンテナンスを実施します。"
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+
+                          {/* Live Preview */}
+                          {announcementMessage.trim() && (
+                            <div className="space-y-1">
+                              <div className="text-[11px] text-neutral-500">表示プレビュー</div>
+                              <div
+                                className={`px-3 py-2 rounded-lg text-xs border ${
+                                  announcementLevel === 'alert'
+                                    ? 'bg-red-950/90 border-red-700/60 text-red-100'
+                                    : announcementLevel === 'warning'
+                                    ? 'bg-amber-950/90 border-amber-700/60 text-amber-100'
+                                    : 'bg-sky-950/90 border-sky-700/60 text-sky-100'
+                                }`}
+                              >
+                                {announcementMessage}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="pt-1 flex justify-end">
+                            <button
+                              type="button"
+                              disabled={savingSiteSettings}
+                              onClick={handleSaveSiteSettings}
+                              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                            >
+                              {savingSiteSettings ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                              )}
+                              <span>バナー設定を保存して反映</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Real-time Push Toast */}
+                      <form
+                        onSubmit={handleSendPushToast}
+                        className="p-5 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4 flex flex-col justify-between"
+                      >
+                        <div className="space-y-3">
+                          <div>
+                            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                              <Radio className="w-4 h-4 text-amber-400" />
+                              <span>今つないでいる人へ即時通知を送る</span>
+                            </h2>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              現在アプリを開いているすべてのユーザー画面に、数秒間の通知ポップアップを表示します。
+                            </p>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">通知の種類</label>
+                            <select
+                              value={pushToastType}
+                              onChange={(e) => setPushToastType(e.target.value as 'info' | 'warning' | 'success')}
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                            >
+                              <option value="info">お知らせ</option>
+                              <option value="success">完了 / 新着案内</option>
+                              <option value="warning">注意 / 警告</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">通知内容 (最大240文字)</label>
+                            <textarea
+                              rows={3}
+                              value={pushToastMessage}
+                              onChange={(e) => setPushToastMessage(e.target.value)}
+                              maxLength={240}
+                              placeholder="例: 新しい共有オフライン曲が追加されました。"
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={sendingPushToast || !pushToastMessage.trim()}
+                            className="px-4 py-2 rounded-lg bg-white text-black hover:bg-neutral-200 disabled:opacity-40 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                          >
+                            {sendingPushToast ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Send className="w-3.5 h-3.5" />
+                            )}
+                            <span>今すぐ送信</span>
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  )}
+
+                  {announcementsTab === 'features' && (
+                    <div className="p-5 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4 max-w-3xl">
+                      <div>
+                        <h2 className="text-sm font-semibold text-white">アプリ機能の公開・停止スイッチ</h2>
+                        <p className="text-xs text-neutral-400 mt-0.5">
+                          トラブル時やメンテナンス時に、特定の機能だけを一時停止できます。変更後は「設定を保存」を押してください。
+                        </p>
+                      </div>
+
+                      <div className="divide-y divide-white/[0.08]">
+                        {[
+                          {
+                            label: '新規アカウント登録',
+                            desc: 'OFFにすると、新しいユーザー登録を受け付けなくなります。',
+                            val: allowNewRegistrations,
+                            set: setAllowNewRegistrations,
+                          },
+                          {
+                            label: '共有オフラインへの曲投稿',
+                            desc: 'OFFにすると、音声ファイルのアップロードを停止します（再生は継続できます）。',
+                            val: sharedOfflineUploadEnabled,
+                            set: setSharedOfflineUploadEnabled,
+                          },
+                          {
+                            label: '楽曲コメント・弾幕の投稿',
+                            desc: 'OFFにすると、新しいコメントの書き込みを一時停止します。',
+                            val: commentsEnabled,
+                            set: setCommentsEnabled,
+                          },
+                          {
+                            label: 'ダイレクトメッセージ (DM) 送信',
+                            desc: 'OFFにすると、ユーザー間の新規DM送信を一時停止します。',
+                            val: dmsEnabled,
+                            set: setDmsEnabled,
+                          },
+                        ].map((row) => (
+                          <div key={row.label} className="py-3.5 flex items-center justify-between gap-4">
+                            <div>
+                              <div className="text-sm font-medium text-white">{row.label}</div>
+                              <div className="text-xs text-neutral-400 mt-0.5">{row.desc}</div>
+                            </div>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={row.val}
+                              onClick={() => row.set((v) => !v)}
+                              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                                row.val
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-rose-500/15 text-rose-300 border-rose-500/35'
+                              }`}
+                            >
+                              {row.val ? '許可中 (ON)' : '停止中 (OFF)'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="pt-2 flex justify-end">
+                        <button
+                          type="button"
+                          disabled={savingSiteSettings}
+                          onClick={handleSaveSiteSettings}
+                          className="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {savingSiteSettings ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          )}
+                          <span>設定を保存する</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {announcementsTab === 'email' && (
+                    <form
+                      onSubmit={handleSendBroadcast}
+                      className="p-5 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4 max-w-3xl"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-white/[0.08]">
+                        <div>
+                          <h2 className="text-sm font-semibold text-white">メール登録ユーザーへの一斉送信</h2>
+                          <p className="text-xs text-neutral-400 mt-0.5">
+                            メールアドレスが設定されているアカウント宛てに通知を送信します。
+                          </p>
+                        </div>
+                        <span className="text-xs font-mono tabular-nums text-neutral-300">
+                          送信対象: {overviewData?.accounts?.filter((a: any) => a.hasEmail)?.length || 0} /{' '}
+                          {overviewData?.accounts?.length || 0} 人
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-neutral-300 mb-1">件名</label>
+                        <input
+                          type="text"
+                          value={broadcastSubject}
+                          onChange={(e) => setBroadcastSubject(e.target.value)}
+                          placeholder="例: 【Zero Music】新機能のお知らせ"
+                          className="w-full bg-[#0A0B0E] border border-white/[0.12] text-sm text-white px-3.5 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-neutral-300 mb-1">本文</label>
+                        <textarea
+                          rows={5}
+                          value={broadcastBody}
+                          onChange={(e) => setBroadcastBody(e.target.value)}
+                          placeholder="送信する本文を入力してください..."
+                          className="w-full bg-[#0A0B0E] border border-white/[0.12] text-sm text-white px-3.5 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                          required
+                        />
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={sendingBroadcast || !broadcastSubject.trim() || !broadcastBody.trim()}
+                          className="px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {sendingBroadcast ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Send className="w-4 h-4" />
+                          )}
+                          <span>一斉送信する</span>
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+
+              {/* ============================================================
+                  PAGE 4: USERS MANAGEMENT (ユーザー管理)
+                 ============================================================ */}
+              {activeNav === 'users' && (
+                <div className="space-y-4">
+                  {/* Filter Bar */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg self-start">
+                      <button
+                        type="button"
+                        onClick={() => setUserFilter('all')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
+                          userFilter === 'all' ? 'bg-amber-500 text-black font-bold' : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        すべて ({overviewData?.accounts?.length ?? 0})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUserFilter('banned')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
+                          userFilter === 'banned' ? 'bg-amber-500 text-black font-bold' : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        凍結中 ({(overviewData?.accounts || []).filter((a: any) => a.isBanned).length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUserFilter('withEmail')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
+                          userFilter === 'withEmail' ? 'bg-amber-500 text-black font-bold' : 'text-neutral-400 hover:text-white'
+                        }`}
+                      >
+                        メール登録済み
+                      </button>
+                    </div>
+
+                    <div className="relative w-full sm:w-72">
+                      <Search className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={userSearchFilter}
+                        onChange={(e) => setUserSearchFilter(e.target.value)}
+                        placeholder="ユーザー名・メールアドレスで検索"
+                        className="w-full bg-[#111318] border border-white/[0.1] rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Inline Password Reset Form */}
                   {userPasswordReset && (
                     <form
                       onSubmit={handleResetUserPassword}
-                      className="p-4 rounded-xl bg-neutral-900 border border-amber-500/40 flex flex-col sm:flex-row items-center gap-3 animate-in fade-in"
+                      className="p-4 rounded-xl bg-[#111318] border border-amber-500/40 flex flex-col sm:flex-row sm:items-center gap-3"
                     >
-                      <div className="text-xs text-neutral-300">
-                        ユーザー「<strong className="text-white">{userPasswordReset.username}</strong>」の新パスワード:
-                      </div>
+                      <span className="text-xs text-neutral-200 whitespace-nowrap">
+                        「<strong className="text-white">{userPasswordReset.username}</strong>」の新しいパスワード:
+                      </span>
                       <input
                         type="password"
                         value={userPasswordReset.newPass}
                         onChange={(e) =>
                           setUserPasswordReset({ ...userPasswordReset, newPass: e.target.value })
                         }
-                        placeholder="新しいパスワード"
-                        className="flex-1 bg-neutral-950 border border-neutral-700 text-xs text-white px-3 py-1.5 rounded-lg focus:outline-none focus:border-amber-500"
+                        placeholder="新しいパスワードを入力"
+                        className="flex-1 bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
                         required
                       />
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="submit"
-                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-black text-xs font-bold rounded-lg cursor-pointer"
+                          className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold rounded-lg cursor-pointer"
                         >
-                          更新
+                          変更する
                         </button>
                         <button
                           type="button"
                           onClick={() => setUserPasswordReset(null)}
-                          className="px-3 py-1.5 bg-neutral-800 text-neutral-300 text-xs rounded-lg cursor-pointer"
+                          className="px-3 py-2 bg-white/[0.06] text-neutral-300 text-xs rounded-lg cursor-pointer"
                         >
-                          キャンセル
+                          やめる
                         </button>
                       </div>
                     </form>
                   )}
 
-                  <div className="overflow-x-auto rounded-xl border border-neutral-800">
+                  {/* Users Table */}
+                  <div className="overflow-x-auto rounded-xl bg-[#111318] border border-white/[0.08]">
                     <table className="w-full text-left text-xs">
-                      <thead className="bg-neutral-950 border-b border-neutral-800 text-[11px] font-mono text-neutral-400 uppercase">
+                      <thead className="border-b border-white/[0.08] text-neutral-400">
                         <tr>
-                          <th className="py-2.5 px-3">ユーザー名</th>
-                          <th className="py-2.5 px-3">メールアドレス</th>
-                          <th className="py-2.5 px-3">プレイリスト</th>
-                          <th className="py-2.5 px-3">登録日時</th>
-                          <th className="py-2.5 px-3">最終アクセス</th>
-                          <th className="py-2.5 px-3 text-right">操作</th>
+                          <th className="py-3 px-4 font-medium">ユーザー名</th>
+                          <th className="py-3 px-4 font-medium">状態</th>
+                          <th className="py-3 px-4 font-medium">メールアドレス</th>
+                          <th className="py-3 px-4 font-medium text-right">プレイリスト</th>
+                          <th className="py-3 px-4 font-medium">登録日</th>
+                          <th className="py-3 px-4 font-medium">最終利用</th>
+                          <th className="py-3 px-4 font-medium text-right">操作</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-neutral-800/80">
-                        {!overviewData?.accounts || overviewData.accounts.length === 0 ? (
+                      <tbody className="divide-y divide-white/[0.06]">
+                        {filteredAccounts.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="py-6 text-center text-neutral-500 text-xs">
-                              登録されたアカウントはまだありません
+                            <td colSpan={7} className="py-10 text-center text-neutral-500">
+                              条件に一致するユーザーはいません
                             </td>
                           </tr>
                         ) : (
-                          overviewData.accounts.map((acc: any) => (
-                            <tr key={acc.id} className="hover:bg-neutral-900/50 transition-colors">
-                              <td className="py-2.5 px-3 font-semibold text-white">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-6 h-6 rounded bg-neutral-800 flex items-center justify-center text-white text-[10px]">
-                                    {acc.username.charAt(0).toUpperCase()}
-                                  </div>
-                                  <span>{acc.username}</span>
-                                </div>
-                              </td>
-                              <td className="py-2.5 px-3 text-neutral-400 font-mono">
-                                {acc.email ? (
-                                  <span className="text-emerald-400">{acc.email}</span>
-                                ) : (
-                                  <span className="text-neutral-500">未設定</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-3 text-neutral-300 font-mono">
-                                {acc.playlistsCount} 個
-                              </td>
-                              <td className="py-2.5 px-3 text-neutral-400 font-mono text-[11px]">
-                                {new Date(acc.registeredAt).toLocaleDateString('ja-JP')}
-                              </td>
-                              <td className="py-2.5 px-3 text-neutral-400 font-mono text-[11px]">
-                                {acc.lastActive
-                                  ? new Date(acc.lastActive).toLocaleString('ja-JP', {
-                                      month: 'numeric',
-                                      day: 'numeric',
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })
-                                  : '未記録'}
-                              </td>
-                              <td className="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setUserPasswordReset({ username: acc.username, newPass: '' })
-                                  }
-                                  className="p-1.5 text-neutral-400 hover:text-amber-400 hover:bg-neutral-800 rounded transition-colors cursor-pointer"
-                                  title="パスワードを再設定"
-                                >
-                                  <KeyRound className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteUser(acc.username)}
-                                  className="p-1.5 text-neutral-400 hover:text-red-400 hover:bg-neutral-800 rounded transition-colors cursor-pointer"
-                                  title="アカウントを削除"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))
+                          filteredAccounts.map((acc: any) => {
+                            const isConfirmDel = confirmDeleteUser === acc.username;
+                            return (
+                              <tr key={acc.id} className="hover:bg-white/[0.02]">
+                                <td className="py-3 px-4 font-semibold text-white">{acc.username}</td>
+                                <td className="py-3 px-4">
+                                  {acc.isBanned ? (
+                                    <span className="text-rose-400 font-semibold">凍結中</span>
+                                  ) : (
+                                    <span className="text-emerald-400">利用中</span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 font-mono text-neutral-400">
+                                  {acc.email || <span className="text-neutral-600">未登録</span>}
+                                </td>
+                                <td className="py-3 px-4 text-right font-mono tabular-nums text-neutral-300">
+                                  {acc.playlistsCount}
+                                </td>
+                                <td className="py-3 px-4 font-mono tabular-nums text-neutral-400">
+                                  {new Date(acc.registeredAt).toLocaleDateString('ja-JP')}
+                                </td>
+                                <td className="py-3 px-4 font-mono tabular-nums text-neutral-400">
+                                  {acc.lastActive
+                                    ? new Date(acc.lastActive).toLocaleString('ja-JP', {
+                                        month: 'numeric',
+                                        day: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })
+                                    : '未記録'}
+                                </td>
+                                <td className="py-3 px-4 text-right whitespace-nowrap space-x-2">
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        const res = await api.toggleBanUser(acc.username);
+                                        showToast(
+                                          res.isBanned
+                                            ? `「${acc.username}」を凍結しました`
+                                            : `「${acc.username}」の凍結を解除しました`
+                                        );
+                                        fetchOverview();
+                                      } catch (err: any) {
+                                        showToast(err?.message || '更新に失敗しました');
+                                      }
+                                    }}
+                                    className={`px-2.5 py-1 rounded-md text-xs font-medium inline-flex items-center gap-1 cursor-pointer border ${
+                                      acc.isBanned
+                                        ? 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15'
+                                        : 'border-rose-500/35 text-rose-300 hover:bg-rose-500/15'
+                                    }`}
+                                  >
+                                    {acc.isBanned ? <Unlock className="w-3 h-3" /> : <Ban className="w-3 h-3" />}
+                                    <span>{acc.isBanned ? '解除' : '凍結'}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setUserPasswordReset({ username: acc.username, newPass: '' })}
+                                    className="px-2.5 py-1 rounded-md text-xs text-neutral-300 hover:text-white border border-white/[0.08] hover:bg-white/[0.05] cursor-pointer"
+                                  >
+                                    PW変更
+                                  </button>
+
+                                  {isConfirmDel ? (
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteUser(acc.username)}
+                                        className="px-2.5 py-1 bg-red-600 hover:bg-red-500 text-white rounded-md text-xs font-bold cursor-pointer"
+                                      >
+                                        本当に削除
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteUser(null)}
+                                        className="px-2 py-1 bg-white/[0.06] text-neutral-300 rounded-md text-xs cursor-pointer"
+                                      >
+                                        取消
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteUser(acc.username)}
+                                      className="px-2.5 py-1 rounded-md text-xs text-red-400 hover:bg-red-500/15 border border-red-500/25 cursor-pointer"
+                                    >
+                                      削除
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>
@@ -1239,772 +1784,1229 @@ export const AdminConsoleModal: React.FC = () => {
                 </div>
               )}
 
-              {/* Tab 6: Track Offset Override (Global tuning for intro-less songs) */}
-              {activeTab === 'offsets' && (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Sliders className="w-4 h-4 text-amber-400" />
-                      <span>楽曲別・歌詞同期オフセット調整マスター</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      「イントロのない曲」「MV版と音源版の開始タイミング差」がある楽曲に対し、管理者側でグローバル補正値（秒）を登録します。全ユーザーに自動適用されます。
-                    </p>
-                  </div>
-
-                  {/* Add form */}
-                  <form onSubmit={handleSaveTrackOffset} className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-3">
-                    {currentTrack && (
-                      <div className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 text-xs">
-                        <div className="flex items-center gap-2 truncate">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                          <span className="text-neutral-400">現在再生中:</span>
-                          <span className="font-semibold text-white truncate">{currentTrack.title}</span>
-                          <span className="text-neutral-500 text-[10px] font-mono shrink-0">({currentTrack.id})</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOffsetVideoId(currentTrack.id);
-                            setOffsetTitle(`${currentTrack.title} - ${currentTrack.artist}`);
-                          }}
-                          className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[11px] font-semibold cursor-pointer shrink-0 transition-colors"
-                        >
-                          この曲を入力
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-[11px] text-neutral-400 mb-1">YouTube Video ID (必須)</label>
-                        <input
-                          type="text"
-                          value={offsetVideoId}
-                          onChange={(e) => setOffsetVideoId(e.target.value)}
-                          placeholder="例: m9SMT5ipbxk"
-                          className="w-full bg-neutral-950 border border-neutral-700 text-xs text-white px-3 py-2 rounded-lg font-mono focus:outline-none focus:border-amber-500"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-neutral-400 mb-1">楽曲タイトル / メモ</label>
-                        <input
-                          type="text"
-                          value={offsetTitle}
-                          onChange={(e) => setOffsetTitle(e.target.value)}
-                          placeholder="曲名 (省略可)"
-                          className="w-full bg-neutral-950 border border-neutral-700 text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-neutral-400 mb-1">
-                          オフセット補正 (秒 / マイナスで早める)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={offsetSecVal}
-                          onChange={(e) => setOffsetSecVal(e.target.value)}
-                          placeholder="例: -0.8 または 1.2"
-                          className="w-full bg-neutral-950 border border-neutral-700 text-xs text-white px-3 py-2 rounded-lg font-mono focus:outline-none focus:border-amber-500"
-                          required
-                        />
-                      </div>
-                    </div>
-
-                    {/* Quick offset presets */}
-                    <div className="flex items-center gap-1.5 flex-wrap pt-1 text-xs">
-                      <span className="text-[11px] text-neutral-400 mr-1">クイック補正プリセット:</span>
-                      {[-1.5, -1.0, -0.8, -0.5, 0.0, 0.5, 1.0, 1.5].map((val) => (
-                        <button
-                          key={val}
-                          type="button"
-                          onClick={() => setOffsetSecVal(String(val))}
-                          className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold border transition-colors cursor-pointer ${
-                            parseFloat(offsetSecVal) === val
-                              ? 'bg-amber-500 text-black border-amber-500 font-bold'
-                              : 'bg-neutral-950 border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700'
-                          }`}
-                        >
-                          {val > 0 ? `+${val}` : val}秒{val === -0.8 || val === -1.0 ? ' (イントロ無)' : ''}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex justify-end">
-                      <button
-                        type="submit"
-                        disabled={savingOffset || !offsetVideoId.trim()}
-                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer"
-                      >
-                        {savingOffset ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sliders className="w-3.5 h-3.5" />}
-                        <span>補正値を登録</span>
-                      </button>
-                    </div>
-                  </form>
-
-                  {/* Registered Offsets Table */}
-                  <div className="space-y-2">
-                    <h4 className="text-xs font-semibold text-neutral-300">登録済み補正値一覧</h4>
-                    <div className="rounded-xl border border-neutral-800 overflow-x-auto">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-neutral-950 border-b border-neutral-800 text-[11px] font-mono text-neutral-400 uppercase">
-                          <tr>
-                            <th className="py-2.5 px-3">Video ID</th>
-                            <th className="py-2.5 px-3">曲名 / メモ</th>
-                            <th className="py-2.5 px-3">オフセット値</th>
-                            <th className="py-2.5 px-3 text-right">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-800">
-                          {!overviewData?.trackOffsets || Object.keys(overviewData.trackOffsets).length === 0 ? (
-                            <tr>
-                              <td colSpan={4} className="py-6 text-center text-neutral-500 text-xs">
-                                登録された楽曲オフセット補正値はありません
-                              </td>
-                            </tr>
-                          ) : (
-                            Object.entries(overviewData.trackOffsets).map(([vid, info]: [string, any]) => (
-                              <tr key={vid} className="hover:bg-neutral-900/40">
-                                <td className="py-2 px-3 font-mono text-amber-300">{vid}</td>
-                                <td className="py-2 px-3 text-white">{info.title || vid}</td>
-                                <td className="py-2 px-3 font-mono font-bold text-emerald-400">
-                                  {info.offsetSec > 0 ? `+${info.offsetSec}` : info.offsetSec} 秒
-                                </td>
-                                <td className="py-2 px-3 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteTrackOffset(vid)}
-                                    className="p-1.5 text-neutral-400 hover:text-red-400 rounded cursor-pointer"
-                                    title="補正を解除"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 7: Broadcast Notification */}
-              {activeTab === 'broadcast' && (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Send className="w-4 h-4 text-amber-400" />
-                      <span>メール登録ユーザーへの一斉通知配信</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      メールアドレスを登録している全ユーザーへ、アップデートや特集の案内を一斉配信します。
-                    </p>
-                  </div>
-
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-900 border border-neutral-800 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                      <span className="text-neutral-300">
-                        送信対象アカウント: <strong className="text-white font-mono">{overviewData?.accounts?.filter((a: any) => a.hasEmail)?.length || 0}</strong> 人 (メール設定済み)
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-neutral-500 font-mono">
-                      全{overviewData?.accounts?.length || 0}アカウント中
-                    </span>
-                  </div>
-
-                  <form onSubmit={handleSendBroadcast} className="p-5 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-3.5">
-                    <div>
-                      <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                        メール件名 / タイトル
-                      </label>
-                      <input
-                        type="text"
-                        value={broadcastSubject}
-                        onChange={(e) => setBroadcastSubject(e.target.value)}
-                        placeholder="例: 【Zero Music】新機能リリース・プレイリスト同期のご案内"
-                        className="w-full bg-neutral-950 border border-neutral-700 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-amber-500"
-                        required
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                        通知本文メッセージ
-                      </label>
-                      <textarea
-                        rows={4}
-                        value={broadcastBody}
-                        onChange={(e) => setBroadcastBody(e.target.value)}
-                        placeholder="ユーザー宛ての本文を入力..."
-                        className="w-full bg-neutral-950 border border-neutral-700 text-xs sm:text-sm text-white px-3.5 py-2.5 rounded-xl focus:outline-none focus:border-amber-500"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex justify-end">
-                      <button
-                        type="submit"
-                        disabled={sendingBroadcast || !broadcastSubject.trim() || !broadcastBody.trim()}
-                        className="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-black font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-600/20"
-                      >
-                        {sendingBroadcast ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                        <span>全メール登録ユーザーへ一斉送信</span>
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              )}
-
-              {/* Tab 8: Maintenance */}
-              {activeTab === 'maintenance' && (
-                <div className="space-y-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <Database className="w-4 h-4 text-amber-400" />
-                      <span>システム保守 & データエクスポート</span>
-                    </h3>
-                    <p className="text-xs text-neutral-400 mt-0.5">
-                      サーバー内部キャッシュの消去や、全ユーザー・全設定のJSONバックアップを行います。
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-2">
-                      <h4 className="text-xs font-bold text-white">歌詞キャッシュ消去</h4>
-                      <p className="text-xs text-neutral-400">
-                        サーバーに一時キャッシュされているLRC同期歌詞データを消去し、最新の同期データを再取得させます。
-                      </p>
-                      <button
-                        type="button"
-                        onClick={handleClearCache}
-                        className="mt-2 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                      >
-                        キャッシュを消去
-                      </button>
-                    </div>
-
-                    <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-2">
-                      <h4 className="text-xs font-bold text-white">JSONバックアップエクスポート</h4>
-                      <p className="text-xs text-neutral-400">
-                        総アクセス数、アカウント一覧、オフセット補正値、通知ログを含む全データをファイル保存します。
-                      </p>
-                      <button
-                        type="button"
-                        onClick={handleExportData}
-                        className="mt-2 px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>データJSONをダウンロード</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 9: Moderation & Community Control */}
-              {activeTab === 'moderation' && (
+              {/* ============================================================
+                  PAGE 5: SAFETY (通報・コメント・DM監査)
+                 ============================================================ */}
+              {activeNav === 'safety' && (
                 <div className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <ShieldAlert className="w-4 h-4 text-rose-400" />
-                        <span>コミュニティ・モデレーション ＆ 迷惑行為統括管理</span>
-                      </h3>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        全楽曲の弾幕コメント監視、不適切な投稿の通報処理、荒らしアカウントの凍結をリアルタイムに統括します。
-                      </p>
-                    </div>
-
+                  <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg overflow-x-auto max-w-full">
                     <button
                       type="button"
-                      onClick={fetchModeration}
-                      className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-xs text-neutral-300 flex items-center gap-1.5 transition-colors cursor-pointer border border-neutral-800"
+                      onClick={() => setSafetyTab('reports')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        safetyTab === 'reports'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${loadingModeration ? 'animate-spin' : ''}`} />
-                      <span>更新</span>
+                      通報キュー ({pendingReportsCount}件未対応)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSafetyTab('comments')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        safetyTab === 'comments'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      コメント & NGワード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSafetyTab('dms')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        safetyTab === 'dms'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      DM監視・監査
                     </button>
                   </div>
 
-                  {/* Summary Metric Cards */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
-                      <span className="text-[10px] text-neutral-400 uppercase font-bold tracking-wider">総コメント数</span>
-                      <p className="text-lg font-black text-white mt-0.5">{moderationData?.totalComments ?? 0}件</p>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
-                      <span className="text-[10px] text-rose-400 uppercase font-bold tracking-wider">未解決の通報</span>
-                      <p className="text-lg font-black text-rose-400 mt-0.5">
-                        {(moderationData?.reports || []).filter((r: any) => r.status === 'pending').length}件
-                      </p>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
-                      <span className="text-[10px] text-amber-400 uppercase font-bold tracking-wider">凍結中アカウント</span>
-                      <p className="text-lg font-black text-amber-300 mt-0.5">
-                        {(moderationData?.bannedUsers || []).length}件
-                      </p>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-neutral-900/60 border border-neutral-800">
-                      <span className="text-[10px] text-emerald-400 uppercase font-bold tracking-wider">稼働中ルーム</span>
-                      <p className="text-lg font-black text-emerald-300 mt-0.5">
-                        {moderationData?.totalRooms ?? 0}室
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Section 1: User Reports */}
-                  <div className="space-y-3">
-                    <h4 className="text-xs font-bold text-neutral-200 flex items-center gap-1.5">
-                      <AlertTriangle className="w-4 h-4 text-rose-400" />
-                      <span>ユーザー通報キュー (Reports)</span>
-                    </h4>
-
-                    {(moderationData?.reports || []).length === 0 ? (
-                      <div className="p-6 rounded-xl bg-neutral-900/40 border border-neutral-800 text-center text-xs text-neutral-500">
-                        通報は現在ありません（健全な状態です）
-                      </div>
-                    ) : (
-                      <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {(moderationData?.reports || []).map((rep: any) => (
-                          <div
-                            key={rep.id}
-                            className="p-3 rounded-xl bg-neutral-900/80 border border-neutral-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                                  rep.status === 'pending'
-                                    ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                                    : 'bg-neutral-800 text-neutral-400'
-                                }`}>
-                                  {rep.status === 'pending' ? '未対応' : rep.status === 'resolved' ? '解決済み' : '却下'}
-                                </span>
-                                <span className="text-neutral-400">対象者:</span>
-                                <span className="font-bold text-white font-mono">{rep.reportedUser}</span>
-                                <span className="text-neutral-500">•</span>
-                                <span className="text-rose-400 font-semibold">{rep.reason}</span>
-                              </div>
-                              {rep.contentSnippet && (
-                                <p className="text-neutral-300 italic bg-black/30 px-2 py-1 rounded">
-                                  「{rep.contentSnippet}」
-                                </p>
-                              )}
-                              <span className="text-[10px] text-neutral-500 font-mono mt-1 block">
-                                通報者: {rep.reporter} | {new Date(rep.timestamp).toLocaleString()}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              {rep.status === 'pending' && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await api.resolveModerationReport(rep.id, 'resolved');
-                                      showToast('通報を解決済みにしました');
-                                      fetchModeration();
-                                    }}
-                                    className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold cursor-pointer"
-                                  >
-                                    解決
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await api.resolveModerationReport(rep.id, 'dismissed');
-                                      showToast('通報を却下しました');
-                                      fetchModeration();
-                                    }}
-                                    className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 rounded-lg text-xs cursor-pointer"
-                                  >
-                                    却下
-                                  </button>
-                                </>
-                              )}
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await api.toggleBanUser(rep.reportedUser);
-                                  showToast(`アカウント「${rep.reportedUser}」の停止状態を更新しました`);
-                                  fetchModeration();
-                                }}
-                                className="px-2.5 py-1 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 rounded-lg text-xs font-semibold cursor-pointer"
-                              >
-                                アカウント凍結
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Section 2: Recent Comments across all tracks */}
-                  <div className="space-y-3">
-                    <h4 className="text-xs font-bold text-neutral-200 flex items-center gap-1.5">
-                      <MessageSquare className="w-4 h-4 text-amber-400" />
-                      <span>全楽曲の直近弾幕コメント ({moderationData?.recentComments?.length || 0}件表示)</span>
-                    </h4>
-
-                    {(moderationData?.recentComments || []).length === 0 ? (
-                      <div className="p-6 rounded-xl bg-neutral-900/40 border border-neutral-800 text-center text-xs text-neutral-500">
-                        投稿されたコメントはまだありません
-                      </div>
-                    ) : (
-                      <div className="space-y-2 max-h-72 overflow-y-auto">
-                        {(moderationData?.recentComments || []).map((c: any) => (
-                          <div
-                            key={c.id}
-                            className="p-3 rounded-xl bg-neutral-900/80 border border-neutral-800 flex items-center justify-between gap-3 text-xs"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2 mb-0.5">
-                                <span className="px-1.5 py-0.2 rounded bg-neutral-800 font-mono text-[10px] text-red-400 font-bold">
-                                  {c.formattedTime}
-                                </span>
-                                <span className="font-bold text-white truncate">{c.username}</span>
-                                <span className="text-neutral-500 text-[10px] font-mono">
-                                  {new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </span>
-                              </div>
-                              <p className="text-neutral-200 font-medium break-words">{c.text}</p>
-                              <span className="text-[10px] text-neutral-500 font-mono">動画ID: {c.videoId}</span>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                if (!confirm(`「${c.text}」を強制削除しますか？`)) return;
-                                await api.deleteComment(c.videoId, c.id, '', true);
-                                showToast('コメントを削除しました');
-                                fetchModeration();
-                              }}
-                              className="px-2.5 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/40 rounded-lg text-xs font-bold flex items-center gap-1 shrink-0 cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              <span>削除</span>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Section 3: Automated NG Word Rules */}
-                  <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-2">
-                    <h4 className="text-xs font-bold text-neutral-200 flex items-center gap-1.5">
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                      <span>自動NGワードフィルター（サーバー自動伏字処理中）</span>
-                    </h4>
-                    <p className="text-xs text-neutral-400 leading-relaxed">
-                      以下の語句が含まれるコメントやメッセージは、投稿時に自動検知され『***』へ即時マスクされます。
-                    </p>
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {(moderationData?.ngWords || []).map((word: string) => (
-                        <span key={word} className="px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono text-xs border border-neutral-700">
-                          {word}
+                  {/* Reports Sub-Tab */}
+                  {safetyTab === 'reports' && (
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-sm font-semibold text-white">ユーザーからの通報一覧</h2>
+                        <span className="text-xs text-neutral-400 font-mono tabular-nums">
+                          全 {(moderationData?.reports || []).length} 件
                         </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Tab 10: All User Direct Messages Surveillance & Audit (全ユーザーDM監査) */}
-              {activeTab === 'dms' && (
-                <div className="space-y-4">
-                  {/* Header */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-800">
-                    <div>
-                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                        <Eye className="w-4 h-4 text-purple-400" />
-                        <span>全ユーザー間ダイレクトメッセージ（DM）監視・監査</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                          管理者特権
-                        </span>
-                      </h3>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        プラットフォーム上の全ユーザー間のDM送受信ログ、シェア楽曲、プレイリストをリアルタイムに閲覧・監査・強制削除できます。
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={fetchAdminDms}
-                      className="px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-purple-300 border border-purple-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto shrink-0"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${loadingAdminDms ? 'animate-spin' : ''}`} />
-                      <span>最新ログ取得</span>
-                    </button>
-                  </div>
-
-                  {/* Summary Metric Cards */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-800/30">
-                      <div className="text-[11px] text-purple-300/80 font-medium">総DMメッセージ数</div>
-                      <div className="text-xl font-black text-white mt-1">
-                        {adminDmData?.totalMessages ?? 0} <span className="text-xs font-normal text-neutral-400">通</span>
                       </div>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-800/30">
-                      <div className="text-[11px] text-purple-300/80 font-medium">対話スレッド数</div>
-                      <div className="text-xl font-black text-white mt-1">
-                        {adminDmData?.totalConversations ?? 0} <span className="text-xs font-normal text-neutral-400">ペア</span>
-                      </div>
-                    </div>
-                    <div className="p-3.5 rounded-xl bg-purple-950/20 border border-purple-800/30 col-span-2 sm:col-span-1">
-                      <div className="text-[11px] text-purple-300/80 font-medium">監視監査ログ</div>
-                      <div className="text-xs font-mono font-semibold text-emerald-400 mt-2 flex items-center gap-1">
-                        <CheckCircle className="w-3.5 h-3.5" />
-                        <span>リアルタイム全数追跡中</span>
-                      </div>
-                    </div>
-                  </div>
 
-                  {/* Filter Search */}
-                  <div className="relative">
-                    <Search className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={dmSearchFilter}
-                      onChange={(e) => setDmSearchFilter(e.target.value)}
-                      placeholder="ユーザー名やメッセージ内容で検索・フィルタ..."
-                      className="w-full bg-neutral-900/90 border border-neutral-800 text-xs text-white pl-9 pr-4 py-2 rounded-xl focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-
-                  {/* Main Split View: Conversations List (Left) and Message Thread (Right) */}
-                  {(!adminDmData || adminDmData.conversations.length === 0) ? (
-                    <div className="p-12 text-center rounded-2xl bg-neutral-900/40 border border-neutral-800 space-y-2">
-                      <MessageSquare className="w-8 h-8 text-neutral-600 mx-auto" />
-                      <p className="text-sm font-semibold text-neutral-300">DMの送受信記録はまだありません</p>
-                      <p className="text-xs text-neutral-500">
-                        ユーザー間でメッセージがやり取りされると、すべての会話がここにリアルタイム表示されます。
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3 min-h-[380px]">
-                      {/* Left: Threads Selector (5 cols) */}
-                      <div className="md:col-span-5 space-y-2 max-h-[460px] overflow-y-auto pr-1">
-                        <div className="text-[11px] font-bold text-neutral-400 px-1">
-                          スレッド一覧 ({adminDmData.conversations.length}件)
+                      {loadingModeration && !moderationData ? (
+                        <div className="py-10 text-center text-xs text-neutral-400">読み込み中...</div>
+                      ) : (moderationData?.reports || []).length === 0 ? (
+                        <div className="py-10 text-center text-xs text-neutral-500">
+                          現在、通報はありません。
                         </div>
-                        {adminDmData.conversations
-                          .filter((conv) => {
-                            if (!dmSearchFilter) return true;
-                            const q = dmSearchFilter.toLowerCase();
-                            const participantsMatch = conv.participants.some((p) => p.toLowerCase().includes(q));
-                            const contentMatch = conv.messages.some((m) =>
-                              (m.content || '').toLowerCase().includes(q) ||
-                              (m.trackCard?.title || '').toLowerCase().includes(q) ||
-                              (m.playlistCard?.name || '').toLowerCase().includes(q)
-                            );
-                            return participantsMatch || contentMatch;
-                          })
-                          .map((conv) => {
-                            const isSelected = selectedAdminConvId === conv.conversationId;
-                            const lastMsg = conv.messages[conv.messages.length - 1];
-                            return (
-                              <button
-                                key={conv.conversationId}
-                                type="button"
-                                onClick={() => setSelectedAdminConvId(conv.conversationId)}
-                                className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-purple-950/40 border-purple-500/60 shadow-lg shadow-purple-950/20'
-                                    : 'bg-neutral-900/60 border-neutral-800 hover:bg-neutral-900 hover:border-neutral-700'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between gap-2 mb-1">
-                                  <div className="flex items-center gap-1.5 font-bold text-white text-xs truncate">
-                                    <span className="text-purple-300">{conv.participants[0]}</span>
-                                    <span className="text-neutral-500 font-mono text-[10px]">↔</span>
-                                    <span className="text-purple-300">{conv.participants[1]}</span>
-                                  </div>
-                                  <span className="px-1.5 py-0.5 rounded bg-neutral-800 text-[10px] font-mono text-neutral-400 shrink-0">
-                                    {conv.messageCount}通
+                      ) : (
+                        <div className="divide-y divide-white/[0.06]">
+                          {(moderationData?.reports || []).map((rep: any) => (
+                            <div
+                              key={rep.id}
+                              className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                            >
+                              <div className="space-y-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`font-semibold ${
+                                      rep.status === 'pending' ? 'text-rose-400' : 'text-neutral-400'
+                                    }`}
+                                  >
+                                    {rep.status === 'pending'
+                                      ? '未対応'
+                                      : rep.status === 'resolved'
+                                      ? '解決済み'
+                                      : '却下'}
                                   </span>
+                                  <span className="text-neutral-600">·</span>
+                                  <span className="text-white font-semibold">対象: {rep.reportedUser}</span>
+                                  <span className="text-neutral-600">·</span>
+                                  <span className="text-neutral-300">理由: {rep.reason}</span>
                                 </div>
-                                <div className="text-[11px] text-neutral-400 line-clamp-1">
-                                  {lastMsg?.trackCard
-                                    ? `🎵 楽曲: ${lastMsg.trackCard.title}`
-                                    : lastMsg?.playlistCard
-                                    ? `📁 プレイリスト: ${lastMsg.playlistCard.name}`
-                                    : lastMsg?.content || '（カードメッセージ）'}
+                                {rep.contentSnippet && (
+                                  <p className="text-neutral-300 bg-[#0A0B0E] px-2.5 py-1.5 rounded-md border border-white/[0.06] inline-block">
+                                    「{rep.contentSnippet}」
+                                  </p>
+                                )}
+                                <div className="text-[11px] text-neutral-500 font-mono">
+                                  通報者: {rep.reporter} · {new Date(rep.timestamp).toLocaleString('ja-JP')}
                                 </div>
-                                <div className="text-[10px] text-neutral-500 font-mono mt-1">
-                                  最終更新: {new Date(conv.lastTimestamp).toLocaleString([], {
-                                    month: '2-digit',
-                                    day: '2-digit',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })}
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                {rep.status === 'pending' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        await api.resolveModerationReport(rep.id, 'resolved');
+                                        showToast('解決済みにしました');
+                                        fetchModeration();
+                                      }}
+                                      className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-semibold cursor-pointer"
+                                    >
+                                      解決にする
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        await api.resolveModerationReport(rep.id, 'dismissed');
+                                        showToast('却下しました');
+                                        fetchModeration();
+                                      }}
+                                      className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-neutral-300 cursor-pointer"
+                                    >
+                                      却下
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const res = await api.toggleBanUser(rep.reportedUser);
+                                    showToast(
+                                      res.isBanned
+                                        ? `「${rep.reportedUser}」を凍結しました`
+                                        : `「${rep.reportedUser}」の凍結を解除しました`
+                                    );
+                                    fetchModeration();
+                                    fetchOverview();
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 font-semibold cursor-pointer"
+                                >
+                                  凍結切替
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Comments & NG Words Sub-Tab */}
+                  {safetyTab === 'comments' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      {/* Recent Comments (7 cols) */}
+                      <div className="lg:col-span-7 p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h2 className="text-sm font-semibold text-white">最近のコメント</h2>
+                          <span className="text-xs text-neutral-400 font-mono tabular-nums">
+                            総数 {moderationData?.totalComments ?? 0}件
+                          </span>
+                        </div>
+
+                        {(moderationData?.recentComments || []).length === 0 ? (
+                          <p className="py-10 text-center text-xs text-neutral-500">
+                            コメントはまだありません
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-white/[0.06] max-h-[440px] overflow-y-auto pr-1">
+                            {(moderationData?.recentComments || []).map((c: any) => (
+                              <div key={c.id} className="py-3 flex items-start justify-between gap-3 text-xs">
+                                <div className="min-w-0 space-y-1">
+                                  <div className="text-[11px] text-neutral-400 font-mono">
+                                    <span className="text-white font-semibold font-sans">{c.username}</span> ·{' '}
+                                    {c.formattedTime} · 動画 {c.videoId}
+                                  </div>
+                                  <p className="text-neutral-200 break-words">{c.text}</p>
                                 </div>
-                              </button>
-                            );
-                          })}
+
+                                {confirmDeleteCommentId === c.id ? (
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        try {
+                                          await api.deleteComment(c.videoId, c.id, '', true);
+                                          setConfirmDeleteCommentId(null);
+                                          showToast('コメントを削除しました');
+                                          fetchModeration();
+                                        } catch (err: any) {
+                                          showToast(err?.message || '削除に失敗しました');
+                                        }
+                                      }}
+                                      className="px-2.5 py-1 bg-red-600 text-white rounded-md font-bold cursor-pointer"
+                                    >
+                                      削除実行
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteCommentId(null)}
+                                      className="px-2 py-1 bg-white/[0.06] text-neutral-300 rounded-md cursor-pointer"
+                                    >
+                                      取消
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteCommentId(c.id)}
+                                    className="px-2.5 py-1 rounded-md text-red-400 hover:bg-red-500/15 border border-red-500/25 shrink-0 cursor-pointer"
+                                  >
+                                    削除
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
-                      {/* Right: Selected Conversation Details (7 cols) */}
-                      <div className="md:col-span-7 bg-neutral-900/80 border border-neutral-800 rounded-2xl flex flex-col overflow-hidden max-h-[460px]">
-                        {(() => {
-                          const activeConv = adminDmData.conversations.find(
-                            (c) => c.conversationId === selectedAdminConvId
-                          ) || adminDmData.conversations[0];
+                      {/* NG Words (5 cols) */}
+                      <div className="lg:col-span-5 p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4 self-start">
+                        <div>
+                          <h2 className="text-sm font-semibold text-white">NGワード自動伏字フィルター</h2>
+                          <p className="text-xs text-neutral-400 mt-0.5">
+                            登録された語句はコメントやDM投稿時に自動で「***」に置き換わります。
+                          </p>
+                        </div>
 
-                          if (!activeConv) {
-                            return (
-                              <div className="flex-1 flex items-center justify-center p-8 text-xs text-neutral-500">
-                                スレッドを選択してください
-                              </div>
-                            );
-                          }
+                        <form
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const word = newNgWord.trim();
+                            if (!word) return;
+                            setSavingNgWord(true);
+                            try {
+                              const res = await api.addAdminNgWord(word);
+                              setNewNgWord('');
+                              showToast(res.message);
+                              fetchModeration();
+                            } catch (err: any) {
+                              showToast(err?.message || '追加に失敗しました');
+                            } finally {
+                              setSavingNgWord(false);
+                            }
+                          }}
+                          className="flex gap-2"
+                        >
+                          <input
+                            type="text"
+                            value={newNgWord}
+                            onChange={(e) => setNewNgWord(e.target.value)}
+                            placeholder="追加するNGワード"
+                            maxLength={60}
+                            className="flex-1 bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                          />
+                          <button
+                            type="submit"
+                            disabled={savingNgWord || !newNgWord.trim()}
+                            className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black font-bold text-xs rounded-lg flex items-center gap-1 cursor-pointer shrink-0"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>追加</span>
+                          </button>
+                        </form>
 
-                          return (
-                            <>
-                              {/* Selected Thread Header */}
-                              <div className="p-3 bg-neutral-950/80 border-b border-neutral-800 flex items-center justify-between shrink-0">
-                                <div>
-                                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                                    <span>{activeConv.participants[0]}</span>
-                                    <span className="text-neutral-500">↔</span>
-                                    <span>{activeConv.participants[1]}</span>
-                                  </div>
-                                  <div className="text-[10px] text-neutral-400 font-mono">
-                                    スレッドID: {activeConv.conversationId} ({activeConv.messages.length}件)
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Messages History List */}
-                              <div className="flex-1 p-3 overflow-y-auto space-y-2.5">
-                                {activeConv.messages.map((msg) => (
-                                  <div
-                                    key={msg.id}
-                                    className="p-3 rounded-xl bg-neutral-950/80 border border-neutral-800/80 text-xs space-y-1.5 relative group hover:border-neutral-700 transition-colors"
+                        <div className="space-y-3 pt-1">
+                          <div>
+                            <div className="text-[11px] text-neutral-400 mb-1">追加したNGワード (クリックで削除)</div>
+                            {(moderationData?.customNgWords || []).length === 0 ? (
+                              <p className="text-xs text-neutral-500">カスタムNGワードはまだありません</p>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {(moderationData?.customNgWords || []).map((word: string) => (
+                                  <button
+                                    key={word}
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        const res = await api.removeAdminNgWord(word);
+                                        showToast(res.message);
+                                        fetchModeration();
+                                      } catch (err: any) {
+                                        showToast(err?.message || '削除に失敗しました');
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-950/50 hover:bg-rose-900/60 text-rose-200 border border-rose-500/30 text-xs font-mono cursor-pointer"
+                                    title="クリックして削除"
                                   >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <span className="font-bold text-purple-300">{msg.sender}</span>
-                                        <span className="text-neutral-500 text-[10px]">➔</span>
-                                        <span className="text-neutral-400 text-[11px]">{msg.recipient}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-[10px] text-neutral-500 font-mono">
-                                          {new Date(msg.timestamp).toLocaleString([], {
-                                            month: '2-digit',
-                                            day: '2-digit',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                            second: '2-digit',
-                                          })}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          onClick={async () => {
-                                            if (!confirm(`送信者「${msg.sender}」のこのメッセージを強制削除しますか？`)) return;
-                                            try {
-                                              await api.deleteAdminDmMessage(msg.id);
-                                              showToast('メッセージを強制削除しました');
-                                              fetchAdminDms();
-                                            } catch (err: any) {
-                                              alert(err.message || '削除に失敗しました');
-                                            }
-                                          }}
-                                          className="p-1 text-neutral-500 hover:text-red-400 rounded hover:bg-neutral-800 transition-colors cursor-pointer"
-                                          title="管理者特権でこのメッセージを削除"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    {/* Text content */}
-                                    {msg.content && (
-                                      <p className="text-neutral-200 leading-relaxed break-words bg-neutral-900/60 p-2 rounded-lg border border-neutral-800/50">
-                                        {msg.content}
-                                      </p>
-                                    )}
-
-                                    {/* Track Card Preview */}
-                                    {msg.trackCard && (
-                                      <div className="flex items-center gap-2.5 p-2 rounded-lg bg-neutral-900 border border-neutral-800">
-                                        <SafeImage
-                                          src={msg.trackCard.thumbnail}
-                                          alt={msg.trackCard.title}
-                                          className="w-10 h-10 rounded-md object-cover shrink-0"
-                                        />
-                                        <div className="min-w-0 flex-1">
-                                          <div className="text-[11px] font-bold text-white truncate">
-                                            {msg.trackCard.title}
-                                          </div>
-                                          <div className="text-[10px] text-neutral-400 truncate">
-                                            {msg.trackCard.artist}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Playlist Card Preview */}
-                                    {msg.playlistCard && (
-                                      <div className="p-2.5 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-between gap-2">
-                                        <div className="min-w-0">
-                                          <div className="text-[11px] font-bold text-white truncate">
-                                            📁 {msg.playlistCard.name}
-                                          </div>
-                                          <div className="text-[10px] text-neutral-400">
-                                            作成者: {msg.playlistCard.author} • {msg.playlistCard.trackCount}曲
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Reactions */}
-                                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                                      <div className="flex flex-wrap gap-1 pt-1">
-                                        {Object.entries(msg.reactions).map(([emoji, users]) => (
-                                          <span
-                                            key={emoji}
-                                            className="px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 text-[10px] text-neutral-300"
-                                            title={`リアクション: ${(users as string[]).join(', ')}`}
-                                          >
-                                            {emoji} {(users as string[]).length}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
+                                    <span>{word}</span>
+                                    <X className="w-3 h-3 text-rose-400" />
+                                  </button>
                                 ))}
                               </div>
-                            </>
-                          );
-                        })()}
+                            )}
+                          </div>
+
+                          <div className="pt-2 border-t border-white/[0.06]">
+                            <div className="text-[11px] text-neutral-400 mb-1">標準の自動保護ワード</div>
+                            <p className="text-xs text-neutral-500 font-mono leading-relaxed">
+                              {(moderationData?.ngWords || []).join(' · ')}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* DMs Surveillance Sub-Tab */}
+                  {safetyTab === 'dms' && (
+                    <div className="space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="text-xs text-neutral-400 font-mono tabular-nums">
+                          スレッド {adminDmData?.totalConversations ?? 0}件 · 総メッセージ {adminDmData?.totalMessages ?? 0}通
+                        </div>
+                        <div className="relative w-full sm:w-72">
+                          <Search className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={dmSearchFilter}
+                            onChange={(e) => setDmSearchFilter(e.target.value)}
+                            placeholder="ユーザー名・本文で検索"
+                            className="w-full bg-[#111318] border border-white/[0.1] text-xs text-white pl-9 pr-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      {loadingAdminDms && !adminDmData ? (
+                        <div className="py-12 text-center text-xs text-neutral-400">読み込み中...</div>
+                      ) : !adminDmData || adminDmData.conversations.length === 0 ? (
+                        <div className="p-12 text-center rounded-xl bg-[#111318] border border-white/[0.08] text-xs text-neutral-500">
+                          DMの履歴はまだありません
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 min-h-[420px]">
+                          <div className="md:col-span-5 rounded-xl bg-[#111318] border border-white/[0.08] divide-y divide-white/[0.06] max-h-[480px] overflow-y-auto">
+                            {adminDmData.conversations
+                              .filter((conv) => {
+                                if (!dmSearchFilter.trim()) return true;
+                                const q = dmSearchFilter.toLowerCase();
+                                return (
+                                  conv.participants.some((p) => p.toLowerCase().includes(q)) ||
+                                  conv.messages.some((m) => (m.content || '').toLowerCase().includes(q))
+                                );
+                              })
+                              .map((conv) => {
+                                const isSelected = selectedAdminConvId === conv.conversationId;
+                                const lastMsg = conv.messages[conv.messages.length - 1];
+                                return (
+                                  <button
+                                    key={conv.conversationId}
+                                    type="button"
+                                    onClick={() => setSelectedAdminConvId(conv.conversationId)}
+                                    className={`w-full text-left p-3.5 transition-colors cursor-pointer ${
+                                      isSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.03]'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-2 text-xs">
+                                      <span className={`font-semibold ${isSelected ? 'text-amber-300' : 'text-white'}`}>
+                                        {conv.participants[0]} ↔ {conv.participants[1]}
+                                      </span>
+                                      <span className="font-mono tabular-nums text-[11px] text-neutral-500">
+                                        {conv.messageCount}通
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-neutral-400 truncate mt-1">
+                                      {lastMsg?.content ||
+                                        (lastMsg?.trackCard ? `楽曲: ${lastMsg.trackCard.title}` : '共有メッセージ')}
+                                    </p>
+                                  </button>
+                                );
+                              })}
+                          </div>
+
+                          <div className="md:col-span-7 rounded-xl bg-[#111318] border border-white/[0.08] flex flex-col max-h-[480px] overflow-hidden">
+                            {(() => {
+                              const activeConv =
+                                adminDmData.conversations.find((c) => c.conversationId === selectedAdminConvId) ||
+                                adminDmData.conversations[0];
+                              if (!activeConv) {
+                                return (
+                                  <div className="flex-1 flex items-center justify-center text-xs text-neutral-500">
+                                    左からスレッドを選んでください
+                                  </div>
+                                );
+                              }
+                              return (
+                                <>
+                                  <div className="px-4 py-3 border-b border-white/[0.08] flex items-center justify-between text-xs">
+                                    <span className="font-semibold text-white">
+                                      {activeConv.participants[0]} ↔ {activeConv.participants[1]}
+                                    </span>
+                                    <span className="text-neutral-500 font-mono tabular-nums">
+                                      {activeConv.messages.length}件
+                                    </span>
+                                  </div>
+                                  <div className="flex-1 p-4 overflow-y-auto divide-y divide-white/[0.06]">
+                                    {activeConv.messages.map((msg) => (
+                                      <div key={msg.id} className="py-3 first:pt-0 space-y-1.5 text-xs">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="text-neutral-400">
+                                            <span className="font-semibold text-white">{msg.sender}</span> →{' '}
+                                            <span>{msg.recipient}</span>
+                                            <span className="ml-2 font-mono tabular-nums text-[11px] text-neutral-500">
+                                              {new Date(msg.timestamp).toLocaleString('ja-JP', {
+                                                month: '2-digit',
+                                                day: '2-digit',
+                                                hour: '2-digit',
+                                                minute: '2-digit',
+                                              })}
+                                            </span>
+                                          </div>
+                                          {confirmDeleteDmId === msg.id ? (
+                                            <div className="flex items-center gap-1.5">
+                                              <button
+                                                type="button"
+                                                onClick={async () => {
+                                                  try {
+                                                    await api.deleteAdminDmMessage(msg.id);
+                                                    setConfirmDeleteDmId(null);
+                                                    showToast('DMを削除しました');
+                                                    fetchAdminDms();
+                                                  } catch (err: any) {
+                                                    showToast(err?.message || '削除に失敗しました');
+                                                  }
+                                                }}
+                                                className="px-2 py-0.5 bg-red-600 text-white rounded text-[11px] font-bold cursor-pointer"
+                                              >
+                                                削除実行
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => setConfirmDeleteDmId(null)}
+                                                className="px-2 py-0.5 bg-white/[0.06] text-neutral-300 rounded text-[11px] cursor-pointer"
+                                              >
+                                                取消
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              onClick={() => setConfirmDeleteDmId(msg.id)}
+                                              className="text-neutral-500 hover:text-red-400 cursor-pointer"
+                                              title="削除"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
+                                        </div>
+                                        {msg.content && <p className="text-neutral-200 break-words">{msg.content}</p>}
+                                        {msg.trackCard && (
+                                          <div className="text-[11px] text-neutral-400">
+                                            共有曲: {msg.trackCard.title} ({msg.trackCard.artist})
+                                          </div>
+                                        )}
+                                        {msg.playlistCard && (
+                                          <div className="text-[11px] text-neutral-400">
+                                            共有プレイリスト: {msg.playlistCard.name} ({msg.playlistCard.trackCount}曲)
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ============================================================
+                  PAGE 6: CONTENT MANAGEMENT (投稿コンテンツ・歌詞補正)
+                 ============================================================ */}
+              {activeNav === 'content' && (
+                <div className="space-y-6">
+                  <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg overflow-x-auto max-w-full">
+                    <button
+                      type="button"
+                      onClick={() => setContentTab('sharedOffline')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        contentTab === 'sharedOffline'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      共有オフライン ({sharedOfflineData?.totalCount ?? 0})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setContentTab('rooms')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        contentTab === 'rooms'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      リスニングルーム ({contentOverview?.rooms?.length ?? 0})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setContentTab('playlists')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        contentTab === 'playlists'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      公開・共同プレイリスト
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setContentTab('offsets')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        contentTab === 'offsets'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      歌詞タイミング補正
+                    </button>
+                  </div>
+
+                  {/* Shared Offline Sub-Tab */}
+                  {contentTab === 'sharedOffline' && (
+                    <div className="space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="text-xs text-neutral-400 font-mono tabular-nums">
+                          公開曲数 {sharedOfflineData?.totalCount ?? 0}曲 · 合計容量{' '}
+                          {formatFileSizeLabel(sharedOfflineData?.totalBytes ?? 0)}
+                        </div>
+                        <div className="relative w-full sm:w-72">
+                          <Search className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={sharedSearchFilter}
+                            onChange={(e) => setSharedSearchFilter(e.target.value)}
+                            placeholder="曲名・アーティスト・投稿者で検索"
+                            className="w-full bg-[#111318] border border-white/[0.1] rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      {loadingSharedOffline && !sharedOfflineData ? (
+                        <div className="py-12 text-center text-xs text-neutral-400">読み込み中...</div>
+                      ) : !sharedOfflineData || sharedOfflineData.tracks.length === 0 ? (
+                        <div className="p-12 text-center rounded-xl bg-[#111318] border border-white/[0.08] text-xs text-neutral-500">
+                          共有オフラインに投稿された曲はまだありません
+                        </div>
+                      ) : (
+                        <div className="rounded-xl bg-[#111318] border border-white/[0.08] divide-y divide-white/[0.06]">
+                          {sharedOfflineData.tracks
+                            .filter((t) => {
+                              if (!sharedSearchFilter.trim()) return true;
+                              const q = sharedSearchFilter.trim().toLowerCase();
+                              return (
+                                String(t.title || '').toLowerCase().includes(q) ||
+                                String(t.artist || '').toLowerCase().includes(q) ||
+                                String(t.uploadedBy || '').toLowerCase().includes(q)
+                              );
+                            })
+                            .map((t) => {
+                              const isConfirming = confirmDeleteSharedId === t.id;
+                              const isDeleting = deletingSharedId === t.id;
+                              return (
+                                <div
+                                  key={t.id}
+                                  className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <SafeImage
+                                      src={t.thumbnail || `/api/shared-offline/cover/${encodeURIComponent(t.id)}`}
+                                      alt={t.title}
+                                      className="w-11 h-11 rounded-lg object-cover bg-neutral-800 shrink-0"
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="text-xs sm:text-sm font-semibold text-white truncate">
+                                        {t.title}
+                                      </p>
+                                      <p className="text-[11px] text-neutral-400 truncate mt-0.5">
+                                        {t.artist} · 投稿者: {t.uploadedBy || 'ゲスト'} ·{' '}
+                                        {formatFileSizeLabel(t.fileSize || 0)} · 再生 {t.plays || 0}回
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                                    {isConfirming ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          disabled={isDeleting}
+                                          onClick={async () => {
+                                            setDeletingSharedId(t.id);
+                                            try {
+                                              await api.deleteAdminSharedOfflineTrack(t.id);
+                                              await removeDeletedSharedOfflineTrackLocal(t.id);
+                                              setConfirmDeleteSharedId(null);
+                                              showToast(`「${t.title}」を削除しました`);
+                                              fetchAdminSharedOffline();
+                                            } catch (err: any) {
+                                              showToast(err?.message || '削除に失敗しました');
+                                            } finally {
+                                              setDeletingSharedId(null);
+                                            }
+                                          }}
+                                          className="px-3 py-1.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                        >
+                                          {isDeleting ? '削除中...' : '削除を実行'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isDeleting}
+                                          onClick={() => setConfirmDeleteSharedId(null)}
+                                          className="px-2.5 py-1.5 bg-white/[0.06] text-neutral-300 rounded-lg text-xs cursor-pointer"
+                                        >
+                                          取消
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteSharedId(t.id)}
+                                        className="px-3 py-1.5 rounded-lg text-xs text-red-400 hover:bg-red-500/15 border border-red-500/30 font-medium flex items-center gap-1.5 cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                        <span>削除</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Listening Rooms Sub-Tab */}
+                  {contentTab === 'rooms' && (
+                    <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                      <h2 className="text-sm font-semibold text-white">稼働中のリスニングパーティールーム</h2>
+                      {loadingContentOverview && !contentOverview ? (
+                        <div className="py-10 text-center text-xs text-neutral-400">読み込み中...</div>
+                      ) : !contentOverview?.rooms || contentOverview.rooms.length === 0 ? (
+                        <div className="py-10 text-center text-xs text-neutral-500">
+                          現在開かれているルームはありません
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-white/[0.06]">
+                          {contentOverview.rooms.map((room: any) => {
+                            const key = `room:${room.id}`;
+                            const isConfirm = confirmDeleteContentKey === key;
+                            return (
+                              <div
+                                key={room.id}
+                                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-white truncate">{room.name}</p>
+                                  <p className="text-[11px] text-neutral-400 mt-0.5 truncate">
+                                    ホスト: {room.hostUsername} · 参加者 {room.participantCount}人 · チャット{' '}
+                                    {room.chatCount}件 · キュー {room.queueCount}曲
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        const res = await api.clearAdminRoomChat(room.id);
+                                        showToast(res.message);
+                                        fetchContentOverview();
+                                      } catch (err: any) {
+                                        showToast(err?.message || 'チャット消去に失敗しました');
+                                      }
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-neutral-200 flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Eraser className="w-3.5 h-3.5" />
+                                    <span>チャット消去</span>
+                                  </button>
+
+                                  {isConfirm ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            const res = await api.deleteAdminRoom(room.id);
+                                            setConfirmDeleteContentKey(null);
+                                            showToast(res.message);
+                                            fetchContentOverview();
+                                          } catch (err: any) {
+                                            showToast(err?.message || '削除に失敗しました');
+                                          }
+                                        }}
+                                        className="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold cursor-pointer"
+                                      >
+                                        削除実行
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteContentKey(null)}
+                                        className="px-2.5 py-1.5 bg-white/[0.06] text-neutral-300 rounded-lg cursor-pointer"
+                                      >
+                                        取消
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteContentKey(key)}
+                                      className="px-3 py-1.5 rounded-lg text-red-400 hover:bg-red-500/15 border border-red-500/30 font-medium cursor-pointer"
+                                    >
+                                      ルーム削除
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Shared & Collab Playlists Sub-Tab */}
+                  {contentTab === 'playlists' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h2 className="text-sm font-semibold text-white">
+                          共有URLプレイリスト ({contentOverview?.sharedPlaylists?.length ?? 0}件)
+                        </h2>
+                        {!contentOverview?.sharedPlaylists || contentOverview.sharedPlaylists.length === 0 ? (
+                          <p className="py-8 text-center text-xs text-neutral-500">
+                            共有プレイリストはまだありません
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-white/[0.06] max-h-80 overflow-y-auto pr-1">
+                            {contentOverview.sharedPlaylists.map((pl: any) => {
+                              const key = `shared:${pl.id}`;
+                              const isConfirm = confirmDeleteContentKey === key;
+                              return (
+                                <div key={pl.id} className="py-2.5 flex items-center justify-between gap-2 text-xs">
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-white truncate">{pl.name}</p>
+                                    <p className="text-[11px] text-neutral-400 truncate">
+                                      作成者: {pl.author} · {pl.trackCount}曲 · 閲覧 {pl.views}回
+                                    </p>
+                                  </div>
+                                  {isConfirm ? (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            const res = await api.deleteAdminSharedPlaylist(pl.id);
+                                            setConfirmDeleteContentKey(null);
+                                            showToast(res.message);
+                                            fetchContentOverview();
+                                          } catch (err: any) {
+                                            showToast(err?.message || '削除に失敗しました');
+                                          }
+                                        }}
+                                        className="px-2.5 py-1 bg-red-600 text-white rounded-md font-bold cursor-pointer"
+                                      >
+                                        実行
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteContentKey(null)}
+                                        className="px-2 py-1 bg-white/[0.06] text-neutral-300 rounded-md cursor-pointer"
+                                      >
+                                        取消
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteContentKey(key)}
+                                      className="p-1.5 text-neutral-400 hover:text-red-400 rounded cursor-pointer shrink-0"
+                                      title="削除"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                        <h2 className="text-sm font-semibold text-white">
+                          共同編集プレイリスト ({contentOverview?.collabPlaylists?.length ?? 0}件)
+                        </h2>
+                        {!contentOverview?.collabPlaylists || contentOverview.collabPlaylists.length === 0 ? (
+                          <p className="py-8 text-center text-xs text-neutral-500">
+                            共同編集プレイリストはまだありません
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-white/[0.06] max-h-80 overflow-y-auto pr-1">
+                            {contentOverview.collabPlaylists.map((cp: any) => {
+                              const key = `collab:${cp.code}`;
+                              const isConfirm = confirmDeleteContentKey === key;
+                              return (
+                                <div key={cp.code} className="py-2.5 flex items-center justify-between gap-2 text-xs">
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-white truncate">
+                                      {cp.name} <span className="font-mono text-neutral-400">#{cp.code}</span>
+                                    </p>
+                                    <p className="text-[11px] text-neutral-400 truncate">
+                                      作成者: {cp.owner} · 参加 {cp.memberCount}人 · {cp.trackCount}曲
+                                    </p>
+                                  </div>
+                                  {isConfirm ? (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            const res = await api.deleteAdminCollabPlaylist(cp.code);
+                                            setConfirmDeleteContentKey(null);
+                                            showToast(res.message);
+                                            fetchContentOverview();
+                                          } catch (err: any) {
+                                            showToast(err?.message || '削除に失敗しました');
+                                          }
+                                        }}
+                                        className="px-2.5 py-1 bg-red-600 text-white rounded-md font-bold cursor-pointer"
+                                      >
+                                        実行
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteContentKey(null)}
+                                        className="px-2 py-1 bg-white/[0.06] text-neutral-300 rounded-md cursor-pointer"
+                                      >
+                                        取消
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteContentKey(key)}
+                                      className="p-1.5 text-neutral-400 hover:text-red-400 rounded cursor-pointer shrink-0"
+                                      title="削除"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Track Sync Offset Sub-Tab */}
+                  {contentTab === 'offsets' && (
+                    <div className="space-y-6">
+                      <form
+                        onSubmit={handleSaveTrackOffset}
+                        className="p-5 rounded-xl bg-[#111318] border border-white/[0.08] space-y-4"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <h2 className="text-sm font-semibold text-white">歌詞の同期タイミングを補正する</h2>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              歌詞が音より早い・遅い曲に対し、全ユーザー共通のズレ補正（秒）を登録します。
+                            </p>
+                          </div>
+                          {currentTrack && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOffsetVideoId(currentTrack.id);
+                                setOffsetTitle(`${currentTrack.title} - ${currentTrack.artist}`);
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-amber-300 font-medium cursor-pointer shrink-0"
+                            >
+                              再生中の曲を入力 ({currentTrack.title.slice(0, 18)})
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">曲ID (YouTube ID)</label>
+                            <input
+                              type="text"
+                              value={offsetVideoId}
+                              onChange={(e) => setOffsetVideoId(e.target.value)}
+                              placeholder="例: m9SMT5ipbxk"
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg font-mono focus:outline-none focus:border-amber-500"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">曲名・メモ</label>
+                            <input
+                              type="text"
+                              value={offsetTitle}
+                              onChange={(e) => setOffsetTitle(e.target.value)}
+                              placeholder="曲名 (任意)"
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-neutral-300 mb-1">補正値 (秒 / マイナスで早める)</label>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={offsetSecVal}
+                              onChange={(e) => setOffsetSecVal(e.target.value)}
+                              className="w-full bg-[#0A0B0E] border border-white/[0.12] text-xs text-white px-3 py-2 rounded-lg font-mono focus:outline-none focus:border-amber-500"
+                              required
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                            <span className="text-neutral-400 mr-1">よく使う値:</span>
+                            {[-1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5].map((val) => (
+                              <button
+                                key={val}
+                                type="button"
+                                onClick={() => setOffsetSecVal(String(val))}
+                                className={`px-2.5 py-1 rounded-md font-mono text-xs border cursor-pointer ${
+                                  parseFloat(offsetSecVal) === val
+                                    ? 'bg-amber-500 text-black border-amber-500 font-bold'
+                                    : 'bg-[#0A0B0E] border-white/[0.1] text-neutral-300 hover:text-white'
+                                }`}
+                              >
+                                {val > 0 ? `+${val}` : val}秒
+                              </button>
+                            ))}
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={savingOffset || !offsetVideoId.trim()}
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer"
+                          >
+                            {savingOffset ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sliders className="w-3.5 h-3.5" />}
+                            <span>補正を保存</span>
+                          </button>
+                        </div>
+                      </form>
+
+                      <div className="overflow-x-auto rounded-xl bg-[#111318] border border-white/[0.08]">
+                        <table className="w-full text-left text-xs">
+                          <thead className="border-b border-white/[0.08] text-neutral-400">
+                            <tr>
+                              <th className="py-3 px-4 font-medium">曲ID</th>
+                              <th className="py-3 px-4 font-medium">曲名 / メモ</th>
+                              <th className="py-3 px-4 font-medium text-right">補正値</th>
+                              <th className="py-3 px-4 font-medium text-right">操作</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/[0.06]">
+                            {!overviewData?.trackOffsets || Object.keys(overviewData.trackOffsets).length === 0 ? (
+                              <tr>
+                                <td colSpan={4} className="py-8 text-center text-neutral-500">
+                                  登録された歌詞補正はまだありません
+                                </td>
+                              </tr>
+                            ) : (
+                              Object.entries(overviewData.trackOffsets).map(([vid, info]: [string, any]) => (
+                                <tr key={vid} className="hover:bg-white/[0.02]">
+                                  <td className="py-2.5 px-4 font-mono text-amber-300">{vid}</td>
+                                  <td className="py-2.5 px-4 text-white">{info.title || vid}</td>
+                                  <td className="py-2.5 px-4 text-right font-mono tabular-nums text-emerald-400">
+                                    {info.offsetSec > 0 ? `+${info.offsetSec}` : info.offsetSec}秒
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteTrackOffset(vid)}
+                                      className="p-1.5 text-neutral-400 hover:text-red-400 rounded cursor-pointer"
+                                      title="解除"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   )}
                 </div>
               )}
-            </div>
+
+              {/* ============================================================
+                  PAGE 7: SYSTEM & DIAGNOSTICS (システム保守・診断)
+                 ============================================================ */}
+              {activeNav === 'system' && (
+                <div className="space-y-6">
+                  <div className="inline-flex items-center gap-1 p-1 bg-[#111318] border border-white/[0.08] rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setSystemTab('maintenance')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        systemTab === 'maintenance'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      キャッシュ・セッション・バックアップ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSystemTab('diagnostics')}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        systemTab === 'diagnostics'
+                          ? 'bg-amber-500 text-black font-bold'
+                          : 'text-neutral-400 hover:text-white'
+                      }`}
+                    >
+                      API疎通テスト・エラーログ
+                    </button>
+                  </div>
+
+                  {systemTab === 'maintenance' && (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                          <div className="text-xs text-neutral-400">歌詞キャッシュ</div>
+                          <div className="text-xl font-bold text-white font-mono tabular-nums mt-1">
+                            {overviewData?.system?.lyricsCacheSize ?? 0} 曲
+                          </div>
+                        </div>
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                          <div className="text-xs text-neutral-400">検索・楽曲KVキャッシュ</div>
+                          <div className="text-xl font-bold text-white font-mono tabular-nums mt-1">
+                            {overviewData?.system?.kvCacheSize ?? 0} 件
+                          </div>
+                        </div>
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                          <div className="text-xs text-neutral-400">有効な管理者セッション</div>
+                          <div className="text-xl font-bold text-amber-400 font-mono tabular-nums mt-1">
+                            {overviewData?.system?.activeAdminSessions ?? 1} 端末
+                          </div>
+                        </div>
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08]">
+                          <div className="text-xs text-neutral-400">記録された再生エラー</div>
+                          <div className="text-xl font-bold text-rose-400 font-mono tabular-nums mt-1">
+                            {overviewData?.playbackErrors?.length ?? 0} 件
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="text-sm font-semibold text-white">歌詞キャッシュを消去</h3>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              一時保存された歌詞データを消し、最新を取得し直します。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={runningMaintenanceKey === 'lyrics'}
+                            onClick={() => runMaintenanceAction('lyrics', () => api.clearLyricsCache())}
+                            className="px-3.5 py-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] text-white text-xs font-medium cursor-pointer shrink-0"
+                          >
+                            消去する
+                          </button>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="text-sm font-semibold text-white">検索・楽曲キャッシュを全消去</h3>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              ホーム・検索・ランキングのサーバー側キャッシュをリセットします。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={runningMaintenanceKey === 'kv'}
+                            onClick={() => runMaintenanceAction('kv', () => api.clearAdminKvCache())}
+                            className="px-3.5 py-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] text-white text-xs font-medium cursor-pointer shrink-0"
+                          >
+                            消去する
+                          </button>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="text-sm font-semibold text-white">他端末の管理者セッションを失効</h3>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              いま使っているこの画面以外の管理者ログインをすべて解除します。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={runningMaintenanceKey === 'revoke'}
+                            onClick={() => runMaintenanceAction('revoke', () => api.revokeOtherAdminSessions())}
+                            className="px-3.5 py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-xs font-semibold cursor-pointer shrink-0"
+                          >
+                            他をログアウト
+                          </button>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="text-sm font-semibold text-white">システムデータをJSONで保存</h3>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              統計・アカウント一覧・歌詞補正などのバックアップを保存します。
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleExportData}
+                            className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>ダウンロード</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {systemTab === 'diagnostics' && (
+                    <div className="space-y-6">
+                      <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-sm font-semibold text-white">サーバー疎通テスト</h2>
+                          <p className="text-xs text-neutral-400 mt-0.5">
+                            {pingResult || 'バックエンドサーバーとの通信応答速度を確認します。'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleTestPing}
+                          disabled={pinging}
+                          className="px-4 py-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto"
+                        >
+                          {pinging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Server className="w-3.5 h-3.5" />}
+                          <span>疎通テストを実行</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* API Call Logs */}
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-semibold text-white">直近のAPI通信ログ</h3>
+                            <button
+                              type="button"
+                              disabled={runningMaintenanceKey === 'apiLogs'}
+                              onClick={() => runMaintenanceAction('apiLogs', () => api.clearAdminApiLogs())}
+                              className="text-xs text-neutral-400 hover:text-white cursor-pointer"
+                            >
+                              ログを消去
+                            </button>
+                          </div>
+                          {!overviewData?.recentApiLogs || overviewData.recentApiLogs.length === 0 ? (
+                            <p className="py-8 text-center text-xs text-neutral-500">ログはありません</p>
+                          ) : (
+                            <div className="divide-y divide-white/[0.06] max-h-72 overflow-y-auto pr-1 text-xs font-mono">
+                              {overviewData.recentApiLogs.map((log: any) => (
+                                <div key={log.id} className="py-2 flex items-center justify-between gap-3">
+                                  <div className="truncate">
+                                    <span className={log.status === 'success' ? 'text-emerald-400' : 'text-rose-400'}>
+                                      {log.status === 'success' ? 'OK' : 'ERR'}
+                                    </span>{' '}
+                                    <span className="text-neutral-200">{log.endpoint}</span>
+                                  </div>
+                                  <span className="text-neutral-400 tabular-nums shrink-0">
+                                    {log.durationMs}ms · {new Date(log.timestamp).toLocaleTimeString('ja-JP')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Playback Error Logs */}
+                        <div className="p-4 rounded-xl bg-[#111318] border border-white/[0.08] space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-semibold text-white">再生エラーログ</h3>
+                            <button
+                              type="button"
+                              disabled={runningMaintenanceKey === 'errLogs'}
+                              onClick={() => runMaintenanceAction('errLogs', () => api.clearAdminPlaybackErrors())}
+                              className="text-xs text-neutral-400 hover:text-white cursor-pointer"
+                            >
+                              ログを消去
+                            </button>
+                          </div>
+                          {!overviewData?.playbackErrors || overviewData.playbackErrors.length === 0 ? (
+                            <p className="py-8 text-center text-xs text-neutral-500">
+                              再生エラーは記録されていません
+                            </p>
+                          ) : (
+                            <div className="divide-y divide-white/[0.06] max-h-72 overflow-y-auto pr-1 text-xs">
+                              {overviewData.playbackErrors.map((err: any, idx: number) => (
+                                <div key={idx} className="py-2.5 flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-white truncate">{err.title || err.videoId}</p>
+                                    <p className="text-[11px] text-rose-400 truncate">{err.error}</p>
+                                  </div>
+                                  <span className="text-[11px] font-mono tabular-nums text-neutral-500 shrink-0">
+                                    {new Date(err.timestamp).toLocaleTimeString('ja-JP')}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </main>
           </div>
         )}
-
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-neutral-800/80 bg-neutral-950 flex items-center justify-between text-xs text-neutral-400 shrink-0">
-          <span className="font-mono text-[11px] text-neutral-500">
-            認証ステータス: {isAdmin ? '管理者セッション有効 (Pass: @zeromusic)' : '未認証'}
-          </span>
-          <button
-            type="button"
-            onClick={() => setAdminModalOpen(false)}
-            className="px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs transition-colors cursor-pointer"
-          >
-            閉じる
-          </button>
-        </div>
       </div>
     </div>
   );

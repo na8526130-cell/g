@@ -21,6 +21,7 @@ import {
   ThumbsUp,
   Loader2,
   Flame,
+  AlertTriangle,
 } from 'lucide-react';
 
 const DANMAKU_COLORS = [
@@ -53,7 +54,12 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
     setDanmakuEnabled,
     isAdmin,
     trackTimestamps,
+    siteSettings,
+    showToast,
   } = usePlayer();
+
+  const commentsDisabled = siteSettings?.commentsEnabled === false;
+  const [confirmDeleteCommentId, setConfirmDeleteCommentId] = useState<string | null>(null);
 
   const [comments, setComments] = useState<TrackComment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -140,6 +146,10 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
 
   const handlePost = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (commentsDisabled) {
+      showToast('現在、管理者によりコメント・弾幕投稿が一時停止されています', 'warning');
+      return;
+    }
     if (!currentTrack || !inputText.trim() || submitting) return;
 
     setSubmitting(true);
@@ -163,7 +173,7 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
       }
       setInputText('');
     } catch (err: any) {
-      alert(err.message || 'コメント投稿に失敗しました');
+      showToast(err.message || 'コメント投稿に失敗しました', 'warning');
     } finally {
       setSubmitting(false);
     }
@@ -184,13 +194,14 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
 
   const handleDelete = async (c: TrackComment) => {
     if (!currentTrack) return;
-    if (!confirm('このコメントを削除しますか？')) return;
     const username = currentUser ? currentUser.username : '';
     try {
       await api.deleteComment(currentTrack.id, c.id, username, isAdmin);
       setComments((prev) => prev.filter((item) => item.id !== c.id));
+      setConfirmDeleteCommentId(null);
+      showToast('コメントを削除しました', 'info');
     } catch (err: any) {
-      alert(err.message || '削除に失敗しました');
+      showToast(err.message || '削除に失敗しました', 'warning');
     }
   };
 
@@ -211,7 +222,7 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
         setReportModalComment(null);
       }, 1500);
     } catch (e: any) {
-      alert(e.message || '通報に失敗しました');
+      showToast(e.message || '通報に失敗しました', 'warning');
     }
   };
 
@@ -554,14 +565,33 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
                     </button>
 
                     {(isOwner || isAdmin) && (
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(c)}
-                        title="コメントを削除"
-                        className="p-1 text-neutral-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      confirmDeleteCommentId === c.id ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(c)}
+                            className="px-1.5 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white text-[10px] font-bold cursor-pointer"
+                          >
+                            削除確定
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteCommentId(null)}
+                            className="px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[10px] cursor-pointer"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteCommentId(c.id)}
+                          title="コメントを削除"
+                          className="p-1 text-neutral-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
@@ -572,64 +602,73 @@ export const TrackCommentsModal: React.FC<{ isOpen: boolean; onClose: () => void
 
         {/* Post Form */}
         <form onSubmit={handlePost} className="p-4 bg-neutral-900/90 border-t border-neutral-800 flex flex-col gap-2.5">
-          {/* Timestamp selector & Danmaku color chips */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="text-neutral-400">秒数指定:</span>
-              <button
-                type="button"
-                onClick={() => setCustomTimeSec(Math.floor(progress))}
-                className="px-2 py-0.5 rounded bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 font-mono font-bold transition-colors cursor-pointer"
-              >
-                現在位置 ({formatSeconds(progress)}) をセット
-              </button>
-              <input
-                type="number"
-                min="0"
-                max={Math.floor(currentTrack?.durationSeconds || 600)}
-                value={customTimeSec}
-                onChange={(e) => setCustomTimeSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="w-16 bg-neutral-800 border border-neutral-700 px-1.5 py-0.5 rounded text-white font-mono text-center"
-              />
-              <span className="font-mono text-neutral-400">({formatSeconds(customTimeSec)})</span>
+          {commentsDisabled ? (
+            <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs text-amber-200 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>現在、管理者によりコメント・弾幕投稿が一時停止されています。閲覧のみ利用可能です。</span>
             </div>
+          ) : (
+            <>
+              {/* Timestamp selector & Danmaku color chips */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-neutral-400">秒数指定:</span>
+                  <button
+                    type="button"
+                    onClick={() => setCustomTimeSec(Math.floor(progress))}
+                    className="px-2 py-0.5 rounded bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 text-red-300 font-mono font-bold transition-colors cursor-pointer"
+                  >
+                    現在位置 ({formatSeconds(progress)}) をセット
+                  </button>
+                  <input
+                    type="number"
+                    min="0"
+                    max={Math.floor(currentTrack?.durationSeconds || 600)}
+                    value={customTimeSec}
+                    onChange={(e) => setCustomTimeSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    className="w-16 bg-neutral-800 border border-neutral-700 px-1.5 py-0.5 rounded text-white font-mono text-center"
+                  />
+                  <span className="font-mono text-neutral-400">({formatSeconds(customTimeSec)})</span>
+                </div>
 
-            {/* Danmaku color selector */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-neutral-400">弾幕色:</span>
-              {DANMAKU_COLORS.map((c) => (
-                <button
-                  key={c.value}
-                  type="button"
-                  onClick={() => setSelectedColor(c.value)}
-                  title={c.label}
-                  className={`w-4 h-4 rounded-full border transition-transform cursor-pointer ${
-                    selectedColor === c.value ? 'scale-125 border-white ring-2 ring-white/30' : 'border-transparent opacity-70 hover:opacity-100'
-                  }`}
-                  style={{ backgroundColor: c.value }}
+                {/* Danmaku color selector */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-neutral-400">弾幕色:</span>
+                  {DANMAKU_COLORS.map((c) => (
+                    <button
+                      key={c.value}
+                      type="button"
+                      onClick={() => setSelectedColor(c.value)}
+                      title={c.label}
+                      className={`w-4 h-4 rounded-full border transition-transform cursor-pointer ${
+                        selectedColor === c.value ? 'scale-125 border-white ring-2 ring-white/30' : 'border-transparent opacity-70 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: c.value }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  placeholder="「ここの転調最高！」「ギターソロ神」などコメントを入力..."
+                  maxLength={150}
+                  className="flex-1 bg-neutral-800 border border-neutral-700 focus:border-red-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
                 />
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="「ここの転調最高！」「ギターソロ神」などコメントを入力..."
-              maxLength={150}
-              className="flex-1 bg-neutral-800 border border-neutral-700 focus:border-red-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
-            />
-            <button
-              type="submit"
-              disabled={!inputText.trim() || submitting}
-              className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-semibold text-sm flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-lg shadow-red-600/30"
-            >
-              <Send className="w-4 h-4" />
-              <span>投稿</span>
-            </button>
-          </div>
+                <button
+                  type="submit"
+                  disabled={!inputText.trim() || submitting}
+                  className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-semibold text-sm flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-lg shadow-red-600/30"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>投稿</span>
+                </button>
+              </div>
+            </>
+          )}
         </form>
         </>
         )}

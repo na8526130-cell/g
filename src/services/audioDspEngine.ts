@@ -94,6 +94,8 @@ class AudioDspEngine {
   private stateListeners = new Set<(playing: boolean) => void>();
   private djStateListeners = new Set<() => void>();
   private unlockBound = false;
+  private primingDecks = new Set<0 | 1>();
+  private primedDecks = new Set<0 | 1>();
 
   constructor() {
     this.bindGlobalUnlock();
@@ -114,9 +116,51 @@ class AudioDspEngine {
 
   public unlock() {
     try {
+      const decks = this.ensureDecks();
       this.ensureAudioGraph();
       if (this.ctx && this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
+      }
+      // Prime both HTMLAudioElements inside user gesture so dual-deck crossfade auto-advance
+      // on mobile Safari/Chrome never fails with NotAllowedError on Deck B.
+      if (decks) {
+        const SILENT_WAV =
+          'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAD///8=';
+        ([0, 1] as const).forEach((idx) => {
+          const deck = decks[idx];
+          if (this.primedDecks.has(idx) || !deck.el.paused || deck.el.src) return;
+          this.primedDecks.add(idx);
+          this.primingDecks.add(idx);
+          try {
+            deck.el.muted = true;
+            deck.el.src = SILENT_WAV;
+            const p = deck.el.play();
+            if (p && typeof p.then === 'function') {
+              p.then(() => {
+                if (this.primingDecks.has(idx)) {
+                  deck.el.pause();
+                  deck.el.removeAttribute('src');
+                  deck.el.load();
+                  deck.el.muted = false;
+                  this.primingDecks.delete(idx);
+                }
+              }).catch(() => {
+                deck.el.muted = false;
+                this.primingDecks.delete(idx);
+                this.primedDecks.delete(idx);
+              });
+            } else {
+              deck.el.pause();
+              deck.el.removeAttribute('src');
+              deck.el.muted = false;
+              this.primingDecks.delete(idx);
+            }
+          } catch {
+            deck.el.muted = false;
+            this.primingDecks.delete(idx);
+            this.primedDecks.delete(idx);
+          }
+        });
       }
     } catch {}
   }
@@ -143,6 +187,7 @@ class AudioDspEngine {
 
       const bindEvents = (el: HTMLAudioElement, deckIdx: 0 | 1) => {
         el.addEventListener('timeupdate', () => {
+          if (this.primingDecks.has(deckIdx)) return;
           if (this.djMixerActive) {
             this.notifyDjListeners();
             return;
@@ -153,6 +198,7 @@ class AudioDspEngine {
           this.timeUpdateListeners.forEach((cb) => cb(el.currentTime || 0, dur, trackId));
         });
         el.addEventListener('ended', () => {
+          if (this.primingDecks.has(deckIdx)) return;
           if (this.djMixerActive) {
             this.notifyDjListeners();
             return;
@@ -162,6 +208,8 @@ class AudioDspEngine {
           this.endedListeners.forEach((cb) => cb(trackId));
         });
         el.addEventListener('play', () => {
+          if (this.primingDecks.has(deckIdx)) return;
+          this.primedDecks.add(deckIdx);
           if (this.djMixerActive) {
             this.notifyDjListeners();
             return;
@@ -171,18 +219,22 @@ class AudioDspEngine {
           }
         });
         el.addEventListener('pause', () => {
+          if (this.primingDecks.has(deckIdx)) return;
           if (this.djMixerActive) {
             this.notifyDjListeners();
             return;
           }
-          if (this.activeDeckIdx === deckIdx && !this.isCrossfading) {
+          // Ignore natural end-of-stream pause so 'ended' triggers seamless auto-advance without pause flicker
+          if (!el.ended && this.activeDeckIdx === deckIdx && !this.isCrossfading) {
             this.stateListeners.forEach((cb) => cb(false));
           }
         });
         el.addEventListener('loadedmetadata', () => {
+          if (this.primingDecks.has(deckIdx)) return;
           if (this.djMixerActive) this.notifyDjListeners();
         });
         el.addEventListener('error', () => {
+          if (this.primingDecks.has(deckIdx)) return;
           if (this.djMixerActive) {
             this.notifyDjListeners();
             return;
@@ -644,6 +696,8 @@ class AudioDspEngine {
       if (this.crossfadeAnimFrame) cancelAnimationFrame(this.crossfadeAnimFrame);
       this.isCrossfading = true;
 
+      this.primingDecks.delete(nextIdx);
+      nextDeck.el.muted = false;
       nextDeck.currentTrackId = params.trackId;
       if (nextDeck.el.src !== params.src || nextDeck.el.error) {
         this.applyCrossOriginForSrc(nextDeck.el, params.src);
@@ -652,14 +706,52 @@ class AudioDspEngine {
       }
       nextDeck.el.playbackRate = this.playbackRate;
       if (typeof params.startSec === 'number' && params.startSec > 0) {
-        nextDeck.el.currentTime = params.startSec;
+        if (nextDeck.el.readyState >= 1) {
+          nextDeck.el.currentTime = params.startSec;
+        } else {
+          const targetSec = params.startSec;
+          nextDeck.el.addEventListener(
+            'loadedmetadata',
+            () => {
+              if (nextDeck.currentTrackId === params.trackId) {
+                nextDeck.el.currentTime = targetSec;
+              }
+            },
+            { once: true }
+          );
+        }
       }
 
       if (nextDeck.deckGain) {
         nextDeck.deckGain.gain.setValueAtTime(0, this.ctx.currentTime);
       }
+      let nextPlayBlocked = false;
       if (params.autoplay !== false) {
-        await nextDeck.el.play().catch(() => {});
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
+        await nextDeck.el.play().catch((e) => {
+          if (e?.name === 'NotAllowedError') {
+            nextPlayBlocked = true;
+          }
+        });
+      }
+
+      if (nextPlayBlocked) {
+        // Fallback cleanly to the already-unlocked deck if Deck B wasn't unlocked yet on mobile
+        this.isCrossfading = false;
+        this.activeDeckIdx = prevIdx;
+        nextDeck.el.pause();
+        if (this.ctx) {
+          const t = this.ctx.currentTime;
+          prevDeck.deckGain?.gain.setValueAtTime(1, t);
+          nextDeck.deckGain?.gain.setValueAtTime(0, t);
+        }
+        await this.loadAndPlay({
+          ...params,
+          crossfadeSec: 0,
+        });
+        return;
       }
 
       const fadeMs = Math.min(12000, Math.max(800, (params.crossfadeSec || 4) * 1000));
@@ -705,6 +797,8 @@ class AudioDspEngine {
     decks[otherIdx].el.pause();
 
     const activeDeck = decks[this.activeDeckIdx];
+    this.primingDecks.delete(this.activeDeckIdx);
+    activeDeck.el.muted = false;
     if (this.ctx) {
       const t = this.ctx.currentTime;
       activeDeck.deckGain?.gain.setValueAtTime(1, t);
@@ -723,8 +817,21 @@ class AudioDspEngine {
       activeDeck.el.load();
     }
     activeDeck.el.playbackRate = this.playbackRate;
-    if (typeof params.startSec === 'number' && params.startSec >= 0 && !isSameTrack) {
-      activeDeck.el.currentTime = params.startSec;
+    if (typeof params.startSec === 'number' && params.startSec > 0 && !isSameTrack) {
+      if (activeDeck.el.readyState >= 1) {
+        activeDeck.el.currentTime = params.startSec;
+      } else {
+        const targetSec = params.startSec;
+        activeDeck.el.addEventListener(
+          'loadedmetadata',
+          () => {
+            if (activeDeck.currentTrackId === params.trackId) {
+              activeDeck.el.currentTime = targetSec;
+            }
+          },
+          { once: true }
+        );
+      }
     }
 
     if (params.autoplay !== false) {

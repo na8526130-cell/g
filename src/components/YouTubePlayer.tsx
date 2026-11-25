@@ -105,7 +105,10 @@ export const YouTubePlayer: React.FC = () => {
   volumeRef.current = volume;
   const isMutedRef = useRef<boolean>(isMuted);
   isMutedRef.current = isMuted;
-  const dspLoadedInRenderRef = useRef<boolean>(false);
+  const dspLastLoadAtRef = useRef<number>(0);
+  const lastYtLoadAtRef = useRef<number>(0);
+  const initialVideoIdRef = useRef<string | null>(null);
+  const autoplayRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retriedSharedBlobIdsRef = useRef<Set<string>>(new Set());
   const lastKnownTimeRef = useRef<number>(0);
   const pendingYtSeekRef = useRef<{ videoId: string; sec: number } | null>(null);
@@ -116,18 +119,18 @@ export const YouTubePlayer: React.FC = () => {
   onEndedCbRef.current = onPlayerTrackEnded;
   const onStateChangeCbRef = useRef(onPlayerStateChange);
   onStateChangeCbRef.current = onPlayerStateChange;
+  const onErrorCbRef = useRef(onPlayerError);
+  onErrorCbRef.current = onPlayerError;
+  const bgPlaybackRef = useRef(backgroundPlaybackEnabled);
+  bgPlaybackRef.current = backgroundPlaybackEnabled;
   const markDspFallbackRef = useRef(markDspFallback);
   markDspFallbackRef.current = markDspFallback;
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const currentTrackRef = useRef(currentTrack);
-  useEffect(() => {
-    currentTrackRef.current = currentTrack;
-  }, [currentTrack]);
+  currentTrackRef.current = currentTrack;
   const playerModeRef = useRef(playerMode);
-  useEffect(() => {
-    playerModeRef.current = playerMode;
-  }, [playerMode]);
+  playerModeRef.current = playerMode;
 
   const copyTextWithFallback = (text: string) => {
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -267,8 +270,11 @@ export const YouTubePlayer: React.FC = () => {
       }
 
       const targetYtId = currentTrack.podcastVideoId || currentTrack.id;
+      const isLocalOrShared = Boolean(
+        currentTrack.isLocal || currentTrack.isSharedOffline || currentTrack.id.startsWith('shared_')
+      );
       let streamSrc = '';
-      if ((currentTrack.isLocal || currentTrack.isSharedOffline || currentTrack.isCachedOffline) && currentTrack.audioUrl) {
+      if ((isLocalOrShared || currentTrack.isCachedOffline) && currentTrack.audioUrl) {
         streamSrc = currentTrack.audioUrl;
         setAudioStreamMeta({
           videoId: currentTrack.id,
@@ -284,6 +290,22 @@ export const YouTubePlayer: React.FC = () => {
           mimeType: currentTrack.audioMimeType || 'audio/mp4',
           usingDirectDsp: true,
         });
+      } else if (isLocalOrShared && !currentTrack.audioUrl) {
+        audioDspEngine.stopAll();
+        prevEngineTrackRef.current = { trackId: currentTrack.id, mode: 'dsp' };
+        if (currentTrack.isSharedOffline || currentTrack.id.startsWith('shared_')) {
+          forceRefreshSharedBlobUrl(currentTrack.id).then((freshUrl) => {
+            if (freshUrl && currentTrackRef.current?.id === currentTrack.id) {
+              audioDspEngine.loadAndPlay({
+                trackId: currentTrack.id,
+                src: freshUrl,
+                autoplay: isPlayingRef.current,
+                crossfadeSec: 0,
+              });
+            }
+          });
+        }
+        return;
       } else if (currentTrack.trackType === 'podcast' && currentTrack.audioUrl) {
         streamSrc = `/api/podcasts/proxy-audio?url=${encodeURIComponent(currentTrack.audioUrl)}`;
         setAudioStreamMeta({
@@ -314,19 +336,21 @@ export const YouTubePlayer: React.FC = () => {
 
       prevEngineTrackRef.current = { trackId: currentTrack.id, mode: 'dsp' };
       const el = audioDspEngine.getCurrentElement();
-      const sameSrcLoaded = Boolean(el && el.src && (el.src === streamSrc || el.src.endsWith(streamSrc)));
+      const sameSrcLoaded = Boolean(
+        el && !el.error && el.src && (el.src === streamSrc || el.src.endsWith(streamSrc))
+      );
 
       if (!sameSrcLoaded || handoffSec > 0) {
-        dspLoadedInRenderRef.current = true;
+        dspLastLoadAtRef.current = Date.now();
         audioDspEngine.loadAndPlay({
           trackId: currentTrack.id,
           src: streamSrc,
           startSec: handoffSec > 0 ? handoffSec : undefined,
-          autoplay: isPlaying,
+          autoplay: isPlayingRef.current || userIntendedPlayingRef.current,
           crossfadeSec: handoffSec > 0 ? 0 : crossfadeDuration,
           djEqSweep,
         });
-      } else if (isPlaying) {
+      } else if (isPlayingRef.current) {
         audioDspEngine.play();
       } else {
         audioDspEngine.pause();
@@ -427,7 +451,20 @@ export const YouTubePlayer: React.FC = () => {
       host: YOUTUBE_NOCOOKIE_HOST,
     };
 
+    const clearAutoplayRetry = () => {
+      if (autoplayRetryTimerRef.current) {
+        clearTimeout(autoplayRetryTimerRef.current);
+        autoplayRetryTimerRef.current = null;
+      }
+    };
+
     const activeTrack = currentTrackRef.current;
+    const initialYtId =
+      activeTrack && !shouldUseDirectDspRef.current
+        ? activeTrack.podcastVideoId || activeTrack.id
+        : null;
+    initialVideoIdRef.current = initialYtId;
+
     try {
       const playerConfig: Record<string, any> = {
         host: YOUTUBE_NOCOOKIE_HOST,
@@ -447,7 +484,7 @@ export const YouTubePlayer: React.FC = () => {
         events: {
           onReady: (event: any) => {
             window.__ytPlayer = event.target;
-            // Enforce nocookie domain & cross-origin embed attributes on generated iframe
+            // Enforce referrer/allow attributes without rewriting src (rewriting src breaks the YT postMessage bridge)
             const iframeEl = ytContainerRef.current?.querySelector('iframe');
             if (iframeEl) {
               iframeEl.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
@@ -456,12 +493,6 @@ export const YouTubePlayer: React.FC = () => {
                 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
               );
               iframeEl.setAttribute('allowfullscreen', '');
-              if (iframeEl.src && /youtube\.com\/embed/i.test(iframeEl.src)) {
-                iframeEl.src = iframeEl.src.replace(
-                  /https?:\/\/(www\.)?youtube\.com\/embed/i,
-                  `${YOUTUBE_NOCOOKIE_HOST}/embed`
-                );
-              }
             }
             event.target.setVolume(volumeRef.current);
             if (isMutedRef.current) {
@@ -472,13 +503,41 @@ export const YouTubePlayer: React.FC = () => {
             const trackToPlay = currentTrackRef.current;
             if (trackToPlay && !shouldUseDirectDspRef.current) {
               const targetYtId = trackToPlay.podcastVideoId || trackToPlay.id;
-              event.target.loadVideoById(targetYtId);
               lastTrackIdRef.current = targetYtId;
+              const shouldAuto = userIntendedPlayingRef.current || isPlayingRef.current;
+              if (initialVideoIdRef.current === targetYtId) {
+                if (shouldAuto) {
+                  lastYtLoadAtRef.current = Date.now();
+                  try {
+                    const st = event.target.getPlayerState?.();
+                    if (
+                      st !== window.YT?.PlayerState?.PLAYING &&
+                      st !== window.YT?.PlayerState?.BUFFERING &&
+                      typeof event.target.playVideo === 'function'
+                    ) {
+                      event.target.playVideo();
+                    }
+                  } catch {}
+                } else if (typeof event.target.pauseVideo === 'function') {
+                  try {
+                    event.target.pauseVideo();
+                  } catch {}
+                }
+              } else if (shouldAuto && typeof event.target.loadVideoById === 'function') {
+                lastYtLoadAtRef.current = Date.now();
+                event.target.loadVideoById({ videoId: targetYtId, startSeconds: 0 });
+              } else if (typeof event.target.cueVideoById === 'function') {
+                event.target.cueVideoById({ videoId: targetYtId, startSeconds: 0 });
+              }
             }
           },
           onStateChange: (event: any) => {
             if (shouldUseDirectDspRef.current) return;
-            if (event.data === window.YT.PlayerState.PLAYING) {
+            const YTState = window.YT?.PlayerState;
+            if (!YTState) return;
+
+            if (event.data === YTState.PLAYING) {
+              clearAutoplayRetry();
               try {
                 if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
                   event.target.unMute();
@@ -487,29 +546,53 @@ export const YouTubePlayer: React.FC = () => {
                   event.target.setVolume(volumeRef.current);
                 }
               } catch {}
-              onPlayerStateChange(true);
+              onStateChangeCbRef.current(true);
               startAudioHardwareKeepAlive();
-            } else if (event.data === window.YT.PlayerState.CUED) {
+            } else if (event.data === YTState.BUFFERING) {
+              clearAutoplayRetry();
+            } else if (event.data === YTState.CUED || event.data === YTState.UNSTARTED) {
               if (userIntendedPlayingRef.current && typeof event.target?.playVideo === 'function') {
-                try {
-                  if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
-                    event.target.unMute();
-                  }
-                  event.target.playVideo();
-                } catch {}
+                if (event.data === YTState.CUED) {
+                  try {
+                    if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
+                      event.target.unMute();
+                    }
+                    event.target.playVideo();
+                  } catch {}
+                }
+                clearAutoplayRetry();
+                autoplayRetryTimerRef.current = setTimeout(() => {
+                  if (shouldUseDirectDspRef.current || !userIntendedPlayingRef.current) return;
+                  try {
+                    const st = event.target?.getPlayerState?.();
+                    if (
+                      st === YTState.CUED ||
+                      st === YTState.UNSTARTED ||
+                      st === YTState.PAUSED
+                    ) {
+                      if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
+                        event.target.unMute();
+                      }
+                      event.target?.playVideo?.();
+                    }
+                  } catch {}
+                }, 380);
               }
-            } else if (event.data === window.YT.PlayerState.PAUSED) {
-              // Critical: counter unexpected pauses (background tab/screen lock OR Canvas embed focus blip in cover mode)
+            } else if (event.data === YTState.PAUSED) {
+              const isRecentLoad = Date.now() - lastYtLoadAtRef.current < 2200;
               const isUnexpectedCoverPause =
                 playerModeRef.current === 'cover' && userIntendedPlayingRef.current;
+              const isBgPause =
+                bgPlaybackRef.current &&
+                userIntendedPlayingRef.current &&
+                (document.hidden || !document.hasFocus());
               if (
-                isUnexpectedCoverPause ||
-                (backgroundPlaybackEnabled &&
-                  userIntendedPlayingRef.current &&
-                  (document.hidden || !document.hasFocus()))
+                userIntendedPlayingRef.current &&
+                (isRecentLoad || isUnexpectedCoverPause || isBgPause)
               ) {
                 sendIframePlayCommand();
-                setTimeout(() => {
+                clearAutoplayRetry();
+                autoplayRetryTimerRef.current = setTimeout(() => {
                   if (
                     !shouldUseDirectDspRef.current &&
                     userIntendedPlayingRef.current &&
@@ -518,23 +601,26 @@ export const YouTubePlayer: React.FC = () => {
                   ) {
                     playerRef.current.playVideo();
                   }
-                }, 120);
+                }, 140);
                 return;
               }
 
-              onPlayerStateChange(false);
+              onStateChangeCbRef.current(false);
               stopAudioHardwareKeepAlive();
-            } else if (event.data === window.YT.PlayerState.ENDED) {
-              onPlayerStateChange(false);
-              stopAudioHardwareKeepAlive();
-              onPlayerTrackEnded();
+            } else if (event.data === YTState.ENDED) {
+              clearAutoplayRetry();
+              onEndedCbRef.current();
+              if (!userIntendedPlayingRef.current) {
+                onStateChangeCbRef.current(false);
+                stopAudioHardwareKeepAlive();
+              }
             }
           },
           onError: (event: any) => {
             if (shouldUseDirectDspRef.current) return;
             if (typeof navigator !== 'undefined' && !navigator.onLine) {
-              if (typeof onPlayerError === 'function') {
-                onPlayerError(event.data, 'オフライン中のため再生できません');
+              if (typeof onErrorCbRef.current === 'function') {
+                onErrorCbRef.current(event.data, 'オフライン中のため再生できません');
               }
               return;
             }
@@ -546,24 +632,24 @@ export const YouTubePlayer: React.FC = () => {
               150: '埋め込み再生不許可 (配信者制限)',
             };
             const errorMsg = errCodes[event.data] || `プレーヤーエラー (${event.data})`;
+            const errTrack = currentTrackRef.current;
             api.recordErrorTelemetry({
-              videoId: currentTrack?.id,
-              title: currentTrack?.title,
+              videoId: errTrack?.id,
+              title: errTrack?.title,
               error: errorMsg,
             });
-            // Trigger automatic fallback bypass for embedding restrictions
-            if (typeof onPlayerError === 'function') {
-              onPlayerError(event.data, errorMsg);
+            // Trigger automatic fallback bypass / next track skip
+            if (typeof onErrorCbRef.current === 'function') {
+              onErrorCbRef.current(event.data, errorMsg);
             }
           },
         },
       };
-      if (activeTrack) {
-        playerConfig.videoId = activeTrack.podcastVideoId || activeTrack.id;
+      if (initialYtId) {
+        playerConfig.videoId = initialYtId;
       }
       playerRef.current = new window.YT.Player(mountEl, playerConfig);
-      // Note: window.__ytPlayer is assigned inside onReady once the iframe bridge is ready
-      // Immediately ensure generated iframe attributes enforce nocookie + strict-origin referrer policy
+      // Set attributes without mutating createdIframe.src so YT API bridge remains intact
       const createdIframe = ytContainerRef.current?.querySelector('iframe');
       if (createdIframe) {
         createdIframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
@@ -572,12 +658,6 @@ export const YouTubePlayer: React.FC = () => {
           'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
         );
         createdIframe.setAttribute('allowfullscreen', '');
-        if (createdIframe.src && /youtube\.com\/embed/i.test(createdIframe.src)) {
-          createdIframe.src = createdIframe.src.replace(
-            /https?:\/\/(www\.)?youtube\.com\/embed/i,
-            `${YOUTUBE_NOCOOKIE_HOST}/embed`
-          );
-        }
       }
     } catch (e) {
       console.error('[YouTubePlayer] Error creating YT.Player:', e);
@@ -676,14 +756,6 @@ export const YouTubePlayer: React.FC = () => {
     if (shouldUseDirectDsp) return;
 
     const targetYtId = currentTrack.podcastVideoId || currentTrack.id;
-    const iframeEl = ytContainerRef.current?.querySelector('iframe');
-    if (iframeEl && iframeEl.src && /youtube\.com\/embed/i.test(iframeEl.src)) {
-      iframeEl.src = iframeEl.src.replace(
-        /https?:\/\/(www\.)?youtube\.com\/embed/i,
-        `${YOUTUBE_NOCOOKIE_HOST}/embed`
-      );
-    }
-
     const pendingSeek =
       pendingYtSeekRef.current && pendingYtSeekRef.current.videoId === targetYtId
         ? pendingYtSeekRef.current.sec
@@ -699,51 +771,90 @@ export const YouTubePlayer: React.FC = () => {
         manualLoad.videoId === targetYtId &&
         Date.now() - manualLoad.ts < 800;
 
-      if (!alreadyLoadedSynchronously && typeof playerRef.current.loadVideoById === 'function') {
+      if (alreadyLoadedSynchronously && manualLoad) {
+        lastYtLoadAtRef.current = manualLoad.ts;
+      } else {
+        const shouldAuto = userIntendedPlayingRef.current || isPlayingRef.current;
+        if (shouldAuto && typeof playerRef.current.loadVideoById === 'function') {
+          try {
+            if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
+              playerRef.current.unMute();
+            }
+            if (typeof playerRef.current.setVolume === 'function') {
+              playerRef.current.setVolume(volumeRef.current);
+            }
+          } catch {}
+          lastYtLoadAtRef.current = Date.now();
+          playerRef.current.loadVideoById({
+            videoId: targetYtId,
+            startSeconds: pendingSeek,
+          });
+        } else if (!shouldAuto && typeof playerRef.current.cueVideoById === 'function') {
+          playerRef.current.cueVideoById({
+            videoId: targetYtId,
+            startSeconds: pendingSeek,
+          });
+        }
+      }
+
+      // Watchdog: if browser/YouTube left track cued/unstarted right after transition, retry playVideo cleanly
+      if (autoplayRetryTimerRef.current) {
+        clearTimeout(autoplayRetryTimerRef.current);
+      }
+      autoplayRetryTimerRef.current = setTimeout(() => {
+        if (shouldUseDirectDspRef.current || !userIntendedPlayingRef.current) return;
+        const activeId = currentTrackRef.current?.podcastVideoId || currentTrackRef.current?.id;
+        if (activeId !== targetYtId) return;
         try {
-          if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
-            playerRef.current.unMute();
-          }
-          if (typeof playerRef.current.setVolume === 'function') {
-            playerRef.current.setVolume(volumeRef.current);
+          const st = playerRef.current?.getPlayerState?.();
+          const YTState = window.YT?.PlayerState;
+          if (
+            YTState &&
+            (st === YTState.CUED || st === YTState.UNSTARTED || st === YTState.PAUSED)
+          ) {
+            if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
+              playerRef.current.unMute();
+            }
+            playerRef.current.playVideo?.();
           }
         } catch {}
-        playerRef.current.loadVideoById({
-          videoId: targetYtId,
-          startSeconds: pendingSeek,
-        });
-      }
+      }, 950);
     }
   }, [currentTrack, shouldUseDirectDsp]);
 
   // Sync play/pause state
   useEffect(() => {
     if (shouldUseDirectDsp) {
-      if (dspLoadedInRenderRef.current) {
-        dspLoadedInRenderRef.current = false;
-        if (isPlaying) {
-          startAudioHardwareKeepAlive();
-        }
-        return;
-      }
       if (isPlaying) {
-        audioDspEngine.play();
+        if (Date.now() - dspLastLoadAtRef.current >= 150) {
+          audioDspEngine.play();
+        }
         startAudioHardwareKeepAlive();
       } else {
         audioDspEngine.pause();
       }
       return;
     }
-    dspLoadedInRenderRef.current = false;
     if (!playerRef.current) return;
     try {
+      const YTState = window.YT?.PlayerState;
       const state = playerRef.current.getPlayerState ? playerRef.current.getPlayerState() : -1;
-      if (isPlaying && state !== window.YT?.PlayerState?.PLAYING && typeof playerRef.current.playVideo === 'function') {
+      if (
+        isPlaying &&
+        state !== YTState?.PLAYING &&
+        state !== YTState?.BUFFERING &&
+        Date.now() - lastYtLoadAtRef.current >= 450 &&
+        typeof playerRef.current.playVideo === 'function'
+      ) {
         if (!isMutedRef.current && typeof playerRef.current.unMute === 'function') {
           playerRef.current.unMute();
         }
         playerRef.current.playVideo();
-      } else if (!isPlaying && state === window.YT?.PlayerState?.PLAYING && typeof playerRef.current.pauseVideo === 'function') {
+      } else if (
+        !isPlaying &&
+        (state === YTState?.PLAYING || state === YTState?.BUFFERING) &&
+        typeof playerRef.current.pauseVideo === 'function'
+      ) {
         playerRef.current.pauseVideo();
       }
     } catch {
@@ -777,8 +888,18 @@ export const YouTubePlayer: React.FC = () => {
       if (shouldUseDirectDspRef.current) return;
       if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
         try {
+          const activeTrack = currentTrackRef.current;
+          const expectedYtId = activeTrack ? activeTrack.podcastVideoId || activeTrack.id : null;
+          const loadedYtId = playerRef.current.getVideoData?.()?.video_id;
+          if (expectedYtId && loadedYtId && loadedYtId !== expectedYtId) {
+            return;
+          }
           const current = playerRef.current.getCurrentTime() || 0;
           const total = playerRef.current.getDuration() || 0;
+          // Ignore stale trailing timestamp from the previous track immediately after loadVideoById
+          if (Date.now() - lastYtLoadAtRef.current < 1200 && current > 5) {
+            return;
+          }
           lastKnownTimeRef.current = current;
           onPlayerTimeUpdate(current, total);
         } catch {
@@ -828,7 +949,7 @@ export const YouTubePlayer: React.FC = () => {
             ? videoLayout === 'theater'
               ? 'fixed inset-0 z-50 bg-black/95 backdrop-blur-xl flex flex-col justify-between p-3 sm:p-6 overflow-hidden animate-in fade-in duration-200'
               : 'fixed bottom-24 right-4 sm:right-6 z-40 w-80 sm:w-96 aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-neutral-700/80 ring-1 ring-white/10 group animate-in slide-in-from-bottom-4 duration-200'
-            : 'fixed bottom-4 right-4 w-48 h-28 overflow-hidden pointer-events-none opacity-[0.001] z-0'
+            : 'fixed bottom-4 right-4 w-48 h-28 overflow-hidden pointer-events-none opacity-[0.015] z-0'
         }`}
       >
         {/* Theater View: Top Cinema Header */}

@@ -35,6 +35,7 @@ import {
   setStartupSplashEnabled,
   triggerStartupSplashReplay,
 } from './StartupSplash';
+import { UserBackupJsonPanel } from './UserBackupJsonPanel';
 
 export const SettingsModal: React.FC = () => {
   const {
@@ -728,6 +729,8 @@ export const SettingsModal: React.FC = () => {
               </div>
               <ChevronRight className="w-4 h-4 text-neutral-500 shrink-0" />
             </button>
+
+            <UserBackupJsonPanel />
 
             <button
               type="button"

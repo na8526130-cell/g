@@ -1,5 +1,5 @@
-import React from 'react';
-import { Heart, RotateCcw, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { AlertTriangle, Heart, Megaphone, RotateCcw, X } from 'lucide-react';
 import { PlayerProvider, usePlayer } from './context/PlayerContext';
 import { TopNavbar } from './components/TopNavbar';
 import { PlayerBar } from './components/PlayerBar';
@@ -79,11 +79,21 @@ const MainLayout: React.FC = () => {
     setCollabModalOpen,
     currentLyrics,
     deviceMode,
+    siteSettings,
   } = usePlayer();
+
+  const [dismissedAnnouncementAt, setDismissedAnnouncementAt] = useState<string | null>(null);
 
   if (!deviceMode) {
     return <DeviceModeSelector />;
   }
+
+  const activeAnnouncement =
+    siteSettings?.announcement?.active &&
+    siteSettings.announcement.message.trim().length > 0 &&
+    dismissedAnnouncementAt !== siteSettings.announcement.updatedAt
+      ? siteSettings.announcement
+      : null;
 
   const isMobileMode = deviceMode === 'mobile';
 
@@ -143,6 +153,38 @@ const MainLayout: React.FC = () => {
 
       {/* Offline Status Connectivity Banner */}
       <OfflineIndicator />
+
+      {/* Admin Live System Announcement Banner */}
+      {activeAnnouncement && (
+        <div
+          className={`w-full px-4 py-2 text-xs sm:text-sm font-medium border-b flex items-center justify-center gap-3 z-40 ${
+            activeAnnouncement.level === 'alert'
+              ? 'bg-red-950/95 border-red-700/60 text-red-100'
+              : activeAnnouncement.level === 'warning'
+              ? 'bg-amber-950/95 border-amber-700/60 text-amber-100'
+              : 'bg-sky-950/95 border-sky-700/60 text-sky-100'
+          }`}
+        >
+          <div className="max-w-6xl w-full flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              {activeAnnouncement.level === 'alert' || activeAnnouncement.level === 'warning' ? (
+                <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
+              ) : (
+                <Megaphone className="w-4 h-4 shrink-0 text-sky-300" />
+              )}
+              <span className="break-words">{activeAnnouncement.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDismissedAnnouncementAt(activeAnnouncement.updatedAt)}
+              aria-label="お知らせを閉じる"
+              className="p-1 rounded-full hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Top Navbar */}
       <TopNavbar />

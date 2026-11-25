@@ -137,11 +137,36 @@ export const ListeningPartyView: React.FC = () => {
       }
     });
 
+    const unsubChatCleared = socialSocket.on('party:chat_cleared', (payload: any) => {
+      if (payload?.roomId && activeRoomId === payload.roomId) {
+        setActiveRoom((prev) =>
+          prev
+            ? {
+                ...prev,
+                chatMessages: Array.isArray(payload.chatMessages) ? payload.chatMessages : [],
+              }
+            : null
+        );
+      }
+    });
+
+    const unsubRoomDeleted = socialSocket.on('party:room_deleted', (payload: any) => {
+      const delId = String(payload?.roomId || '');
+      if (!delId) return;
+      setRooms((prev) => prev.filter((r) => r.id !== delId));
+      if (activeRoomId === delId) {
+        setActiveRoomId(null);
+        setActiveRoom(null);
+      }
+    });
+
     return () => {
       unsubRoomState();
       unsubSync();
       unsubChat();
       unsubCreated();
+      unsubChatCleared();
+      unsubRoomDeleted();
     };
   }, [activeRoomId, currentTrack?.id, progress]);
 
