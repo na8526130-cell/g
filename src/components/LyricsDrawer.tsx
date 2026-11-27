@@ -210,8 +210,6 @@ export const LyricsDrawer: React.FC = () => {
     }
   };
 
-  if (!lyricsOpen) return null;
-
   const handleCopy = () => {
     const textToCopy =
       data?.syncedLyrics && data.syncedLyrics.length > 0
@@ -261,6 +259,8 @@ export const LyricsDrawer: React.FC = () => {
       .split(/\r?\n/)
       .map((s) => s.trimEnd());
   }, [data?.lyrics]);
+
+  if (!lyricsOpen) return null;
 
   const handleFetchTranslation = async (
     langOverride?: 'ja' | 'en' | 'ko' | 'zh',
