@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Maximize2, Minimize2, RotateCw } from 'lucide-react';
+import { Home, Maximize2, Minimize2, RotateCw } from 'lucide-react';
 import type { ToolCatalogItem } from '../../data/toolsCatalog';
 
 interface EmbeddedToolFrameProps {
@@ -64,6 +64,19 @@ export const EmbeddedToolFrame: React.FC<EmbeddedToolFrameProps> = ({ tool }) =>
 
           <button
             type="button"
+            onClick={() => {
+              setFramePath(defaultPath);
+              setReloadSeq((n) => n + 1);
+            }}
+            className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-medium text-neutral-200 flex items-center gap-1.5 cursor-pointer transition-colors"
+            title="トップページに戻る"
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">ホーム</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setReloadSeq((n) => n + 1)}
             className="px-2.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-xs font-medium text-neutral-200 flex items-center gap-1.5 cursor-pointer transition-colors"
             title="ツールを再読み込み"
@@ -94,13 +107,22 @@ export const EmbeddedToolFrame: React.FC<EmbeddedToolFrameProps> = ({ tool }) =>
       </div>
 
       {/* Embedded Viewport */}
-      <div className={isFullscreen ? 'flex-1 min-h-0 mt-2 rounded-xl overflow-hidden bg-black' : 'w-full h-[68vh] min-h-[480px] bg-black'}>
+      <div
+        style={{ WebkitOverflowScrolling: 'touch', touchAction: 'auto' }}
+        className={
+          isFullscreen
+            ? 'flex-1 min-h-0 mt-2 rounded-xl overflow-hidden bg-black'
+            : 'w-full h-[72vh] min-h-[500px] bg-black'
+        }
+      >
         <iframe
           key={`${tool.id}-${reloadSeq}-${framePath}`}
           src={frameUrl}
           title={tool.name}
+          loading="eager"
+          style={{ touchAction: 'auto' }}
           className="w-full h-full border-0 bg-black"
-          allow="autoplay; fullscreen; gamepad; clipboard-read; clipboard-write"
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture; gamepad; clipboard-read; clipboard-write"
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-pointer-lock allow-modals"
         />
       </div>

@@ -47,8 +47,8 @@ export const SoundCloakTool: React.FC = () => {
 
   const [activeTrack, setActiveTrack] = useState<ScTrack | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [isScPlaying, setIsScPlaying] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -109,6 +109,47 @@ export const SoundCloakTool: React.FC = () => {
     }
   };
 
+  const downloadTrack = async (track: ScTrack) => {
+    if (downloadingId) return;
+    setDownloadingId(track.id);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (track.id) params.set('id', track.id);
+      if (track.transcodingUrl) params.set('transcodingUrl', track.transcodingUrl);
+      if (track.trackAuthorization) params.set('auth', track.trackAuthorization);
+      if (track.transcodingProtocol) params.set('protocol', track.transcodingProtocol);
+      if (track.title) params.set('title', track.title);
+      if (track.artist) params.set('artist', track.artist);
+
+      const resp = await fetch(`/api/tools/soundcloak/download?${params.toString()}`);
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => null);
+        throw new Error(errData?.error || `ダウンロードに失敗しました (HTTP ${resp.status})`);
+      }
+
+      const blob = await resp.blob();
+      const ct = (resp.headers.get('content-type') || blob.type || '').toLowerCase();
+      const ext = ct.includes('mp4') || ct.includes('aac') ? 'm4a' : ct.includes('ogg') ? 'ogg' : 'mp3';
+      const safeName = `${track.artist ? `${track.artist} - ` : ''}${track.title || 'soundcloak-track'}`
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+        .trim();
+
+      const objUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objUrl;
+      link.download = `${safeName}.${ext}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+    } catch (e: any) {
+      setError(e?.message || 'ダウンロードに失敗しました');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
   const playScTrack = async (track: ScTrack) => {
     if (activeTrack?.id === track.id && audioRef.current) {
       if (audioRef.current.paused) {
@@ -122,7 +163,6 @@ export const SoundCloakTool: React.FC = () => {
 
     setResolvingId(track.id);
     setError(null);
-    setDownloadUrl(null);
     try {
       const params = new URLSearchParams();
       if (track.transcodingUrl) params.set('transcodingUrl', track.transcodingUrl);
@@ -141,7 +181,6 @@ export const SoundCloakTool: React.FC = () => {
       }
 
       setActiveTrack(track);
-      setDownloadUrl(data.downloadUrl || null);
 
       const audio = audioRef.current;
       if (!audio) return;
@@ -258,7 +297,7 @@ export const SoundCloakTool: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 w-full sm:w-auto sm:min-w-[260px]">
+          <div className="flex items-center gap-3 w-full sm:w-auto sm:min-w-[280px]">
             <button
               type="button"
               onClick={() => playScTrack(activeTrack)}
@@ -281,16 +320,20 @@ export const SoundCloakTool: React.FC = () => {
             <span className="text-[11px] font-mono text-neutral-400 shrink-0">
               {formatMs(currentTime * 1000)}
             </span>
-            {downloadUrl && (
-              <a
-                href={downloadUrl}
-                download={`${activeTrack.title}.mp3`}
-                className="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 transition-colors shrink-0"
-                title="音声をダウンロード"
-              >
-                <Download className="w-4 h-4" />
-              </a>
-            )}
+            <button
+              type="button"
+              onClick={() => downloadTrack(activeTrack)}
+              disabled={downloadingId === activeTrack.id}
+              className="px-2.5 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-60 text-neutral-100 text-xs font-semibold transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer"
+              title="音声ファイルをダウンロード"
+            >
+              {downloadingId === activeTrack.id ? (
+                <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+              ) : (
+                <Download className="w-4 h-4 text-orange-400" />
+              )}
+              <span className="hidden sm:inline">保存</span>
+            </button>
           </div>
         </div>
       )}
@@ -359,15 +402,32 @@ export const SoundCloakTool: React.FC = () => {
               {Array.isArray(pl.tracks) && pl.tracks.length > 0 && (
                 <div className="space-y-1 border-t border-neutral-800/80 pt-2">
                   {pl.tracks.slice(0, 4).map((t: ScTrack) => (
-                    <button
+                    <div
                       key={t.id}
-                      type="button"
-                      onClick={() => playScTrack(t)}
-                      className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-neutral-800/70 text-xs text-neutral-200 flex items-center justify-between gap-2 cursor-pointer"
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-neutral-800/70"
                     >
-                      <span className="truncate">{t.title}</span>
-                      <span className="text-neutral-500 shrink-0">{formatMs(t.durationMs)}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => playScTrack(t)}
+                        className="flex-1 min-w-0 text-left text-xs text-neutral-200 flex items-center justify-between gap-2 cursor-pointer"
+                      >
+                        <span className="truncate">{t.title}</span>
+                        <span className="text-neutral-500 shrink-0">{formatMs(t.durationMs)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadTrack(t)}
+                        disabled={downloadingId === t.id}
+                        className="p-1 rounded-md text-neutral-400 hover:text-orange-400 hover:bg-neutral-800 cursor-pointer shrink-0"
+                        title="ダウンロード"
+                      >
+                        {downloadingId === t.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-orange-400" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -379,46 +439,66 @@ export const SoundCloakTool: React.FC = () => {
           {tracks.map((track) => {
             const isCurrent = activeTrack?.id === track.id;
             const isLoadingThis = resolvingId === track.id;
+            const isDownloadingThis = downloadingId === track.id;
             return (
-              <button
+              <div
                 key={track.id}
-                type="button"
-                onClick={() => playScTrack(track)}
-                className={`group text-left p-2.5 rounded-xl border transition-all flex items-center gap-3 cursor-pointer ${
+                className={`group p-2.5 rounded-xl border transition-all flex items-center gap-2.5 ${
                   isCurrent
                     ? 'bg-orange-950/25 border-orange-500/60'
                     : 'bg-[#101014] border-neutral-800/90 hover:border-neutral-700 hover:bg-[#15151a]'
                 }`}
               >
-                <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-neutral-900 shrink-0">
-                  {track.artwork ? (
-                    <img src={track.artwork} alt={track.title} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <Radio className="w-5 h-5 text-neutral-600" />
-                    </div>
-                  )}
-                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    {isLoadingThis ? (
-                      <Loader2 className="w-4 h-4 text-white animate-spin" />
-                    ) : isCurrent && isScPlaying ? (
-                      <Pause className="w-4 h-4 text-white fill-current" />
+                <button
+                  type="button"
+                  onClick={() => playScTrack(track)}
+                  className="flex-1 min-w-0 flex items-center gap-3 text-left cursor-pointer"
+                >
+                  <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-neutral-900 shrink-0">
+                    {track.artwork ? (
+                      <img src={track.artwork} alt={track.title} className="w-full h-full object-cover" />
                     ) : (
-                      <Play className="w-4 h-4 text-white fill-current ml-0.5" />
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Radio className="w-5 h-5 text-neutral-600" />
+                      </div>
                     )}
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      {isLoadingThis ? (
+                        <Loader2 className="w-4 h-4 text-white animate-spin" />
+                      ) : isCurrent && isScPlaying ? (
+                        <Pause className="w-4 h-4 text-white fill-current" />
+                      ) : (
+                        <Play className="w-4 h-4 text-white fill-current ml-0.5" />
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-white truncate">{track.title}</div>
-                  <div className="text-xs text-neutral-400 truncate">{track.artist}</div>
-                  <div className="text-[11px] text-neutral-500 flex items-center gap-2 mt-0.5">
-                    <span>{formatMs(track.durationMs)}</span>
-                    {track.playbackCount > 0 && (
-                      <span>{track.playbackCount.toLocaleString()} 回</span>
-                    )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-white truncate">{track.title}</div>
+                    <div className="text-xs text-neutral-400 truncate">{track.artist}</div>
+                    <div className="text-[11px] text-neutral-500 flex items-center gap-2 mt-0.5">
+                      <span>{formatMs(track.durationMs)}</span>
+                      {track.playbackCount > 0 && (
+                        <span>{track.playbackCount.toLocaleString()} 回</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </button>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => downloadTrack(track)}
+                  disabled={isDownloadingThis}
+                  className="p-2 rounded-lg bg-neutral-900 hover:bg-orange-600/20 border border-neutral-800 hover:border-orange-500/50 text-neutral-300 hover:text-orange-400 transition-colors cursor-pointer shrink-0"
+                  title="音声をダウンロード"
+                  aria-label={`${track.title} をダウンロード`}
+                >
+                  {isDownloadingThis ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-orange-400" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
             );
           })}
         </div>

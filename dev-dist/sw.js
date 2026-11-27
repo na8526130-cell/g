@@ -78,15 +78,15 @@ define(['./workbox-457ed063'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "/index.html",
-    "revision": "0.rcouokmsfk"
+    "revision": "0.m0imnns24ig"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("/index.html"), {
     allowlist: [/^\/$/],
     denylist: [/^\/api\//]
   }));
-  workbox.registerRoute(/^\/api\/music\/audio-stream\/.*/i, new workbox.NetworkOnly(), 'GET');
-  workbox.registerRoute(/^\/api\/podcasts\/proxy-audio.*/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/music\/audio-stream\/.*/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/podcasts\/proxy-audio.*/i, new workbox.NetworkOnly(), 'GET');
   workbox.registerRoute(/^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com|i\.scdn\.co)\/.*/i, new workbox.StaleWhileRevalidate({
     "cacheName": "artwork-images-cache",
     plugins: [new workbox.CacheableResponsePlugin({
@@ -105,8 +105,17 @@ define(['./workbox-457ed063'], (function (workbox) { 'use strict';
       maxAgeSeconds: 2592000
     })]
   }), 'GET');
-  workbox.registerRoute(/^\/api\/shared-offline\/file\/[^?#]+\?(?:.*&)?(?:download|dl)=1(?:&|$)/i, new workbox.NetworkOnly(), 'GET');
-  workbox.registerRoute(/^\/api\/shared-offline\/file\/[^?#]+$/i, new workbox.CacheFirst({
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/shared-offline\/cover\/[^?#]+$/i, new workbox.CacheFirst({
+    "cacheName": "shared-offline-covers-v1",
+    plugins: [new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
+    }), new workbox.ExpirationPlugin({
+      maxEntries: 200,
+      maxAgeSeconds: 5184000
+    })]
+  }), 'GET');
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/shared-offline\/file\/[^?#]+\?(?:.*&)?(?:download|dl)=1(?:&|$)/i, new workbox.NetworkOnly(), 'GET');
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/shared-offline\/file\/[^?#]+$/i, new workbox.CacheFirst({
     "cacheName": "shared-offline-audio-v2",
     plugins: [new workbox.CacheableResponsePlugin({
       statuses: [0, 200]
@@ -115,7 +124,7 @@ define(['./workbox-457ed063'], (function (workbox) { 'use strict';
       maxAgeSeconds: 5184000
     })]
   }), 'GET');
-  workbox.registerRoute(/^\/api\/shared-offline$/i, new workbox.NetworkFirst({
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/shared-offline$/i, new workbox.NetworkFirst({
     "cacheName": "shared-offline-catalog-cache",
     plugins: [new workbox.CacheableResponsePlugin({
       statuses: [0, 200]
@@ -124,7 +133,7 @@ define(['./workbox-457ed063'], (function (workbox) { 'use strict';
       maxAgeSeconds: 2592000
     })]
   }), 'GET');
-  workbox.registerRoute(/^\/api\/music\/.*/i, new workbox.NetworkFirst({
+  workbox.registerRoute(/^https?:\/\/[^/]+\/api\/music\/.*/i, new workbox.NetworkFirst({
     "cacheName": "api-music-cache",
     plugins: [new workbox.CacheableResponsePlugin({
       statuses: [0, 200]

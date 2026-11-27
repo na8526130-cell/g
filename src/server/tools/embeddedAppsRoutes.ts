@@ -148,27 +148,62 @@ function rewriteRootUrlsInHtml(html: string, mountBase: string, extraOriginPatte
   // Rewrite CSS url('/...') inside inline styles
   out = out.replace(/url\(\s*(['"]?)\/(?!\/|api\/tools-app\/)/gi, `url($1${mountBase}`);
 
+  const isFullDoc = /<(?:!doctype|html|head|body)\b/i.test(out);
+  if (!isFullDoc) {
+    return out;
+  }
+
   const baseTag = `<base href="${mountBase}">`;
   const patchScript = `<script>
 (function(){
   try {
     var base = ${JSON.stringify(mountBase)};
+    function rewritePath(u) {
+      if (typeof u !== 'string') return u;
+      if (u.startsWith('/') && !u.startsWith('//') && !u.startsWith(base) && !u.startsWith('/api/tools-app/') && !u.startsWith('/api/tools/')) {
+        return base + u.replace(/^\\/+/, '');
+      }
+      return u;
+    }
     var rawFetch = window.fetch;
     if (typeof rawFetch === 'function') {
       window.fetch = function(input, init) {
-        if (typeof input === 'string' && input.startsWith('/') && !input.startsWith('//') && !input.startsWith(base) && !input.startsWith('/api/')) {
-          input = base + input.replace(/^\\/+/, '');
+        if (typeof input === 'string') {
+          input = rewritePath(input);
         }
         return rawFetch.call(this, input, init);
       };
     }
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url) {
-      if (typeof url === 'string' && url.startsWith('/') && !url.startsWith('//') && !url.startsWith(base) && !url.startsWith('/api/')) {
-        arguments[1] = base + url.replace(/^\\/+/, '');
+      if (typeof url === 'string') {
+        arguments[1] = rewritePath(url);
       }
       return origOpen.apply(this, arguments);
     };
+    if (window.history) {
+      var origPush = window.history.pushState;
+      var origReplace = window.history.replaceState;
+      if (typeof origPush === 'function') {
+        window.history.pushState = function(s, t, u) {
+          return origPush.call(this, s, t, typeof u === 'string' ? rewritePath(u) : u);
+        };
+      }
+      if (typeof origReplace === 'function') {
+        window.history.replaceState = function(s, t, u) {
+          return origReplace.call(this, s, t, typeof u === 'string' ? rewritePath(u) : u);
+        };
+      }
+    }
+    document.addEventListener('click', function(ev) {
+      var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+      if (!a) return;
+      var rawHref = a.getAttribute('href') || '';
+      if (rawHref.startsWith('/') && !rawHref.startsWith('//') && !rawHref.startsWith(base) && !rawHref.startsWith('/api/tools-app/')) {
+        ev.preventDefault();
+        window.location.assign(rewritePath(rawHref));
+      }
+    }, false);
   } catch(e){}
 })();
 </script>`;
@@ -339,13 +374,6 @@ const PROXY_APPS: ProxyAppSpec[] = [
     isMangaBase64: true,
   },
   {
-    slug: 'choco-abema',
-    label: 'Choco-Abema',
-    origins: ['https://abema.tv'],
-    hostPattern: /https?:\/\/abema\.tv/gi,
-    refererOrigin: 'https://abema.tv',
-  },
-  {
     slug: 'garticphone',
     label: 'Gartic Phone',
     origins: [
@@ -374,10 +402,11 @@ async function fetchImageAsBase64DataUri(
   rawImgUrl: string,
   referer: string,
   userAgent?: string,
-  timeoutMs = 7500
+  timeoutMs = 7500,
+  preferCompact = true
 ): Promise<string | null> {
   const safeUrl = assertSafeHttpUrl(rawImgUrl);
-  const cacheKey = `${referer}:${safeUrl.toString()}`;
+  const cacheKey = `${referer}:${preferCompact ? 'c' : 'f'}:${safeUrl.toString()}`;
   const cached = mangaBase64Cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < 20 * 60 * 1000) {
     return cached.dataUri;
@@ -402,14 +431,24 @@ async function fetchImageAsBase64DataUri(
     }
   };
 
-  let dataUri = await tryFetchToDataUri(safeUrl.toString(), {
-    Referer: referer,
-    'User-Agent': userAgent || BROWSER_UA,
-    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-  });
+  let dataUri: string | null = null;
+  if (preferCompact) {
+    const wsrvUrl = `https://wsrv.nl/?url=${encodeURIComponent(safeUrl.toString())}&w=860&output=webp&q=70`;
+    dataUri = await tryFetchToDataUri(wsrvUrl, {
+      'User-Agent': userAgent || BROWSER_UA,
+    });
+  }
 
   if (!dataUri) {
-    const wsrvUrl = `https://wsrv.nl/?url=${encodeURIComponent(safeUrl.toString())}&w=960&output=webp&q=75`;
+    dataUri = await tryFetchToDataUri(safeUrl.toString(), {
+      Referer: referer,
+      'User-Agent': userAgent || BROWSER_UA,
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    });
+  }
+
+  if (!dataUri && !preferCompact) {
+    const wsrvUrl = `https://wsrv.nl/?url=${encodeURIComponent(safeUrl.toString())}&w=860&output=webp&q=70`;
     dataUri = await tryFetchToDataUri(wsrvUrl, {
       'User-Agent': userAgent || BROWSER_UA,
     });
@@ -477,7 +516,9 @@ async function inlineMangaImagesAsBase64(
     }
 
     resolvedUrls.push({ index: i, rawTag: tag, absUrl });
-    if (absUrl && !seen.has(absUrl) && uniqueUrls.length < 24) {
+    // Inline first 6 above-the-fold images synchronously so HTML responds fast (<1s)
+    // while every remaining image converts cleanly to Base64 via IntersectionObserver
+    if (absUrl && !seen.has(absUrl) && uniqueUrls.length < 6) {
       seen.add(absUrl);
       uniqueUrls.push(absUrl);
     }
@@ -486,7 +527,7 @@ async function inlineMangaImagesAsBase64(
   const resolvedMap = new Map<string, string>();
   await Promise.allSettled(
     uniqueUrls.map(async (u) => {
-      const dataUri = await fetchImageAsBase64DataUri(u, referer, userAgent, 4500);
+      const dataUri = await fetchImageAsBase64DataUri(u, referer, userAgent, 3500, true);
       if (dataUri) resolvedMap.set(u, dataUri);
     })
   );
@@ -540,8 +581,23 @@ function buildMangaBase64ClientSnippet(slug: string, upstreamOrigin: string, adC
   const endpointBase = `${mountBase}_img_b64_/?url=`;
   const adStyles = adClean
     ? `<style>
-  iframe[src*="ad"], .pop--excl, .bg-ssp-11557, [id*="bg-ssp"], [class*="ad-"], #toast,
-  a[href*="adexchangerapid"], a[href*="university"] { display: none !important; pointer-events: none !important; }
+  html, body {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-y pinch-zoom !important;
+    justify-content: flex-start !important;
+  }
+  header, main, nav, a, button, input, select {
+    pointer-events: auto !important;
+  }
+  iframe[src*="ad"], iframe[src*="llvpn"], iframe[src*="yellowish"], .pop--excl, .bg-ssp-11557,
+  [id*="bg-ssp"], [class*="ad-"], [style*="z-index: 2147483647"],
+  a[href*="adexchangerapid"], a[href*="university"], a[href*="adsgateway"] {
+    display: none !important;
+    pointer-events: none !important;
+  }
 </style>`
     : '';
 
@@ -549,13 +605,47 @@ function buildMangaBase64ClientSnippet(slug: string, upstreamOrigin: string, adC
 <script>
 (function(){
   try {
-    ${adClean ? 'window.open = function() { return null; };' : ''}
+    ${adClean ? `
+    window.open = function() { return null; };
+    var AD_BLOCK_RE = /(edgekit-2xo|llvpn|yellowishgather|attalvidenda|adsgateway|adexchangerapid|universityshocksooner|pubadx|gomuraw|mangaraw\\.co\\.uk)/i;
+    var origAppend = Node.prototype.appendChild;
+    var origInsert = Node.prototype.insertBefore;
+    function isAdNode(node) {
+      if (!node || !node.tagName) return false;
+      var tag = node.tagName.toUpperCase();
+      if (tag === 'SCRIPT' || tag === 'IFRAME') {
+        var s = node.getAttribute && (node.getAttribute('src') || node.src || '');
+        if (s && AD_BLOCK_RE.test(s)) return true;
+      }
+      return false;
+    }
+    Node.prototype.appendChild = function(node) {
+      if (isAdNode(node)) return node;
+      return origAppend.apply(this, arguments);
+    };
+    Node.prototype.insertBefore = function(node) {
+      if (isAdNode(node)) return node;
+      return origInsert.apply(this, arguments);
+    };
+    function nukeOverlays() {
+      try {
+        document.querySelectorAll('div, a, section, ins, iframe').forEach(function(el) {
+          var s = window.getComputedStyle(el);
+          if (parseInt(s.zIndex, 10) > 1000 && parseFloat(s.opacity) < 0.1 && !(el.innerText || '').trim()) {
+            el.remove();
+          }
+        });
+      } catch(e){}
+    }
+    setInterval(nukeOverlays, 800);
+    ` : ''}
     var ENDPOINT = ${JSON.stringify(endpointBase)};
     var MOUNT_BASE = ${JSON.stringify(mountBase)};
     var UPSTREAM = ${JSON.stringify(upstreamOrigin)};
     var queue = [];
     var active = 0;
     var seen = new WeakSet();
+    var io = null;
 
     function toUpstreamUrl(cand) {
       if (cand.startsWith('http://') || cand.startsWith('https://')) return cand;
@@ -578,6 +668,8 @@ function buildMangaBase64ClientSnippet(slug: string, upstreamOrigin: string, adC
               job.img.removeAttribute('srcset');
               job.img.removeAttribute('data-b64-src');
               job.img.classList.remove('opacity-0', 'lazy');
+              var p = job.img.closest && job.img.closest('.page-container');
+              if (p) p.classList.add('is-loaded');
             }
           })
           .catch(function(){})
@@ -588,12 +680,13 @@ function buildMangaBase64ClientSnippet(slug: string, upstreamOrigin: string, adC
       }
     }
 
-    function enqueueImg(img) {
+    function enqueueImg(img, highPriority) {
       if (!img || seen.has(img)) return;
       var preset = img.getAttribute('data-b64-src');
       if (preset) {
         seen.add(img);
-        queue.push({ img: img, apiUrl: preset });
+        if (highPriority) queue.unshift({ img: img, apiUrl: preset });
+        else queue.push({ img: img, apiUrl: preset });
         pump();
         return;
       }
@@ -604,12 +697,34 @@ function buildMangaBase64ClientSnippet(slug: string, upstreamOrigin: string, adC
       seen.add(img);
       var absUrl = toUpstreamUrl(cand);
       img.classList.remove('opacity-0', 'lazy');
-      queue.push({ img: img, apiUrl: ENDPOINT + encodeURIComponent(absUrl) });
+      var job = { img: img, apiUrl: ENDPOINT + encodeURIComponent(absUrl) };
+      if (highPriority) queue.unshift(job);
+      else queue.push(job);
       pump();
     }
 
+    function setupObserver() {
+      if (io || !('IntersectionObserver' in window)) return;
+      io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting) {
+            io.unobserve(entry.target);
+            enqueueImg(entry.target, true);
+          }
+        });
+      }, { rootMargin: '900px 0px' });
+    }
+
     function scanAll() {
-      document.querySelectorAll('img').forEach(enqueueImg);
+      setupObserver();
+      var imgs = document.querySelectorAll('img');
+      imgs.forEach(function(img, idx) {
+        if (seen.has(img)) return;
+        if (io && idx >= 10) {
+          io.observe(img);
+        }
+        enqueueImg(img, idx < 10);
+      });
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scanAll);
@@ -827,17 +942,35 @@ function registerProxyApp(app: Express, spec: ProxyAppSpec) {
                 req.get('user-agent')
               );
             }
+            const isFullDoc = /<(?:!doctype|html|head|body)\b/i.test(html);
             html = rewriteRootUrlsInHtml(html, mountBase, spec.hostPattern);
-            if (spec.isMangaBase64) {
+            if (spec.isMangaBase64 && isFullDoc) {
               const snippet = buildMangaBase64ClientSnippet(
                 spec.slug,
                 safeOrigin.origin,
                 spec.adCleanMode === 'mangarw'
               );
-              html = html.replace(/<head[^>]*>/i, (m) => `${m}\n${snippet}`);
+              if (/<head[^>]*>/i.test(html)) {
+                html = html.replace(/<head[^>]*>/i, (m) => `${m}\n${snippet}`);
+              } else {
+                html = `${snippet}\n${html}`;
+              }
             }
             res.setHeader('Content-Type', 'text/html; charset=utf-8');
             return res.status(upstream.status).send(html);
+          }
+
+          if (ct.includes('javascript') && spec.adCleanMode === 'mangarw') {
+            let js = await upstream.text();
+            js = js
+              .replace(/https:\/\/edgekit-2xo\.pages\.dev\/a\.js/g, 'data:text/javascript,')
+              .replace(/https:\/\/mangaraw\.co\.uk\/api\/push\/subscribe/g, `${mountBase}api/v1/noop`)
+              .replace(/(["'`])\/api\/v1/g, `$1${mountBase}api/v1`)
+              .replace(/(["'`])\/search-ajax/g, `$1${mountBase}search-ajax`)
+              .replace(/(["'`])\/view-count/g, `$1${mountBase}view-count`)
+              .replace(/(["'`])\/read\?id=/g, `$1${mountBase}read?id=`);
+            res.setHeader('Content-Type', ct);
+            return res.status(upstream.status).send(js);
           }
 
           if (ct.includes('text/css')) {

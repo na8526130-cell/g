@@ -34,6 +34,7 @@ import {
 } from './src/server/discoveryPro.js';
 import { registerSoundCloakRoutes } from './src/server/tools/soundcloakRoutes.js';
 import { registerNikonikoRoutes } from './src/server/tools/nikonikoRoutes.js';
+import { registerChocoAbemaRoutes } from './src/server/tools/chocoAbemaRoutes.js';
 import { registerEmbeddedToolApps } from './src/server/tools/embeddedAppsRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -6599,6 +6600,7 @@ export async function createApp(options?: {
   // --- Integrated Tools Hub (All 11 GitHub Repositories Mounted Inside Site) ---
   registerSoundCloakRoutes(app);
   registerNikonikoRoutes(app);
+  registerChocoAbemaRoutes(app);
   registerEmbeddedToolApps(app);
 
   if (!options?.skipStatic) {

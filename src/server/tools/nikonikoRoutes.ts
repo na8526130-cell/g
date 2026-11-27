@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import WebSocket from 'ws';
 import type { Express, Request, Response } from 'express';
 import { assertSafeHttpUrl } from './ssrfGuard.js';
 
@@ -513,6 +514,913 @@ export function registerNikonikoRoutes(app: Express) {
       return res.status(upstream.status).send(buf);
     } catch (err: any) {
       return res.status(400).json({ error: err?.message || 'Invalid segment URL' });
+    }
+  });
+
+  // ==========================================
+  // Niconico Live (ニコニコ生放送) Support
+  // ==========================================
+  interface LiveCookieItem {
+    name: string;
+    value: string;
+    path?: string;
+    domain?: string;
+  }
+
+  interface LiveStreamSession {
+    lvId: string;
+    qualityMode: 'high' | 'audio_only';
+    streamUri: string;
+    messageServerViewUri?: string;
+    cookies: LiveCookieItem[];
+    ws: WebSocket | null;
+    keepTimer: NodeJS.Timeout | null;
+    lastActive: number;
+    title: string;
+    status: string;
+    providerName: string;
+    providerAvatar: string;
+    thumbnail: string;
+    watchCount: number;
+    commentCount: number;
+  }
+
+  const nicoLiveSessions = new Map<string, LiveStreamSession>();
+  const nicoLivePending = new Map<string, Promise<LiveStreamSession | null>>();
+
+  function assertSafeNicoLiveWsUrl(rawWsUrl: string): string {
+    const parsed = new URL(String(rawWsUrl || '').trim());
+    if (parsed.protocol !== 'wss:' && parsed.protocol !== 'ws:') {
+      throw new Error('Invalid WebSocket protocol');
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'nicovideo.jp' && !host.endsWith('.nicovideo.jp')) {
+      throw new Error(`Disallowed Live WebSocket host: ${host}`);
+    }
+    return parsed.toString();
+  }
+
+  function closeLiveSessionByKey(key: string) {
+    const old = nicoLiveSessions.get(key);
+    if (old) {
+      if (old.keepTimer) clearInterval(old.keepTimer);
+      try {
+        old.ws?.close();
+      } catch {
+        // ignore
+      }
+      nicoLiveSessions.delete(key);
+    }
+  }
+
+  function buildLiveCookieHeader(cookies: LiveCookieItem[], targetUrlStr: string): string {
+    let pathname = '/';
+    try {
+      pathname = new URL(targetUrlStr).pathname;
+    } catch {
+      // ignore
+    }
+    const pairs: string[] = [];
+    for (const c of cookies) {
+      if (!c.path || pathname.startsWith(c.path)) {
+        pairs.push(`${c.name}=${c.value}`);
+      }
+    }
+    return pairs.join('; ');
+  }
+
+  async function getOrCreateNicoLiveSession(
+    lvId: string,
+    forceRefresh = false,
+    qualityMode: 'high' | 'audio_only' = 'high'
+  ): Promise<LiveStreamSession | null> {
+    const cleanId = sanitizeNicoId(lvId).toLowerCase();
+    if (!/^lv\d+$/.test(cleanId)) return null;
+
+    const sessionKey = `${cleanId}:${qualityMode}`;
+    const oppositeKey = `${cleanId}:${qualityMode === 'audio_only' ? 'high' : 'audio_only'}`;
+    closeLiveSessionByKey(oppositeKey);
+
+    if (!forceRefresh) {
+      const existing = nicoLiveSessions.get(sessionKey);
+      if (
+        existing &&
+        existing.streamUri &&
+        Date.now() - existing.lastActive < 180000 &&
+        existing.ws?.readyState === WebSocket.OPEN
+      ) {
+        existing.lastActive = Date.now();
+        return existing;
+      }
+      const pending = nicoLivePending.get(sessionKey);
+      if (pending) return pending;
+    } else {
+      closeLiveSessionByKey(sessionKey);
+    }
+
+    const work = (async (): Promise<LiveStreamSession | null> => {
+      try {
+        const pageRes = await fetch(`https://live.nicovideo.jp/watch/${encodeURIComponent(cleanId)}`, {
+          headers: {
+            'User-Agent': NICO_API_HEADERS['User-Agent'],
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+          },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!pageRes.ok) return null;
+        const html = await pageRes.text();
+        const m =
+          html.match(/id="embedded-data"[^>]*data-props="([^"]+)"/) ||
+          html.match(/data-props="([^"]+)"[^>]*id="embedded-data"/);
+        if (!m?.[1]) return null;
+
+        const props = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+        const prog = props.program || {};
+        const wsUrl = props.site?.relive?.webSocketUrl;
+        const title = String(prog.title || `ニコニコ生放送 ${cleanId}`);
+        const status = String(prog.status || 'ON_AIR');
+        const providerName = String(
+          props.programBroadcaster?.name || props.socialGroup?.name || prog.supplier?.name || '放送主'
+        );
+        const providerAvatar = String(
+          props.programBroadcaster?.iconUrl || props.socialGroup?.thumbnailUrl || ''
+        );
+        const watchCount = Number(prog.statistics?.watchCount || 0);
+        const commentCount = Number(prog.statistics?.commentCount || 0);
+        const thumbnail = String(prog.thumbnail?.large || prog.thumbnail?.small || '');
+
+        if (!wsUrl || status === 'ENDED') {
+          return {
+            lvId: cleanId,
+            qualityMode,
+            streamUri: '',
+            cookies: [],
+            ws: null,
+            keepTimer: null,
+            lastActive: Date.now(),
+            title,
+            status,
+            providerName,
+            providerAvatar,
+            thumbnail,
+            watchCount,
+            commentCount,
+          };
+        }
+
+        const safeWsUrl = assertSafeNicoLiveWsUrl(String(wsUrl));
+        const session = await new Promise<LiveStreamSession | null>((resolve) => {
+          const ws = new WebSocket(safeWsUrl, {
+            headers: {
+              'User-Agent': NICO_API_HEADERS['User-Agent'],
+              Origin: 'https://live.nicovideo.jp',
+            },
+          });
+          let resolved = false;
+          let keepTimer: NodeJS.Timeout | null = null;
+          let pendingViewUri = '';
+          let liveSessRef: LiveStreamSession | null = null;
+
+          const timeout = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              try {
+                ws.close();
+              } catch {
+                // ignore
+              }
+              resolve(null);
+            }
+          }, 8000);
+
+          ws.on('open', () => {
+            ws.send(
+              JSON.stringify({
+                type: 'startWatching',
+                data: {
+                  stream: { quality: qualityMode, protocol: 'hls', latency: 'low', chasePlay: false },
+                  room: { protocol: 'webSocket', commentable: false },
+                  reconnect: false,
+                },
+              })
+            );
+          });
+
+          ws.on('message', (raw) => {
+            try {
+              const msg = JSON.parse(raw.toString());
+              if (msg.type === 'ping') {
+                ws.send(JSON.stringify({ type: 'pong' }));
+              } else if (msg.type === 'seat') {
+                const intervalMs = Math.max(15000, Number(msg.data?.keepIntervalSec || 30) * 1000);
+                if (!keepTimer) {
+                  keepTimer = setInterval(() => {
+                    const cur = nicoLiveSessions.get(sessionKey);
+                    if (!cur || Date.now() - cur.lastActive > 90000 || ws.readyState !== WebSocket.OPEN) {
+                      if (keepTimer) clearInterval(keepTimer);
+                      try {
+                        ws.close();
+                      } catch {
+                        // ignore
+                      }
+                      nicoLiveSessions.delete(sessionKey);
+                      return;
+                    }
+                    try {
+                      ws.send(JSON.stringify({ type: 'keepSeat' }));
+                    } catch {
+                      // ignore
+                    }
+                  }, intervalMs);
+                  keepTimer.unref?.();
+                }
+              } else if (msg.type === 'messageServer' && msg.data?.viewUri) {
+                pendingViewUri = String(msg.data.viewUri);
+                if (liveSessRef) {
+                  liveSessRef.messageServerViewUri = pendingViewUri;
+                }
+              } else if (msg.type === 'stream' && msg.data?.uri) {
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeout);
+                  const sess: LiveStreamSession = {
+                    lvId: cleanId,
+                    qualityMode,
+                    streamUri: String(msg.data.uri),
+                    messageServerViewUri: pendingViewUri || undefined,
+                    cookies: Array.isArray(msg.data.cookies) ? msg.data.cookies : [],
+                    ws,
+                    keepTimer,
+                    lastActive: Date.now(),
+                    title,
+                    status,
+                    providerName,
+                    providerAvatar,
+                    thumbnail,
+                    watchCount,
+                    commentCount,
+                  };
+                  liveSessRef = sess;
+                  nicoLiveSessions.set(sessionKey, sess);
+                  resolve(sess);
+                }
+              } else if (msg.type === 'error' || msg.type === 'disconnect') {
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeout);
+                  if (keepTimer) clearInterval(keepTimer);
+                  resolve(null);
+                }
+              }
+            } catch {
+              // ignore parse error
+            }
+          });
+
+          ws.on('error', () => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              if (keepTimer) clearInterval(keepTimer);
+              resolve(null);
+            }
+          });
+
+          ws.on('close', () => {
+            if (keepTimer) clearInterval(keepTimer);
+            const cur = nicoLiveSessions.get(sessionKey);
+            if (cur?.ws === ws) nicoLiveSessions.delete(sessionKey);
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              resolve(null);
+            }
+          });
+        });
+        return session;
+      } catch {
+        return null;
+      } finally {
+        nicoLivePending.delete(sessionKey);
+      }
+    })();
+
+    nicoLivePending.set(sessionKey, work);
+    return work;
+  }
+
+  // Zero-dependency Protobuf wire decoder for Niconico Live v4 message server
+  interface ProtoField {
+    fn: number;
+    wt: number;
+    val: number | Uint8Array;
+  }
+
+  function readProtoVarint(buf: Uint8Array, offset: number): { val: number; next: number } {
+    let res = 0n;
+    let shift = 0n;
+    let pos = offset;
+    while (pos < buf.length) {
+      const b = buf[pos++];
+      res |= BigInt(b & 0x7f) << shift;
+      if ((b & 0x80) === 0) break;
+      shift += 7n;
+      if (shift > 63n) break;
+    }
+    return { val: Number(res), next: pos };
+  }
+
+  function parseProtoWire(buf: Uint8Array): ProtoField[] {
+    const out: ProtoField[] = [];
+    let pos = 0;
+    while (pos < buf.length) {
+      const tag = readProtoVarint(buf, pos);
+      pos = tag.next;
+      const fn = Math.floor(tag.val / 8);
+      const wt = tag.val % 8;
+      if (fn <= 0) break;
+      if (wt === 0) {
+        const v = readProtoVarint(buf, pos);
+        pos = v.next;
+        out.push({ fn, wt, val: v.val });
+      } else if (wt === 2) {
+        const len = readProtoVarint(buf, pos);
+        pos = len.next;
+        const end = Math.min(buf.length, pos + Math.max(0, len.val));
+        out.push({ fn, wt, val: buf.subarray(pos, end) });
+        pos = end;
+      } else if (wt === 1) {
+        pos = Math.min(buf.length, pos + 8);
+      } else if (wt === 5) {
+        pos = Math.min(buf.length, pos + 4);
+      } else {
+        break;
+      }
+    }
+    return out;
+  }
+
+  function decodeProtoStreamChunks(buf: Uint8Array): Uint8Array[] {
+    const chunks: Uint8Array[] = [];
+    let pos = 0;
+    while (pos < buf.length) {
+      const len = readProtoVarint(buf, pos);
+      pos = len.next;
+      if (len.val <= 0 || pos + len.val > buf.length) break;
+      chunks.push(buf.subarray(pos, pos + len.val));
+      pos += len.val;
+    }
+    return chunks;
+  }
+
+  const NICO_LIVE_COLOR_MAP: Record<number, string> = {
+    0: '#ffffff',
+    1: '#ff0000',
+    2: '#ff8080',
+    3: '#ffc000',
+    4: '#ffff00',
+    5: '#00ff00',
+    6: '#00ffff',
+    7: '#0000ff',
+    8: '#c000ff',
+    9: '#000000',
+    10: '#cccc99',
+    11: '#cc0033',
+    12: '#ff33cc',
+    13: '#ff6600',
+    14: '#999900',
+    15: '#00cc66',
+    16: '#00cccc',
+    17: '#3399ff',
+    18: '#6633cc',
+    19: '#666666',
+  };
+
+  interface DecodedLiveChatComment {
+    id: string;
+    no?: number;
+    text: string;
+    name?: string;
+    color?: string;
+    position?: 'ue' | 'shita' | 'naka';
+    size?: 'big' | 'small' | 'medium';
+    atMs: number;
+    isSystem?: boolean;
+  }
+
+  function decodeNicoLiveChatMessages(buf: Uint8Array): DecodedLiveChatComment[] {
+    const td = new TextDecoder('utf-8', { fatal: false });
+    const comments: DecodedLiveChatComment[] = [];
+    const chunks = decodeProtoStreamChunks(buf);
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const topFields = parseProtoWire(chunks[idx]);
+      let msgId = '';
+      let atMs = Date.now();
+      let msgBytes: Uint8Array | null = null;
+      for (const f of topFields) {
+        if (f.fn === 1 && f.wt === 2 && f.val instanceof Uint8Array) {
+          for (const mf of parseProtoWire(f.val)) {
+            if (mf.fn === 1 && mf.wt === 2 && mf.val instanceof Uint8Array) {
+              msgId = td.decode(mf.val);
+            } else if (mf.fn === 2 && mf.wt === 2 && mf.val instanceof Uint8Array) {
+              let sec = 0;
+              let nanos = 0;
+              for (const tf of parseProtoWire(mf.val)) {
+                if (tf.fn === 1 && tf.wt === 0 && typeof tf.val === 'number') sec = tf.val;
+                else if (tf.fn === 2 && tf.wt === 0 && typeof tf.val === 'number') nanos = tf.val;
+              }
+              if (sec > 0) atMs = sec * 1000 + Math.floor(nanos / 1e6);
+            }
+          }
+        } else if (f.fn === 2 && f.wt === 2 && f.val instanceof Uint8Array) {
+          msgBytes = f.val;
+        }
+      }
+      if (!msgBytes) continue;
+      for (const nf of parseProtoWire(msgBytes)) {
+        if (nf.fn === 1 && nf.wt === 2 && nf.val instanceof Uint8Array) {
+          let content = '';
+          let name = '';
+          let no: number | undefined;
+          let color = '#ffffff';
+          let position: 'ue' | 'shita' | 'naka' = 'naka';
+          let size: 'big' | 'small' | 'medium' = 'medium';
+          for (const cf of parseProtoWire(nf.val)) {
+            if (cf.fn === 1 && cf.wt === 2 && cf.val instanceof Uint8Array) {
+              content = td.decode(cf.val);
+            } else if (cf.fn === 2 && cf.wt === 2 && cf.val instanceof Uint8Array) {
+              name = td.decode(cf.val);
+            } else if (cf.fn === 8 && cf.wt === 0 && typeof cf.val === 'number') {
+              no = cf.val;
+            } else if (cf.fn === 7 && cf.wt === 2 && cf.val instanceof Uint8Array) {
+              for (const modf of parseProtoWire(cf.val)) {
+                if (modf.fn === 1 && modf.wt === 0 && typeof modf.val === 'number') {
+                  position = modf.val === 2 ? 'ue' : modf.val === 1 ? 'shita' : 'naka';
+                } else if (modf.fn === 2 && modf.wt === 0 && typeof modf.val === 'number') {
+                  size = modf.val === 2 ? 'big' : modf.val === 1 ? 'small' : 'medium';
+                } else if (modf.fn === 3 && modf.wt === 0 && typeof modf.val === 'number') {
+                  color = NICO_LIVE_COLOR_MAP[modf.val] || '#ffffff';
+                } else if (modf.fn === 4 && modf.wt === 2 && modf.val instanceof Uint8Array) {
+                  let r = 255;
+                  let g = 255;
+                  let b = 255;
+                  for (const rgbf of parseProtoWire(modf.val)) {
+                    if (rgbf.fn === 1 && typeof rgbf.val === 'number') r = rgbf.val & 0xff;
+                    else if (rgbf.fn === 2 && typeof rgbf.val === 'number') g = rgbf.val & 0xff;
+                    else if (rgbf.fn === 3 && typeof rgbf.val === 'number') b = rgbf.val & 0xff;
+                  }
+                  color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+                }
+              }
+            }
+          }
+          if (content.trim()) {
+            comments.push({
+              id: msgId || `${atMs}-${no ?? idx}`,
+              no,
+              text: content,
+              name: name || undefined,
+              color,
+              position,
+              size,
+              atMs,
+            });
+          }
+        } else if (nf.fn === 23 && nf.wt === 2 && nf.val instanceof Uint8Array) {
+          let sysText = '';
+          for (const sf of parseProtoWire(nf.val)) {
+            if ((sf.fn === 2 || sf.fn === 1 || sf.fn === 3) && sf.wt === 2 && sf.val instanceof Uint8Array) {
+              const decoded = td.decode(sf.val).trim();
+              if (decoded) {
+                sysText = decoded;
+                if (sf.fn === 2) break;
+              }
+            }
+          }
+          if (sysText) {
+            comments.push({
+              id: msgId || `sys-${atMs}-${idx}`,
+              text: sysText,
+              color: '#93c5fd',
+              atMs,
+              isSystem: true,
+            });
+          }
+        }
+      }
+    }
+    return comments;
+  }
+
+  const liveSegmentCache = new Map<string, DecodedLiveChatComment[]>();
+
+  app.get('/api/tools/nikoniko/live', async (req: Request, res: Response) => {
+    const q = String(req.query.q || '').trim();
+    const sortRaw = String(req.query.sort || 'viewCountDesc');
+    const tabRaw = String(req.query.tab || 'all').toLowerCase();
+    const offset = Math.max(0, parseInt(String(req.query.offset || '0'), 10) || 0);
+    const limit = Math.min(60, Math.max(1, parseInt(String(req.query.limit || '32'), 10) || 32));
+
+    try {
+      const lvMatch = q.match(/\b(lv\d+)\b/i);
+      if (lvMatch && /^lv\d+$/i.test(q.replace(/^https?:\/\/[^/]+\/watch\//i, '').split(/[?#]/)[0].trim())) {
+        const cleanId = lvMatch[1].toLowerCase();
+        const r = await fetch(`https://live.nicovideo.jp/watch/${encodeURIComponent(cleanId)}`, {
+          headers: {
+            'User-Agent': NICO_API_HEADERS['User-Agent'],
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+          },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (r.ok) {
+          const html = await r.text();
+          const m =
+            html.match(/id="embedded-data"[^>]*data-props="([^"]+)"/) ||
+            html.match(/data-props="([^"]+)"[^>]*id="embedded-data"/);
+          if (m?.[1]) {
+            const props = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+            const prog = props.program || {};
+            const items = [
+              {
+                id: cleanId,
+                title: String(prog.title || `ニコニコ生放送 (${cleanId})`),
+                thumbnail: String(prog.thumbnail?.large || prog.thumbnail?.small || ''),
+                providerName: String(
+                  props.programBroadcaster?.name || props.socialGroup?.name || prog.supplier?.name || '放送主'
+                ),
+                providerAvatar: String(
+                  props.programBroadcaster?.iconUrl || props.socialGroup?.thumbnailUrl || ''
+                ),
+                watchCount: Number(prog.statistics?.watchCount || 0),
+                commentCount: Number(prog.statistics?.commentCount || 0),
+                liveCycle: String(prog.status || 'ON_AIR'),
+              },
+            ];
+            return res.json({ success: true, items, total: items.length });
+          }
+        }
+      }
+
+      if (q) {
+        const searchSort =
+          sortRaw === 'commentCountDesc' || sortRaw === 'commentCount'
+            ? 'commentCountDesc'
+            : sortRaw === 'recentDesc' || sortRaw === 'recent'
+            ? 'recentDesc'
+            : 'viewCountDesc';
+        const url = `https://live.nicovideo.jp/front/api/pages/search/v1/programs?keyword=${encodeURIComponent(q)}&status=onair&sortOrder=${encodeURIComponent(searchSort)}&offset=${offset}&limit=${limit}`;
+        const resp = await fetch(url, { headers: NICO_API_HEADERS, signal: AbortSignal.timeout(6000) });
+        if (!resp.ok) return res.status(resp.status).json({ success: false, items: [] });
+        const json: any = await resp.json();
+        const rawPrograms: any[] = Array.isArray(json?.data?.programs) ? json.data.programs : [];
+        const items = rawPrograms
+          .filter((p) => !p?.status || String(p.status).toUpperCase() === 'ON_AIR')
+          .map((p: any) => {
+            const pid = String(p.nicoliveProgramId || p.id || '').toLowerCase();
+            return {
+              id: pid,
+              title: String(p.title || '生放送'),
+              thumbnail: String(p.listingThumbnail || ''),
+              providerName: String(
+                p.programProvider?.name || p.supplier?.name || p.socialGroup?.name || '放送主'
+              ),
+              providerAvatar: String(p.programProvider?.icon || p.socialGroup?.thumbnailUrl || ''),
+              watchCount: Number(p.statistics?.watchCount || 0),
+              commentCount: Number(p.statistics?.commentCount || 0),
+              liveCycle: 'ON_AIR',
+            };
+          })
+          .filter((p) => Boolean(p.id));
+        return res.json({ success: true, items, total: Number(json?.data?.totalCount ?? items.length) });
+      }
+
+      const recentSort =
+        sortRaw === 'commentCountDesc' || sortRaw === 'commentCount'
+          ? 'commentCount'
+          : sortRaw === 'recentDesc' || sortRaw === 'recent'
+          ? 'recent'
+          : 'viewCount';
+      const validTabs = new Set(['common', 'game', 'try', 'official', 'face']);
+      const tabParam = validTabs.has(tabRaw) ? `&tab=${encodeURIComponent(tabRaw)}` : '';
+      const resp = await fetch(
+        `https://live.nicovideo.jp/front/api/pages/recent/v1/programs?offset=${offset}&limit=${limit}&sortOrder=${encodeURIComponent(recentSort)}${tabParam}`,
+        { headers: NICO_API_HEADERS, signal: AbortSignal.timeout(6000) }
+      );
+      if (!resp.ok) return res.status(resp.status).json({ success: false, items: [] });
+      const json: any = await resp.json();
+      const items = (json?.data || [])
+        .filter((p: any) => !p?.liveCycle || String(p.liveCycle).toUpperCase() === 'ON_AIR')
+        .map((p: any) => ({
+          id: String(p.id).toLowerCase(),
+          title: String(p.title || '生放送'),
+          thumbnail: String(p.listingThumbnail || ''),
+          providerName: String(p.programProvider?.name || '放送主'),
+          providerAvatar: String(p.programProvider?.icon || ''),
+          watchCount: Number(p.statistics?.watchCount || 0),
+          commentCount: Number(p.statistics?.commentCount || 0),
+          liveCycle: String(p.liveCycle || 'ON_AIR'),
+        }));
+      return res.json({ success: true, items, total: Number(json?.meta?.totalCount || items.length) });
+    } catch (err: any) {
+      return res.status(502).json({ success: false, items: [], error: err?.message || 'Live search failed' });
+    }
+  });
+
+  app.get('/api/tools/nikoniko/live/info/:id', async (req: Request, res: Response) => {
+    const cleanId = sanitizeNicoId(req.params.id).toLowerCase();
+    if (!/^lv\d+$/.test(cleanId)) {
+      return res.status(400).json({ success: false, error: '有効な生放送ID (lv...) を指定してください' });
+    }
+    try {
+      const pageRes = await fetch(`https://live.nicovideo.jp/watch/${encodeURIComponent(cleanId)}`, {
+        headers: NICO_API_HEADERS,
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!pageRes.ok) {
+        return res.status(pageRes.status).json({ success: false, error: '生放送番組が見つかりません' });
+      }
+      const html = await pageRes.text();
+      const m =
+        html.match(/id="embedded-data"[^>]*data-props="([^"]+)"/) ||
+        html.match(/data-props="([^"]+)"[^>]*id="embedded-data"/);
+      if (!m?.[1]) {
+        return res.status(404).json({ success: false, error: '番組データを解析できませんでした' });
+      }
+      const props = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+      const prog = props.program || {};
+      return res.json({
+        success: true,
+        program: {
+          id: cleanId,
+          title: String(prog.title || cleanId),
+          description: stripHtmlTags(prog.description || ''),
+          status: String(prog.status || 'ON_AIR'),
+          providerName: String(props.programBroadcaster?.name || props.socialGroup?.name || '放送主'),
+          providerAvatar: String(props.programBroadcaster?.iconUrl || props.socialGroup?.thumbnailUrl || ''),
+          thumbnail: String(prog.thumbnail?.large || prog.thumbnail?.small || ''),
+          watchCount: Number(prog.statistics?.watchCount || 0),
+          commentCount: Number(prog.statistics?.commentCount || 0),
+        },
+      });
+    } catch (err: any) {
+      return res.status(502).json({ success: false, error: err?.message || '生放送情報の取得に失敗しました' });
+    }
+  });
+
+  app.post('/api/tools/nikoniko/live/stop/:id', (req: Request, res: Response) => {
+    const cleanId = sanitizeNicoId(req.params.id).toLowerCase();
+    closeLiveSessionByKey(`${cleanId}:high`);
+    closeLiveSessionByKey(`${cleanId}:audio_only`);
+    return res.json({ success: true });
+  });
+
+  app.get('/api/tools/nikoniko/live/comments/:id', async (req: Request, res: Response) => {
+    const cleanId = sanitizeNicoId(req.params.id).toLowerCase();
+    if (!/^lv\d+$/.test(cleanId)) {
+      return res.status(400).json({ success: false, comments: [] });
+    }
+    const sinceRaw = Number(req.query.since || 0);
+    const hasSince = Number.isFinite(sinceRaw) && sinceRaw > 0;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    let sess =
+      nicoLiveSessions.get(`${cleanId}:high`) ||
+      nicoLiveSessions.get(`${cleanId}:audio_only`) ||
+      null;
+    if (!sess) {
+      const pending =
+        nicoLivePending.get(`${cleanId}:high`) ||
+        nicoLivePending.get(`${cleanId}:audio_only`) ||
+        null;
+      if (pending) sess = await pending;
+    }
+    if (!sess) {
+      sess = await getOrCreateNicoLiveSession(cleanId, false, 'high');
+    }
+    if (!sess) {
+      return res.json({ success: false, comments: [], serverTime: nowSec });
+    }
+    sess.lastActive = Date.now();
+    if (!sess.messageServerViewUri) {
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (sess.messageServerViewUri) break;
+      }
+    }
+    if (!sess.messageServerViewUri) {
+      return res.json({ success: true, comments: [], serverTime: nowSec });
+    }
+
+    try {
+      const safeViewUri = assertSafeHttpUrl(sess.messageServerViewUri, ['nicovideo.jp']);
+      const atParam = hasSince
+        ? Math.min(nowSec - 22, Math.max(nowSec - 45, Math.floor(sinceRaw) - 20))
+        : nowSec - 45;
+      safeViewUri.searchParams.set('at', String(atParam));
+      const viewResp = await fetch(safeViewUri.toString(), {
+        headers: {
+          'User-Agent': NICO_API_HEADERS['User-Agent'],
+          Referer: 'https://live.nicovideo.jp/',
+        },
+        signal: AbortSignal.timeout(4500),
+      });
+      if (!viewResp.ok) {
+        return res.json({ success: true, comments: [], serverTime: nowSec });
+      }
+      const viewBuf = new Uint8Array(await viewResp.arrayBuffer());
+      const entries = decodeProtoStreamChunks(viewBuf);
+      const segments: Array<{ uri: string; until: number }> = [];
+      let snapshotUri = '';
+      const td = new TextDecoder('utf-8', { fatal: false });
+      for (const entry of entries) {
+        for (const f of parseProtoWire(entry)) {
+          if ((f.fn === 1 || f.fn === 3) && f.wt === 2 && f.val instanceof Uint8Array) {
+            let uri = '';
+            let until = nowSec;
+            for (const sf of parseProtoWire(f.val)) {
+              if (sf.fn === 2 && sf.wt === 0 && typeof sf.val === 'number') until = sf.val;
+              else if (sf.fn === 3 && sf.wt === 2 && sf.val instanceof Uint8Array) uri = td.decode(sf.val);
+            }
+            if (uri) segments.push({ uri, until });
+          } else if (f.fn === 2 && f.wt === 2 && f.val instanceof Uint8Array) {
+            for (const bf of parseProtoWire(f.val)) {
+              if (bf.fn === 3 && bf.wt === 2 && bf.val instanceof Uint8Array) {
+                for (const ssf of parseProtoWire(bf.val)) {
+                  if (ssf.fn === 1 && ssf.wt === 2 && ssf.val instanceof Uint8Array) {
+                    snapshotUri = td.decode(ssf.val);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const targets = hasSince ? segments.slice(-2) : segments.slice(-4);
+      if (!hasSince && targets.length === 0 && snapshotUri) {
+        targets.push({ uri: snapshotUri, until: nowSec });
+      }
+
+      const segResults = await Promise.all(
+        targets.map(async (seg) => {
+          const cached = liveSegmentCache.get(seg.uri);
+          if (cached) return cached;
+          try {
+            const safeSeg = assertSafeHttpUrl(seg.uri, NICO_MEDIA_HOST_ALLOWLIST);
+            const sr = await fetch(safeSeg.toString(), {
+              headers: {
+                'User-Agent': NICO_API_HEADERS['User-Agent'],
+                Referer: 'https://live.nicovideo.jp/',
+              },
+              signal: AbortSignal.timeout(4000),
+            });
+            if (!sr.ok) return [];
+            const decoded = decodeNicoLiveChatMessages(new Uint8Array(await sr.arrayBuffer()));
+            if (seg.until > 0 && seg.until < nowSec - 3) {
+              if (liveSegmentCache.size > 200) {
+                const firstKey = liveSegmentCache.keys().next().value;
+                if (firstKey) liveSegmentCache.delete(firstKey);
+              }
+              liveSegmentCache.set(seg.uri, decoded);
+            }
+            return decoded;
+          } catch {
+            return [];
+          }
+        })
+      );
+
+      const deduped = new Map<string, DecodedLiveChatComment>();
+      for (const list of segResults) {
+        for (const c of list) {
+          if (!deduped.has(c.id)) deduped.set(c.id, c);
+        }
+      }
+      const sorted = Array.from(deduped.values())
+        .sort((a, b) => a.atMs - b.atMs)
+        .slice(-120);
+      return res.json({
+        success: true,
+        comments: sorted,
+        serverTime: Math.floor(Date.now() / 1000),
+      });
+    } catch {
+      return res.json({ success: true, comments: [], serverTime: nowSec });
+    }
+  });
+
+  app.get('/api/tools/nikoniko/live/hls/:id/master.m3u8', async (req: Request, res: Response) => {
+    const cleanId = sanitizeNicoId(req.params.id).toLowerCase();
+    const qualityMode = req.query.quality === 'audio_only' ? 'audio_only' : 'high';
+    let sess = await getOrCreateNicoLiveSession(cleanId, false, qualityMode);
+    if (!sess || !sess.streamUri) {
+      return res.status(502).json({ error: '生放送ストリームを取得できませんでした（配信終了または非公開の可能性があります）' });
+    }
+    sess.lastActive = Date.now();
+    try {
+      const safeStreamUrl = assertSafeHttpUrl(sess.streamUri, NICO_MEDIA_HOST_ALLOWLIST);
+      let cookieHeader = buildLiveCookieHeader(sess.cookies, safeStreamUrl.toString());
+      let resp = await fetch(safeStreamUrl.toString(), {
+        headers: {
+          'User-Agent': NICO_API_HEADERS['User-Agent'],
+          Referer: 'https://live.nicovideo.jp/',
+          Cookie: cookieHeader,
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (resp.status === 403 || resp.status === 410) {
+        sess = await getOrCreateNicoLiveSession(cleanId, true, qualityMode);
+        if (!sess || !sess.streamUri) return res.status(502).send('Live stream expired');
+        const retryUrl = assertSafeHttpUrl(sess.streamUri, NICO_MEDIA_HOST_ALLOWLIST);
+        cookieHeader = buildLiveCookieHeader(sess.cookies, retryUrl.toString());
+        resp = await fetch(retryUrl.toString(), {
+          headers: {
+            'User-Agent': NICO_API_HEADERS['User-Agent'],
+            Referer: 'https://live.nicovideo.jp/',
+            Cookie: cookieHeader,
+          },
+          signal: AbortSignal.timeout(8000),
+        });
+      }
+      if (!resp.ok) return res.status(resp.status).send('Upstream live playlist error');
+      let text = await resp.text();
+      const base = sess.streamUri;
+      text = text.replace(/(URI=")([^"]+)(")/g, (_m, p1, uri, p3) => {
+        const abs = new URL(uri, base).toString();
+        return `${p1}/api/tools/nikoniko/live/hls/proxy?id=${encodeURIComponent(cleanId)}&quality=${qualityMode}&url=${encodeURIComponent(abs)}${p3}`;
+      });
+      text = text
+        .split(/\r?\n/)
+        .map((line) => {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) {
+            const abs = new URL(trimmed, base).toString();
+            return `/api/tools/nikoniko/live/hls/proxy?id=${encodeURIComponent(cleanId)}&quality=${qualityMode}&url=${encodeURIComponent(abs)}`;
+          }
+          return line;
+        })
+        .join('\n');
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.send(text);
+    } catch (err: any) {
+      return res.status(500).send(err?.message || 'Live HLS error');
+    }
+  });
+
+  app.get('/api/tools/nikoniko/live/hls/proxy', async (req: Request, res: Response) => {
+    const cleanId = sanitizeNicoId(String(req.query.id || '')).toLowerCase();
+    const targetUrl = String(req.query.url || '').trim();
+    const qualityMode = req.query.quality === 'audio_only' ? 'audio_only' : 'high';
+    if (!cleanId || !targetUrl) return res.status(400).send('Missing params');
+
+    try {
+      const safeTarget = assertSafeHttpUrl(targetUrl, NICO_MEDIA_HOST_ALLOWLIST);
+      const sess = await getOrCreateNicoLiveSession(cleanId, false, qualityMode);
+      if (!sess) return res.status(502).send('No live session');
+      sess.lastActive = Date.now();
+
+      const headers: Record<string, string> = {
+        'User-Agent': NICO_API_HEADERS['User-Agent'],
+        Referer: 'https://live.nicovideo.jp/',
+        Cookie: buildLiveCookieHeader(sess.cookies, safeTarget.toString()),
+      };
+      if (req.headers.range) {
+        headers.Range = String(req.headers.range);
+      }
+      const resp = await fetch(safeTarget.toString(), { headers, signal: AbortSignal.timeout(10000) });
+      const ct = resp.headers.get('content-type') || '';
+      if (ct.includes('mpegurl') || safeTarget.pathname.endsWith('.m3u8')) {
+        if (!resp.ok) return res.status(resp.status).send('Upstream live subplaylist error');
+        let text = await resp.text();
+        text = text.replace(/(URI=")([^"]+)(")/g, (_m, p1, uri, p3) => {
+          const abs = new URL(uri, safeTarget.toString()).toString();
+          return `${p1}/api/tools/nikoniko/live/hls/proxy?id=${encodeURIComponent(cleanId)}&quality=${qualityMode}&url=${encodeURIComponent(abs)}${p3}`;
+        });
+        text = text
+          .split(/\r?\n/)
+          .map((line) => {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#')) {
+              const abs = new URL(trimmed, safeTarget.toString()).toString();
+              return `/api/tools/nikoniko/live/hls/proxy?id=${encodeURIComponent(cleanId)}&quality=${qualityMode}&url=${encodeURIComponent(abs)}`;
+            }
+            return line;
+          })
+          .join('\n');
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-cache');
+        return res.send(text);
+      }
+      const buf = Buffer.from(await resp.arrayBuffer());
+      res.status(resp.status);
+      res.setHeader('Content-Type', ct || 'video/mp2t');
+      res.setHeader('Accept-Ranges', 'bytes');
+      const cr = resp.headers.get('content-range');
+      if (cr) res.setHeader('Content-Range', cr);
+      return res.end(buf);
+    } catch (err: any) {
+      return res.status(400).send(err?.message || 'Live proxy error');
     }
   });
 }
