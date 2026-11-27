@@ -1,4 +1,4 @@
-import { AudioQualityMode, AudioStreamMetadata, SpatialAudioPreset } from '../types/music';
+import { AudioQualityMode, AudioStreamMetadata, DEFAULT_EQ_BANDS, EqualizerBands, SpatialAudioPreset } from '../types/music';
 
 /**
  * Genuine Dual-Deck Web Audio API DSP Engine for zero-music:
@@ -71,17 +71,23 @@ class AudioDspEngine {
   private spatialDelayR: DelayNode | null = null;
   private spatialDelayGain: GainNode | null = null;
 
-  // Lossless / Hi-Res mastering EQ + Limiter
+  // Lossless / Hi-Res mastering EQ + 6-Band Graphic EQ + Limiter / Normalizer + Analyser
   private hiresLowShelf: BiquadFilterNode | null = null;
   private hiresPresence: BiquadFilterNode | null = null;
   private hiresAirShelf: BiquadFilterNode | null = null;
+  private eqNodes: BiquadFilterNode[] = [];
   private compressor: DynamicsCompressorNode | null = null;
+  private makeupGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private spectrumScratch: Uint8Array<ArrayBuffer> | null = null;
 
   // Parameters
   private vocalLevel = 100; // 0..100 (0 = off vocal / karaoke)
   private spatialPreset: SpatialAudioPreset = 'off';
   private audioQuality: AudioQualityMode = 'auto';
+  private eqBands: EqualizerBands = { ...DEFAULT_EQ_BANDS };
+  private loudnessNormalize = false;
   private masterVolume = 100;
   private isMuted = false;
   private playbackRate = 1.0;
@@ -98,10 +104,14 @@ class AudioDspEngine {
   private endedListeners = new Set<(trackId: string) => void>();
   private errorListeners = new Set<(trackId: string, err: string) => void>();
   private stateListeners = new Set<(playing: boolean) => void>();
+  private bufferingListeners = new Set<(buffering: boolean) => void>();
+  private bufferProgressListeners = new Set<(bufferedPct: number) => void>();
   private djStateListeners = new Set<() => void>();
   private unlockBound = false;
   private primingDecks = new Set<0 | 1>();
   private primedDecks = new Set<0 | 1>();
+  private isCurrentlyBuffering = false;
+  private stallRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.bindGlobalUnlock();
@@ -121,9 +131,56 @@ class AudioDspEngine {
     if (this.vocalLevel < 100) return true;
     if (this.spatialPreset !== 'off') return true;
     if (this.audioQuality === 'lossless' || this.audioQuality === 'hires') return true;
+    if (this.loudnessNormalize) return true;
+    if (Object.values(this.eqBands).some((g) => Math.abs(g) > 0.05)) return true;
     const isHidden = typeof document !== 'undefined' && document.hidden;
     if (crossfadeSec > 0.3 && !isHidden) return true;
     return false;
+  }
+
+  private emitBuffering(buffering: boolean) {
+    if (this.isCurrentlyBuffering === buffering) return;
+    this.isCurrentlyBuffering = buffering;
+    this.bufferingListeners.forEach((cb) => cb(buffering));
+  }
+
+  private emitBufferedProgress(el: HTMLAudioElement) {
+    try {
+      const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+      if (dur <= 0 || !el.buffered || el.buffered.length === 0) {
+        this.bufferProgressListeners.forEach((cb) => cb(0));
+        return;
+      }
+      const cur = el.currentTime || 0;
+      let maxEnd = 0;
+      for (let i = 0; i < el.buffered.length; i++) {
+        const start = el.buffered.start(i);
+        const end = el.buffered.end(i);
+        if (cur >= start - 0.5 && end > maxEnd) {
+          maxEnd = end;
+        } else if (end > maxEnd && i === el.buffered.length - 1) {
+          maxEnd = end;
+        }
+      }
+      const pct = Math.max(0, Math.min(100, (maxEnd / dur) * 100));
+      this.bufferProgressListeners.forEach((cb) => cb(pct));
+    } catch {}
+  }
+
+  private scheduleStallRecovery(el: HTMLAudioElement) {
+    if (this.stallRecoveryTimer) {
+      clearTimeout(this.stallRecoveryTimer);
+    }
+    this.stallRecoveryTimer = setTimeout(() => {
+      this.stallRecoveryTimer = null;
+      if (!el.paused && el.readyState >= 3) {
+        this.emitBuffering(false);
+        return;
+      }
+      if (!el.paused && el.src) {
+        el.play().catch(() => {});
+      }
+    }, 2400);
   }
 
   private bindGlobalUnlock() {
@@ -252,12 +309,37 @@ class AudioDspEngine {
 
       a.addEventListener('timeupdate', () => {
         if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
         const trackId = this.nativeTrackId || '';
         const dur = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
         this.timeUpdateListeners.forEach((cb) => cb(a.currentTime || 0, dur, trackId));
+        this.emitBufferedProgress(a);
+      });
+      a.addEventListener('progress', () => {
+        if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBufferedProgress(a);
+      });
+      a.addEventListener('waiting', () => {
+        if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(true);
+        this.scheduleStallRecovery(a);
+      });
+      a.addEventListener('stalled', () => {
+        if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(true);
+        this.scheduleStallRecovery(a);
+      });
+      a.addEventListener('canplay', () => {
+        if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
+      });
+      a.addEventListener('playing', () => {
+        if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
       });
       a.addEventListener('ended', () => {
         if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
         const trackId = this.nativeTrackId || '';
         this.endedListeners.forEach((cb) => cb(trackId));
       });
@@ -270,12 +352,14 @@ class AudioDspEngine {
       });
       a.addEventListener('pause', () => {
         if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
         if (!a.ended) {
           this.stateListeners.forEach((cb) => cb(false));
         }
       });
       a.addEventListener('error', () => {
         if (this.primingNative || this.isMigratingMode || !this.usingNativeMode) return;
+        this.emitBuffering(false);
         const trackId = this.nativeTrackId || '';
         this.errorListeners.forEach((cb) => cb(trackId, a.error?.message || 'Audio element error'));
       });
@@ -309,9 +393,43 @@ class AudioDspEngine {
             return;
           }
           if (this.usingNativeMode || this.activeDeckIdx !== deckIdx) return;
+          this.emitBuffering(false);
           const trackId = this.decks?.[deckIdx].currentTrackId || '';
           const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
           this.timeUpdateListeners.forEach((cb) => cb(el.currentTime || 0, dur, trackId));
+          this.emitBufferedProgress(el);
+        });
+        el.addEventListener('progress', () => {
+          if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBufferedProgress(el);
+          }
+        });
+        el.addEventListener('waiting', () => {
+          if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBuffering(true);
+            this.scheduleStallRecovery(el);
+          }
+        });
+        el.addEventListener('stalled', () => {
+          if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBuffering(true);
+            this.scheduleStallRecovery(el);
+          }
+        });
+        el.addEventListener('canplay', () => {
+          if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBuffering(false);
+          }
+        });
+        el.addEventListener('playing', () => {
+          if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBuffering(false);
+          }
         });
         el.addEventListener('ended', () => {
           if (this.primingDecks.has(deckIdx) || this.isMigratingMode) return;
@@ -320,6 +438,7 @@ class AudioDspEngine {
             return;
           }
           if (this.usingNativeMode || this.activeDeckIdx !== deckIdx) return;
+          this.emitBuffering(false);
           const trackId = this.decks?.[deckIdx].currentTrackId || '';
           this.endedListeners.forEach((cb) => cb(trackId));
         });
@@ -341,6 +460,9 @@ class AudioDspEngine {
             this.notifyDjListeners();
             return;
           }
+          if (!this.usingNativeMode && this.activeDeckIdx === deckIdx) {
+            this.emitBuffering(false);
+          }
           // Ignore natural end-of-stream pause so 'ended' triggers seamless auto-advance without pause flicker
           if (!this.usingNativeMode && !el.ended && this.activeDeckIdx === deckIdx && !this.isCrossfading) {
             this.stateListeners.forEach((cb) => cb(false));
@@ -357,6 +479,7 @@ class AudioDspEngine {
             return;
           }
           if (this.usingNativeMode || this.activeDeckIdx !== deckIdx) return;
+          this.emitBuffering(false);
           const trackId = this.decks?.[deckIdx].currentTrackId || '';
           this.errorListeners.forEach((cb) => cb(trackId, el.error?.message || 'Audio element error'));
         });
@@ -607,9 +730,33 @@ class AudioDspEngine {
     hiresAir.gain.value = 0;
     this.hiresAirShelf = hiresAir;
 
+    // 6-Band Graphic EQ Chain (60Hz, 170Hz, 450Hz, 1.2kHz, 3.6kHz, 10kHz)
+    const eqDefs: Array<{ type: BiquadFilterType; freq: number; q?: number }> = [
+      { type: 'lowshelf', freq: 60 },
+      { type: 'peaking', freq: 170, q: 1.0 },
+      { type: 'peaking', freq: 450, q: 1.0 },
+      { type: 'peaking', freq: 1200, q: 1.0 },
+      { type: 'peaking', freq: 3600, q: 1.0 },
+      { type: 'highshelf', freq: 10000 },
+    ];
+    this.eqNodes = eqDefs.map((def) => {
+      const f = ctx.createBiquadFilter();
+      f.type = def.type;
+      f.frequency.value = def.freq;
+      if (def.q) f.Q.value = def.q;
+      f.gain.value = 0;
+      return f;
+    });
+
     merger.connect(hiresLow);
     hiresLow.connect(hiresPres);
     hiresPres.connect(hiresAir);
+
+    let eqTail: AudioNode = hiresAir;
+    for (const node of this.eqNodes) {
+      eqTail.connect(node);
+      eqTail = node;
+    }
 
     // Spatial Convolver (Dolby Atmos-style acoustic soundstage)
     const convolver = ctx.createConvolver();
@@ -628,7 +775,7 @@ class AudioDspEngine {
     spatialDelayGain.gain.value = 0;
     this.spatialDelayGain = spatialDelayGain;
 
-    // Gentle Limiter / Compressor -> Master Gain -> Destination
+    // Gentle Limiter / Loudness Normalizer -> Makeup Gain -> Master Gain -> Destination (+ Analyser tap)
     const compressor = ctx.createDynamicsCompressor();
     compressor.threshold.value = -8;
     compressor.knee.value = 18;
@@ -637,21 +784,33 @@ class AudioDspEngine {
     compressor.release.value = 0.16;
     this.compressor = compressor;
 
+    const makeupGain = ctx.createGain();
+    makeupGain.gain.value = 1.0;
+    this.makeupGain = makeupGain;
+
     const masterGain = ctx.createGain();
     masterGain.gain.value = this.isMuted ? 0 : this.masterVolume / 100;
     this.masterGain = masterGain;
 
-    hiresAir.connect(compressor);
-    hiresAir.connect(convolver);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 128;
+    analyser.smoothingTimeConstant = 0.78;
+    this.analyser = analyser;
+    this.spectrumScratch = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
+
+    eqTail.connect(compressor);
+    eqTail.connect(convolver);
     convolver.connect(reverbWet);
     reverbWet.connect(compressor);
 
-    hiresAir.connect(spatialDelayR);
+    eqTail.connect(spatialDelayR);
     spatialDelayR.connect(spatialDelayGain);
     spatialDelayGain.connect(compressor);
 
-    compressor.connect(masterGain);
+    compressor.connect(makeupGain);
+    makeupGain.connect(masterGain);
     masterGain.connect(ctx.destination);
+    masterGain.connect(analyser);
 
     this.applyAllDspParams();
   }
@@ -722,7 +881,43 @@ class AudioDspEngine {
     if (this.hiresPresence) this.hiresPresence.gain.setTargetAtTime(presDb, now, 0.05);
     if (this.hiresAirShelf) this.hiresAirShelf.gain.setTargetAtTime(airDb, now, 0.05);
 
-    // 4. Master Gain
+    // 4. 6-Band Graphic EQ
+    if (this.eqNodes.length === 6) {
+      const bandValues = [
+        this.eqBands.b60,
+        this.eqBands.b170,
+        this.eqBands.b450,
+        this.eqBands.b1200,
+        this.eqBands.b3600,
+        this.eqBands.b10000,
+      ];
+      this.eqNodes.forEach((node, idx) => {
+        const clamped = Math.max(-12, Math.min(12, bandValues[idx] || 0));
+        node.gain.setTargetAtTime(clamped, now, 0.03);
+      });
+    }
+
+    // 5. Loudness Normalization (Consistent Perceived Volume)
+    if (this.compressor) {
+      if (this.loudnessNormalize) {
+        this.compressor.threshold.setTargetAtTime(-19, now, 0.05);
+        this.compressor.knee.setTargetAtTime(24, now, 0.05);
+        this.compressor.ratio.setTargetAtTime(4.5, now, 0.05);
+        this.compressor.attack.setTargetAtTime(0.003, now, 0.05);
+        this.compressor.release.setTargetAtTime(0.22, now, 0.05);
+      } else {
+        this.compressor.threshold.setTargetAtTime(-8, now, 0.05);
+        this.compressor.knee.setTargetAtTime(18, now, 0.05);
+        this.compressor.ratio.setTargetAtTime(2.5, now, 0.05);
+        this.compressor.attack.setTargetAtTime(0.004, now, 0.05);
+        this.compressor.release.setTargetAtTime(0.16, now, 0.05);
+      }
+    }
+    if (this.makeupGain) {
+      this.makeupGain.gain.setTargetAtTime(this.loudnessNormalize ? 1.32 : 1.0, now, 0.05);
+    }
+
+    // 6. Master Gain
     if (this.masterGain) {
       const target = this.isMuted ? 0 : Math.max(0, Math.min(1, this.masterVolume / 100));
       this.masterGain.gain.setTargetAtTime(target, now, 0.02);
@@ -782,6 +977,41 @@ class AudioDspEngine {
     this.audioQuality = q;
     this.applyAllDspParams();
     this.syncPlaybackModeIfNeeded();
+  }
+
+  public setEqBands(bands: EqualizerBands) {
+    this.eqBands = { ...bands };
+    this.applyAllDspParams();
+    this.syncPlaybackModeIfNeeded();
+  }
+
+  public setLoudnessNormalize(enabled: boolean) {
+    this.loudnessNormalize = Boolean(enabled);
+    this.applyAllDspParams();
+    this.syncPlaybackModeIfNeeded();
+  }
+
+  public getSpectrumBars(count = 24): number[] {
+    if (!this.analyser || !this.spectrumScratch || this.usingNativeMode) {
+      return new Array(count).fill(0);
+    }
+    try {
+      this.analyser.getByteFrequencyData(this.spectrumScratch);
+      const binCount = Math.min(this.spectrumScratch.length, 48);
+      const out: number[] = [];
+      for (let i = 0; i < count; i++) {
+        const start = Math.floor((i / count) * binCount);
+        const end = Math.max(start + 1, Math.floor(((i + 1) / count) * binCount));
+        let sum = 0;
+        for (let b = start; b < end; b++) {
+          sum += this.spectrumScratch[b];
+        }
+        out.push(Math.min(1, sum / ((end - start) * 255)));
+      }
+      return out;
+    } catch {
+      return new Array(count).fill(0);
+    }
   }
 
   public setVolume(vol: number, muted: boolean) {
@@ -1161,6 +1391,16 @@ class AudioDspEngine {
   public onStateChange(cb: (playing: boolean) => void) {
     this.stateListeners.add(cb);
     return () => this.stateListeners.delete(cb);
+  }
+
+  public onBufferingChange(cb: (buffering: boolean) => void) {
+    this.bufferingListeners.add(cb);
+    return () => this.bufferingListeners.delete(cb);
+  }
+
+  public onBufferProgress(cb: (bufferedPct: number) => void) {
+    this.bufferProgressListeners.add(cb);
+    return () => this.bufferProgressListeners.delete(cb);
   }
 
   // =====================================

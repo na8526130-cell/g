@@ -48,6 +48,7 @@ import { DjMixerModal } from './components/DjMixerModal';
 import { CarModeModal } from './components/CarModeModal';
 import { CompactCompanionModal } from './components/CompactCompanionModal';
 import { StartupSplash } from './components/StartupSplash';
+import { ToolsHubView } from './views/ToolsHubView';
 
 const MainLayout: React.FC = () => {
   const {
@@ -205,6 +206,7 @@ const MainLayout: React.FC = () => {
         {activeView === 'library' && <LibraryView />}
         {activeView === 'party' && <ListeningPartyView />}
         {activeView === 'podcasts' && <PodcastsView />}
+        {activeView === 'tools' && <ToolsHubView />}
       </main>
 
       {/* Persistent Single Instance YouTubePlayer (Never unmounted) */}

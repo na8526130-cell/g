@@ -37,6 +37,8 @@ import {
   RotateCcw,
   RotateCw,
   Globe,
+  Loader2,
+  Repeat2,
 } from 'lucide-react';
 
 function formatSeconds(secs: number): string {
@@ -114,6 +116,13 @@ export const PlayerBar: React.FC = () => {
     vocalLevel,
     audioStreamMeta,
     skipBySeconds,
+    abRepeat,
+    toggleAbRepeatPoint,
+    clearAbRepeat,
+    isBuffering,
+    bufferedPercent,
+    eqPreset,
+    loudnessNormalize,
   } = usePlayer();
 
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
@@ -121,6 +130,11 @@ export const PlayerBar: React.FC = () => {
 
   const [isHoveringProgress, setIsHoveringProgress] = useState(false);
   const [hoverPositionSec, setHoverPositionSec] = useState(0);
+  const [isDraggingProgress, setIsDraggingProgress] = useState(false);
+  const [dragPreviewSec, setDragPreviewSec] = useState<number | null>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
+  const miniTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const miniSwipedRef = useRef(false);
 
   useEffect(() => {
     if (!toolsMenuOpen) return;
@@ -138,9 +152,15 @@ export const PlayerBar: React.FC = () => {
   }
 
   const isLiked = likedTrackIds.has(currentTrack.id);
-  const percent = duration > 0 ? Math.min(100, Math.max(0, (progress / duration) * 100)) : 0;
+  const displayProgress = isDraggingProgress && dragPreviewSec !== null ? dragPreviewSec : progress;
+  const percent = duration > 0 ? Math.min(100, Math.max(0, (displayProgress / duration) * 100)) : 0;
   const upcomingCount = Math.max(0, queue.length - 1 - queueIndex);
   const upNextTrack = queue[queueIndex + 1];
+
+  const isEqActive = eqPreset !== 'flat';
+  const isAbActive = abRepeat.a !== null;
+  const abAPercent = duration > 0 && abRepeat.a !== null ? Math.min(100, Math.max(0, (abRepeat.a / duration) * 100)) : null;
+  const abBPercent = duration > 0 && abRepeat.b !== null ? Math.min(100, Math.max(0, (abRepeat.b / duration) * 100)) : null;
 
   const hasActiveToolMode =
     backgroundPlaybackEnabled ||
@@ -152,29 +172,90 @@ export const PlayerBar: React.FC = () => {
     vocalLevel < 100 ||
     spatialAudio !== 'off' ||
     audioQuality === 'lossless' ||
-    audioQuality === 'hires';
+    audioQuality === 'hires' ||
+    isEqActive ||
+    loudnessNormalize ||
+    isAbActive;
 
-  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    seekTo(pos * duration);
+  const getPointerSec = (clientX: number, rect: DOMRect) => {
+    if (rect.width <= 0 || duration <= 0) return 0;
+    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return pos * duration;
   };
 
-  const handleProgressMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    setHoverPositionSec(pos * duration);
+  const handleScrubPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (duration <= 0) return;
+    e.stopPropagation();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragPointerIdRef.current = e.pointerId;
+    } catch {}
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    setIsDraggingProgress(true);
+    setDragPreviewSec(sec);
+    setHoverPositionSec(sec);
+  };
+
+  const handleScrubPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    setHoverPositionSec(sec);
+    if (isDraggingProgress && dragPointerIdRef.current === e.pointerId) {
+      setDragPreviewSec(sec);
+    }
+  };
+
+  const handleScrubPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgress) return;
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+    dragPointerIdRef.current = null;
+    setIsDraggingProgress(false);
+    setDragPreviewSec(null);
+    seekTo(sec);
   };
 
   const isMobileMode = deviceMode === 'mobile';
 
   return (
     <>
-      {/* MOBILE MINI-PLAYER (Spotify-style floating card docked above BottomTabBar) */}
+      {/* MOBILE MINI-PLAYER (Spotify-style floating card docked above BottomTabBar + swipe next/prev) */}
       {isMobileMode && (
         <div
-          onClick={() => setFullScreenPlayerOpen(true)}
-          className="fixed bottom-[64px] left-1/2 -translate-x-1/2 w-[calc(100%-16px)] max-w-lg z-40 bg-[#231215]/95 backdrop-blur-xl border border-white/10 rounded-lg px-2.5 py-2 shadow-2xl flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] transition-transform overflow-hidden"
+          onTouchStart={(e) => {
+            if (e.touches.length !== 1) return;
+            miniTouchStartRef.current = {
+              x: e.touches[0].clientX,
+              y: e.touches[0].clientY,
+            };
+            miniSwipedRef.current = false;
+          }}
+          onTouchEnd={(e) => {
+            const start = miniTouchStartRef.current;
+            miniTouchStartRef.current = null;
+            if (!start || e.changedTouches.length === 0) return;
+            const dx = e.changedTouches[0].clientX - start.x;
+            const dy = e.changedTouches[0].clientY - start.y;
+            if (Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+              miniSwipedRef.current = true;
+              if (dx < 0) {
+                nextTrack(true);
+              } else {
+                prevTrack();
+              }
+            }
+          }}
+          onClick={() => {
+            if (miniSwipedRef.current) {
+              miniSwipedRef.current = false;
+              return;
+            }
+            setFullScreenPlayerOpen(true);
+          }}
+          className="fixed bottom-[64px] left-1/2 -translate-x-1/2 w-[calc(100%-16px)] max-w-lg z-40 bg-[#231215]/95 backdrop-blur-xl border border-white/10 rounded-lg px-2.5 py-2 shadow-2xl flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] transition-transform overflow-hidden touch-pan-y"
         >
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <div className="relative shrink-0">
@@ -255,11 +336,13 @@ export const PlayerBar: React.FC = () => {
                 e.stopPropagation();
                 togglePlay();
               }}
-              className="min-w-[38px] min-h-[40px] flex items-center justify-center text-white hover:text-red-400 transition-colors cursor-pointer"
+              className="min-w-[40px] min-h-[40px] flex items-center justify-center text-white hover:text-red-400 transition-colors cursor-pointer"
               title={isPlaying ? '一時停止' : '再生'}
               aria-label={isPlaying ? '一時停止' : '再生'}
             >
-              {isPlaying ? (
+              {isBuffering ? (
+                <Loader2 className="w-5 h-5 animate-spin text-red-400" />
+              ) : isPlaying ? (
                 <Pause className="w-5 h-5 fill-current" />
               ) : (
                 <Play className="w-5 h-5 fill-current ml-0.5" />
@@ -268,8 +351,14 @@ export const PlayerBar: React.FC = () => {
           </div>
 
           <div className="absolute bottom-0 left-2 right-2 h-[2px] bg-white/15 rounded-full overflow-hidden">
+            {bufferedPercent > 0 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-white/25 transition-all duration-200"
+                style={{ width: `${bufferedPercent}%` }}
+              />
+            )}
             <div
-              className="h-full bg-white rounded-full transition-all duration-100"
+              className="relative h-full bg-white rounded-full transition-all duration-100"
               style={{ width: `${percent}%` }}
             />
           </div>
@@ -279,14 +368,31 @@ export const PlayerBar: React.FC = () => {
       {/* DESKTOP / TABLET PLAYER BAR (Spacious 3-Column Grid — Zero Overlap) */}
       {!isMobileMode && (
         <footer className="fixed bottom-0 left-0 right-0 z-40 bg-[#0a0a0c]/96 backdrop-blur-xl border-t border-white/10 px-4 md:px-6 py-2.5 shadow-2xl">
-          {/* Thin Interactive Top Scrub Line */}
+          {/* Thin Interactive Top Scrub Line (supports pointer-drag scrubbing + buffer + A-B) */}
           <div
-            className="absolute top-0 left-0 right-0 h-1 bg-neutral-800/80 cursor-pointer group"
-            onClick={handleProgressClick}
-            onMouseMove={handleProgressMouseMove}
+            className="absolute top-0 left-0 right-0 h-1.5 hover:h-2 bg-neutral-800/80 cursor-pointer group transition-all touch-none"
+            onPointerDown={handleScrubPointerDown}
+            onPointerMove={handleScrubPointerMove}
+            onPointerUp={handleScrubPointerUp}
+            onPointerCancel={handleScrubPointerUp}
             onMouseEnter={() => setIsHoveringProgress(true)}
             onMouseLeave={() => setIsHoveringProgress(false)}
           >
+            {bufferedPercent > 0 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-white/20 pointer-events-none"
+                style={{ width: `${bufferedPercent}%` }}
+              />
+            )}
+            {abAPercent !== null && abBPercent !== null && (
+              <div
+                className="absolute inset-y-0 bg-emerald-400/50 pointer-events-none z-10"
+                style={{
+                  left: `${abAPercent}%`,
+                  width: `${Math.max(0.5, abBPercent - abAPercent)}%`,
+                }}
+              />
+            )}
             {trackTimestamps?.heatMarkers?.map((m, idx) => (
               <div
                 key={idx}
@@ -298,17 +404,21 @@ export const PlayerBar: React.FC = () => {
               />
             ))}
             <div
-              className="h-full bg-red-600 transition-all duration-100 relative group-hover:bg-red-500 z-20"
+              className="h-full bg-red-600 transition-all duration-75 relative group-hover:bg-red-500 z-20 pointer-events-none"
               style={{ width: `${percent}%` }}
             >
               <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow scale-0 group-hover:scale-100 transition-transform" />
             </div>
-            {isHoveringProgress && duration > 0 && (
+            {(isHoveringProgress || isDraggingProgress) && duration > 0 && (
               <div
                 className="absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-[11px] text-white font-mono tabular-nums pointer-events-none whitespace-nowrap z-30"
-                style={{ left: `${(hoverPositionSec / duration) * 100}%` }}
+                style={{
+                  left: `${Math.min(98, Math.max(2, ((isDraggingProgress && dragPreviewSec !== null ? dragPreviewSec : hoverPositionSec) / duration) * 100))}%`,
+                }}
               >
-                {formatSeconds(hoverPositionSec)}
+                {formatSeconds(
+                  isDraggingProgress && dragPreviewSec !== null ? dragPreviewSec : hoverPositionSec
+                )}
               </div>
             )}
           </div>
@@ -386,15 +496,17 @@ export const PlayerBar: React.FC = () => {
                       <span>共有</span>
                     </span>
                   )}
-                  {(audioQuality === 'hires' || audioQuality === 'lossless' || spatialAudio !== 'off' || vocalLevel < 100) && (
+                  {(audioQuality === 'hires' || audioQuality === 'lossless' || spatialAudio !== 'off' || vocalLevel < 100 || isEqActive) && (
                     <button
                       type="button"
                       onClick={() => setDspModalOpen(true)}
                       className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-[10px] font-mono font-bold text-sky-300 shrink-0 cursor-pointer hover:bg-sky-500/25"
-                      title="Audio DSP設定を開く"
+                      title="Audio DSP・EQ設定を開く"
                     >
                       {vocalLevel < 100
                         ? `Sing ${vocalLevel}%`
+                        : isEqActive
+                        ? 'EQ'
                         : spatialAudio !== 'off'
                         ? '空間3D'
                         : audioQuality === 'hires'
@@ -452,7 +564,7 @@ export const PlayerBar: React.FC = () => {
                   )}
                 </button>
 
-                {currentTrack.trackType === 'podcast' && (
+                {currentTrack.trackType === 'podcast' ? (
                   <button
                     type="button"
                     onClick={() => skipBySeconds(-15)}
@@ -462,12 +574,22 @@ export const PlayerBar: React.FC = () => {
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>15</span>
                   </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => skipBySeconds(-10)}
+                    title="10秒戻る (←)"
+                    className="hidden md:flex px-1.5 py-1 rounded text-[11px] font-mono font-bold text-neutral-400 hover:text-white hover:bg-white/10 items-center gap-0.5 cursor-pointer transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>10</span>
+                  </button>
                 )}
 
                 <button
                   type="button"
                   onClick={prevTrack}
-                  title="前の曲"
+                  title="前の曲 (P)"
                   aria-label="前の曲"
                   className="p-1.5 text-neutral-300 hover:text-white transition-colors cursor-pointer"
                 >
@@ -477,11 +599,13 @@ export const PlayerBar: React.FC = () => {
                 <button
                   type="button"
                   onClick={togglePlay}
-                  title={isPlaying ? '一時停止' : '再生'}
+                  title={isPlaying ? '一時停止 (Space)' : '再生 (Space)'}
                   aria-label={isPlaying ? '一時停止' : '再生'}
                   className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-lg cursor-pointer"
                 >
-                  {isPlaying ? (
+                  {isBuffering ? (
+                    <Loader2 className="w-4.5 h-4.5 animate-spin text-red-600" />
+                  ) : isPlaying ? (
                     <Pause className="w-4.5 h-4.5 fill-current" />
                   ) : (
                     <Play className="w-4.5 h-4.5 fill-current ml-0.5" />
@@ -491,14 +615,14 @@ export const PlayerBar: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => nextTrack(true)}
-                  title="次の曲"
+                  title="次の曲 (N)"
                   aria-label="次の曲"
                   className="p-1.5 text-neutral-300 hover:text-white transition-colors cursor-pointer"
                 >
                   <SkipForward className="w-4 h-4 md:w-5 md:h-5" />
                 </button>
 
-                {currentTrack.trackType === 'podcast' && (
+                {currentTrack.trackType === 'podcast' ? (
                   <button
                     type="button"
                     onClick={() => skipBySeconds(30)}
@@ -506,6 +630,16 @@ export const PlayerBar: React.FC = () => {
                     className="px-1.5 py-1 rounded text-[11px] font-mono font-bold text-emerald-300 hover:bg-emerald-500/15 flex items-center gap-0.5 cursor-pointer"
                   >
                     <span>30</span>
+                    <RotateCw className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => skipBySeconds(10)}
+                    title="10秒進む (→)"
+                    className="hidden md:flex px-1.5 py-1 rounded text-[11px] font-mono font-bold text-neutral-400 hover:text-white hover:bg-white/10 items-center gap-0.5 cursor-pointer transition-colors"
+                  >
+                    <span>10</span>
                     <RotateCw className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -528,11 +662,41 @@ export const PlayerBar: React.FC = () => {
               </div>
 
               <div className="w-full hidden sm:flex items-center gap-2 text-[11px] font-mono tabular-nums text-neutral-400">
-                <span className="w-9 text-right shrink-0">{formatSeconds(progress)}</span>
+                <span className="w-9 text-right shrink-0">{formatSeconds(displayProgress)}</span>
                 <div
-                  className="relative flex-1 h-1.5 bg-neutral-800 rounded-full cursor-pointer overflow-hidden group"
-                  onClick={handleProgressClick}
+                  className="relative flex-1 h-1.5 hover:h-2 bg-neutral-800 rounded-full cursor-pointer overflow-hidden group transition-all touch-none"
+                  onPointerDown={handleScrubPointerDown}
+                  onPointerMove={handleScrubPointerMove}
+                  onPointerUp={handleScrubPointerUp}
+                  onPointerCancel={handleScrubPointerUp}
                 >
+                  {bufferedPercent > 0 && (
+                    <div
+                      className="absolute inset-y-0 left-0 bg-white/15 pointer-events-none"
+                      style={{ width: `${bufferedPercent}%` }}
+                    />
+                  )}
+                  {abAPercent !== null && abBPercent !== null && (
+                    <div
+                      className="absolute inset-y-0 bg-emerald-400/50 pointer-events-none z-10"
+                      style={{
+                        left: `${abAPercent}%`,
+                        width: `${Math.max(0.5, abBPercent - abAPercent)}%`,
+                      }}
+                    />
+                  )}
+                  {abAPercent !== null && (
+                    <span
+                      className="absolute top-0 bottom-0 w-0.5 bg-emerald-300 z-30 pointer-events-none"
+                      style={{ left: `${abAPercent}%` }}
+                    />
+                  )}
+                  {abBPercent !== null && (
+                    <span
+                      className="absolute top-0 bottom-0 w-0.5 bg-emerald-300 z-30 pointer-events-none"
+                      style={{ left: `${abBPercent}%` }}
+                    />
+                  )}
                   {trackTimestamps?.heatMarkers?.map((m, idx) => (
                     <span
                       key={idx}
@@ -542,7 +706,7 @@ export const PlayerBar: React.FC = () => {
                     />
                   ))}
                   <div
-                    className="h-full bg-neutral-300 group-hover:bg-red-500 transition-colors rounded-full relative z-20"
+                    className="h-full bg-neutral-300 group-hover:bg-red-500 transition-colors rounded-full relative z-20 pointer-events-none"
                     style={{ width: `${percent}%` }}
                   />
                 </div>
@@ -785,10 +949,50 @@ export const PlayerBar: React.FC = () => {
                             {wakeLockActive ? 'ON' : 'OFF'}
                           </span>
                         </button>
+                        <button
+                          type="button"
+                          onClick={toggleAbRepeatPoint}
+                          className={`col-span-2 px-2.5 py-2 rounded-xl border flex items-center justify-between transition-colors cursor-pointer ${
+                            abRepeat.a !== null && abRepeat.b !== null
+                              ? 'bg-emerald-950/60 border-emerald-600/60 text-emerald-200'
+                              : abRepeat.a !== null
+                              ? 'bg-amber-950/60 border-amber-600/60 text-amber-200'
+                              : 'bg-neutral-900 border-neutral-800 text-neutral-300 hover:bg-neutral-800'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 truncate">
+                            <Repeat2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              A-B区間リピート (B)
+                            </span>
+                          </span>
+                          <span className="flex items-center gap-2 font-mono text-[10px] font-bold">
+                            {abRepeat.a !== null && abRepeat.b !== null ? (
+                              <>
+                                <span>
+                                  {formatSeconds(abRepeat.a)}〜{formatSeconds(abRepeat.b)}
+                                </span>
+                                <span
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    clearAbRepeat();
+                                  }}
+                                  className="px-1.5 py-0.5 rounded bg-black/40 hover:bg-black/70 text-white"
+                                >
+                                  解除
+                                </span>
+                              </>
+                            ) : abRepeat.a !== null ? (
+                              <span>A: {formatSeconds(abRepeat.a)} (タップでB設定)</span>
+                            ) : (
+                              <span>OFF</span>
+                            )}
+                          </span>
+                        </button>
                       </div>
                     </div>
 
-                    {/* Playback Speed */}
+                    {/* Playback Speed (8 presets) */}
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between px-1">
                         <span className="text-[11px] font-semibold text-neutral-400 flex items-center gap-1">
@@ -799,8 +1003,8 @@ export const PlayerBar: React.FC = () => {
                           {playbackRate}x
                         </span>
                       </div>
-                      <div className="grid grid-cols-6 gap-1">
-                        {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+                      <div className="grid grid-cols-4 gap-1">
+                        {[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((rate) => (
                           <button
                             key={rate}
                             type="button"
@@ -981,6 +1185,10 @@ export const PlayerBar: React.FC = () => {
                           <HelpCircle className="w-3.5 h-3.5 shrink-0" />
                           <span className="truncate">BG再生ガイド</span>
                         </button>
+                      </div>
+
+                      <div className="hidden lg:block pt-2 px-1 text-[10px] text-neutral-500 font-mono leading-relaxed">
+                        ショートカット: Space 再生/停止 · ←/→ ±5s · N/P 次/前 · F 全画面 · B A-B
                       </div>
                     </div>
                   </div>

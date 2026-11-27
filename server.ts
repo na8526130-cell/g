@@ -32,6 +32,9 @@ import {
   getInnertubeForRegion,
   normalizeRegionCode,
 } from './src/server/discoveryPro.js';
+import { registerSoundCloakRoutes } from './src/server/tools/soundcloakRoutes.js';
+import { registerNikonikoRoutes } from './src/server/tools/nikonikoRoutes.js';
+import { registerEmbeddedToolApps } from './src/server/tools/embeddedAppsRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -6592,6 +6595,11 @@ export async function createApp(options?: {
 
   // --- Classical Explorer, BPM/Mood Filtering & Overseas Regional Discovery ---
   registerDiscoveryProRoutes(app, getInnertube);
+
+  // --- Integrated Tools Hub (All 11 GitHub Repositories Mounted Inside Site) ---
+  registerSoundCloakRoutes(app);
+  registerNikonikoRoutes(app);
+  registerEmbeddedToolApps(app);
 
   if (!options?.skipStatic) {
     // Explicitly serve static assets from public

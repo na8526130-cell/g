@@ -17,6 +17,11 @@ import {
   CatalogRegion,
   ListeningLogEntry,
   RecapPeriod,
+  EqPresetId,
+  EqualizerBands,
+  DEFAULT_EQ_BANDS,
+  EQ_PRESETS,
+  ABRepeatState,
 } from '../types/music';
 
 export interface RecapStats {
@@ -199,6 +204,22 @@ interface PlayerContextType {
   setDspModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   aiPlaylistModalOpen: boolean;
   setAiPlaylistModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+
+  // 6-Band Graphic EQ, Loudness Normalization, A-B Repeat & Buffering Telemetry
+  eqPreset: EqPresetId;
+  eqBands: EqualizerBands;
+  setEqPreset: (preset: Exclude<EqPresetId, 'custom'>) => void;
+  setEqBandGain: (band: keyof EqualizerBands, db: number) => void;
+  resetEq: () => void;
+  loudnessNormalize: boolean;
+  setLoudnessNormalize: (val: boolean) => void;
+  abRepeat: ABRepeatState;
+  toggleAbRepeatPoint: () => void;
+  clearAbRepeat: () => void;
+  isBuffering: boolean;
+  setIsBuffering: React.Dispatch<React.SetStateAction<boolean>>;
+  bufferedPercent: number;
+  setBufferedPercent: React.Dispatch<React.SetStateAction<number>>;
 
   // Offline Audio Cache & Batch Download Manager
   offlinePreferCache: boolean;
@@ -590,6 +611,9 @@ const STORAGE_KEYS = {
   CATALOG_REGION: 'zero_catalog_region_v1',
   LISTENING_LOGS: 'yt_listening_logs_v1',
   OFFLINE_PREFER_CACHE: 'yt_offline_prefer_cache_v1',
+  EQ_PRESET: 'zero_eq_preset_v1',
+  EQ_BANDS: 'zero_eq_bands_v1',
+  LOUDNESS_NORM: 'zero_loudness_norm_v1',
 };
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -717,6 +741,49 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return true;
     }
   });
+
+  const [eqPreset, setEqPresetState] = useState<EqPresetId>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.EQ_PRESET) as EqPresetId | null;
+      if (saved && (saved === 'custom' || saved in EQ_PRESETS)) return saved;
+    } catch {}
+    return 'flat';
+  });
+
+  const [eqBands, setEqBandsState] = useState<EqualizerBands>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.EQ_BANDS);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object') {
+          return {
+            b60: Math.max(-12, Math.min(12, Number(p.b60) || 0)),
+            b170: Math.max(-12, Math.min(12, Number(p.b170) || 0)),
+            b450: Math.max(-12, Math.min(12, Number(p.b450) || 0)),
+            b1200: Math.max(-12, Math.min(12, Number(p.b1200) || 0)),
+            b3600: Math.max(-12, Math.min(12, Number(p.b3600) || 0)),
+            b10000: Math.max(-12, Math.min(12, Number(p.b10000) || 0)),
+          };
+        }
+      }
+    } catch {}
+    return { ...DEFAULT_EQ_BANDS };
+  });
+
+  const [loudnessNormalize, setLoudnessNormalizeState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.LOUDNESS_NORM) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [abRepeat, setAbRepeat] = useState<ABRepeatState>({ a: null, b: null });
+  const abRepeatRef = useRef<ABRepeatState>({ a: null, b: null });
+  abRepeatRef.current = abRepeat;
+
+  const [isBuffering, setIsBuffering] = useState<boolean>(false);
+  const [bufferedPercent, setBufferedPercent] = useState<number>(0);
 
   const [audioStreamMeta, setAudioStreamMeta] = useState<AudioStreamMetadata | null>(null);
   const [dspFallbackIds, setDspFallbackIds] = useState<Set<string>>(() => new Set());
@@ -851,8 +918,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     audioDspEngine.setVocalLevel(vocalLevel);
     audioDspEngine.setSpatialPreset(spatialAudio);
     audioDspEngine.setAudioQuality(audioQuality);
+    audioDspEngine.setEqBands(eqBands);
+    audioDspEngine.setLoudnessNormalize(loudnessNormalize);
     audioDspEngine.setVolume(volume, isMuted);
     audioDspEngine.setPlaybackRate(playbackRate);
+  }, []);
+
+  useEffect(() => {
+    const unsubBuf = audioDspEngine.onBufferingChange((buf) => {
+      if (shouldUseDirectDspRef.current) {
+        setIsBuffering(buf);
+      }
+    });
+    const unsubPct = audioDspEngine.onBufferProgress((pct) => {
+      if (shouldUseDirectDspRef.current) {
+        setBufferedPercent(pct);
+      }
+    });
+    return () => {
+      unsubBuf();
+      unsubPct();
+    };
   }, []);
 
   const [subscribedPodcasts, setSubscribedPodcasts] = useState<PodcastShow[]>(() => {
@@ -969,6 +1055,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     autoAdvanceLockRef.current = null;
     nextTrackInFlightRef.current = false;
     trackActivatedAtRef.current = Date.now();
+    setAbRepeat({ a: null, b: null });
+    abRepeatRef.current = { a: null, b: null };
+    setIsBuffering(false);
+    setBufferedPercent(0);
   }, [currentTrack?.id]);
 
   // Background playback & Wakelock state
@@ -5283,7 +5373,21 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       }
 
-      // 3. Early gapless / dual-deck crossfade trigger
+      // 2.5. A-B Section Repeat enforcement (works across both YT.Player and Web Audio / Native <audio>)
+      const ab = abRepeatRef.current;
+      if (
+        ab.a !== null &&
+        ab.b !== null &&
+        ab.b > ab.a + 0.8 &&
+        userIntendedPlayingRef.current &&
+        current >= ab.b
+      ) {
+        seekTo(ab.a);
+        return;
+      }
+
+      // 3. Early gapless / dual-deck crossfade trigger (suppressed while A-B loop is active)
+      const isAbLoopActive = ab.a !== null && ab.b !== null;
       const earlyCutoff = shouldUseDirectDspRef.current && crossfadeDuration > 1
         ? Math.min(crossfadeDuration, Math.max(1.5, total * 0.18))
         : crossfadeDuration > 0
@@ -5297,6 +5401,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         );
       const isPastTrackActivationGrace = Date.now() - trackActivatedAtRef.current >= 3500;
       if (
+        !isAbLoopActive &&
         currentTrack &&
         total > 15 &&
         isPastTrackActivationGrace &&
@@ -5579,6 +5684,180 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   playAllOfflineSavedTracksRef.current = playAllOfflineSavedTracks;
 
+  const formatAbTime = (sec: number) => {
+    const s = Math.max(0, Math.floor(sec));
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}:${rem < 10 ? '0' : ''}${rem}`;
+  };
+
+  const setEqPreset = useCallback((preset: Exclude<EqPresetId, 'custom'>) => {
+    const targetBands = { ...EQ_PRESETS[preset].bands };
+    setEqPresetState(preset);
+    setEqBandsState(targetBands);
+    audioDspEngine.setEqBands(targetBands);
+    try {
+      localStorage.setItem(STORAGE_KEYS.EQ_PRESET, preset);
+      localStorage.setItem(STORAGE_KEYS.EQ_BANDS, JSON.stringify(targetBands));
+    } catch {}
+    showToast(`イコライザー: ${EQ_PRESETS[preset].label}`, 'success', 1800);
+  }, [showToast]);
+
+  const setEqBandGain = useCallback((band: keyof EqualizerBands, db: number) => {
+    const clamped = Math.max(-12, Math.min(12, Math.round(db * 2) / 2));
+    setEqBandsState((prev) => {
+      const next = { ...prev, [band]: clamped };
+      audioDspEngine.setEqBands(next);
+      try {
+        localStorage.setItem(STORAGE_KEYS.EQ_BANDS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setEqPresetState('custom');
+    try {
+      localStorage.setItem(STORAGE_KEYS.EQ_PRESET, 'custom');
+    } catch {}
+  }, []);
+
+  const resetEq = useCallback(() => {
+    const flat = { ...DEFAULT_EQ_BANDS };
+    setEqPresetState('flat');
+    setEqBandsState(flat);
+    audioDspEngine.setEqBands(flat);
+    try {
+      localStorage.setItem(STORAGE_KEYS.EQ_PRESET, 'flat');
+      localStorage.setItem(STORAGE_KEYS.EQ_BANDS, JSON.stringify(flat));
+    } catch {}
+    showToast('イコライザーをフラットに戻しました', 'info', 1600);
+  }, [showToast]);
+
+  const setLoudnessNormalize = useCallback((val: boolean) => {
+    const clean = Boolean(val);
+    setLoudnessNormalizeState(clean);
+    audioDspEngine.setLoudnessNormalize(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.LOUDNESS_NORM, String(clean));
+    } catch {}
+    showToast(clean ? '音量均一化（ラウドネス補正）ON' : '音量均一化 OFF', 'info', 1800);
+  }, [showToast]);
+
+  const toggleAbRepeatPoint = useCallback(() => {
+    if (!currentTrack) return;
+    const cur = audioDspEngine.getCurrentElement()?.currentTime ?? progressRef.current;
+    const prev = abRepeatRef.current;
+    if (prev.a === null) {
+      const nextState: ABRepeatState = { a: cur, b: null };
+      abRepeatRef.current = nextState;
+      setAbRepeat(nextState);
+      showToast(`A-Bリピート A地点: ${formatAbTime(cur)}`, 'info', 2000);
+    } else if (prev.b === null) {
+      if (cur <= prev.a + 1.0) {
+        const nextState: ABRepeatState = { a: cur, b: null };
+        abRepeatRef.current = nextState;
+        setAbRepeat(nextState);
+        showToast(`A地点を更新: ${formatAbTime(cur)}（B地点は1秒以上先に設定）`, 'info', 2200);
+      } else {
+        const nextState: ABRepeatState = { a: prev.a, b: cur };
+        abRepeatRef.current = nextState;
+        setAbRepeat(nextState);
+        seekTo(prev.a);
+        showToast(
+          `A-Bリピート開始 (${formatAbTime(prev.a)} 〜 ${formatAbTime(cur)})`,
+          'success',
+          2400
+        );
+      }
+    } else {
+      const nextState: ABRepeatState = { a: null, b: null };
+      abRepeatRef.current = nextState;
+      setAbRepeat(nextState);
+      showToast('A-Bリピートを解除しました', 'info', 1600);
+    }
+  }, [currentTrack, seekTo, showToast]);
+
+  const clearAbRepeat = useCallback(() => {
+    const nextState: ABRepeatState = { a: null, b: null };
+    abRepeatRef.current = nextState;
+    setAbRepeat(nextState);
+  }, []);
+
+  // Global PC Keyboard Shortcuts (Space, ArrowLeft/Right, ArrowUp/Down, M, N, P, L, Q, F, B)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      if (!currentTrack) return;
+
+      switch (e.code) {
+        case 'Space':
+          if (target?.tagName === 'BUTTON' || target?.tagName === 'A') return;
+          e.preventDefault();
+          togglePlay();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          skipBySeconds(e.shiftKey ? -15 : -5);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          skipBySeconds(e.shiftKey ? 15 : 5);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          setVolume(Math.min(100, volume + 5));
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          setVolume(Math.max(0, volume - 5));
+          break;
+        case 'KeyM':
+          toggleMute();
+          break;
+        case 'KeyN':
+          nextTrack(true);
+          break;
+        case 'KeyP':
+          prevTrack();
+          break;
+        case 'KeyL':
+          setLyricsOpen((v) => !v);
+          break;
+        case 'KeyQ':
+          setQueueOpen((v) => !v);
+          break;
+        case 'KeyF':
+          setFullScreenPlayerOpen((v) => !v);
+          break;
+        case 'KeyB':
+          toggleAbRepeatPoint();
+          break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    currentTrack,
+    togglePlay,
+    skipBySeconds,
+    setVolume,
+    volume,
+    toggleMute,
+    nextTrack,
+    prevTrack,
+    toggleAbRepeatPoint,
+  ]);
+
   const onPlayerTrackEnded = useCallback(() => {
     if (
       currentTrack?.id &&
@@ -5634,6 +5913,20 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setDspModalOpen,
         aiPlaylistModalOpen,
         setAiPlaylistModalOpen,
+        eqPreset,
+        eqBands,
+        setEqPreset,
+        setEqBandGain,
+        resetEq,
+        loudnessNormalize,
+        setLoudnessNormalize,
+        abRepeat,
+        toggleAbRepeatPoint,
+        clearAbRepeat,
+        isBuffering,
+        setIsBuffering,
+        bufferedPercent,
+        setBufferedPercent,
         offlinePreferCache,
         setOfflinePreferCache,
         cachedOfflineIds,

@@ -85,6 +85,8 @@ export const YouTubePlayer: React.FC = () => {
     setAudioStreamMeta,
     markDspFallback,
     showToast,
+    setIsBuffering,
+    setBufferedPercent,
   } = usePlayer();
 
   const playerRef = useRef<any>(null);
@@ -127,6 +129,11 @@ export const YouTubePlayer: React.FC = () => {
   markDspFallbackRef.current = markDspFallback;
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
+  const setIsBufferingRef = useRef(setIsBuffering);
+  setIsBufferingRef.current = setIsBuffering;
+  const setBufferedPercentRef = useRef(setBufferedPercent);
+  setBufferedPercentRef.current = setBufferedPercent;
+  const lastYtBufferedPctRef = useRef<number>(-1);
   const currentTrackRef = useRef(currentTrack);
   currentTrackRef.current = currentTrack;
   const playerModeRef = useRef(playerMode);
@@ -553,6 +560,7 @@ export const YouTubePlayer: React.FC = () => {
 
             if (event.data === YTState.PLAYING) {
               clearAutoplayRetry();
+              setIsBufferingRef.current(false);
               try {
                 if (!isMutedRef.current && typeof event.target?.unMute === 'function') {
                   event.target.unMute();
@@ -565,6 +573,7 @@ export const YouTubePlayer: React.FC = () => {
               startAudioHardwareKeepAlive();
             } else if (event.data === YTState.BUFFERING) {
               clearAutoplayRetry();
+              setIsBufferingRef.current(true);
             } else if (event.data === YTState.CUED || event.data === YTState.UNSTARTED) {
               if (userIntendedPlayingRef.current && typeof event.target?.playVideo === 'function') {
                 if (event.data === YTState.CUED) {
@@ -620,10 +629,12 @@ export const YouTubePlayer: React.FC = () => {
                 return;
               }
 
+              setIsBufferingRef.current(false);
               onStateChangeCbRef.current(false);
               stopAudioHardwareKeepAlive();
             } else if (event.data === YTState.ENDED) {
               clearAutoplayRetry();
+              setIsBufferingRef.current(false);
               onEndedCbRef.current();
               if (!userIntendedPlayingRef.current) {
                 onStateChangeCbRef.current(false);
@@ -925,6 +936,14 @@ export const YouTubePlayer: React.FC = () => {
           // Ignore stale trailing timestamp from the previous track immediately after loadVideoById
           if (Date.now() - lastYtLoadAtRef.current < 1200 && current > 5) {
             return;
+          }
+          if (typeof playerRef.current.getVideoLoadedFraction === 'function') {
+            const frac = Number(playerRef.current.getVideoLoadedFraction()) || 0;
+            const pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+            if (Math.abs(pct - lastYtBufferedPctRef.current) >= 2) {
+              lastYtBufferedPctRef.current = pct;
+              setBufferedPercentRef.current(pct);
+            }
           }
           lastKnownTimeRef.current = current;
           onPlayerTimeUpdate(current, total);

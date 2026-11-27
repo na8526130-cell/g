@@ -27,6 +27,7 @@ import {
   Globe,
   Podcast,
   Sliders,
+  Wrench,
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { IOSInstallGuideModal } from './PWAInstallBanner';
@@ -370,6 +371,19 @@ export const TopNavbar: React.FC = () => {
           <Sliders className="w-3.5 h-3.5 text-sky-400" />
           <span>DSP</span>
         </button>
+        <button
+          type="button"
+          onClick={() => navigateTo('tools')}
+          title="ツール（内蔵サイト13種・動画/ゲーム/マンガ）"
+          className={`transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1 ${
+            activeView === 'tools'
+              ? 'text-red-400 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <Wrench className="w-3.5 h-3.5 text-red-400" />
+          <span>ツール</span>
+        </button>
         {dmUiVisible && (
         <button
           type="button"
@@ -385,6 +399,21 @@ export const TopNavbar: React.FC = () => {
       {/* Zone 3: Search Bar (PC) or Search trigger (Mobile), Quick Actions */}
       <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
         {isMobile && (
+        <>
+        <button
+          type="button"
+          onClick={() => navigateTo('tools')}
+          aria-label="ツール"
+          title="ツール（動画・ゲーム・マンガ）"
+          className={`px-2 py-1.5 rounded-full border text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer ${
+            activeView === 'tools'
+              ? 'bg-red-600/20 border-red-500/50 text-red-300'
+              : 'bg-neutral-900/90 hover:bg-neutral-800 text-neutral-200 border-neutral-800'
+          }`}
+        >
+          <Wrench className="w-3.5 h-3.5 text-red-400" />
+          <span>ツール</span>
+        </button>
         <button
           type="button"
           onClick={() => navigateTo('search')}
@@ -393,6 +422,7 @@ export const TopNavbar: React.FC = () => {
         >
           <Search className="w-4 h-4" />
         </button>
+        </>
         )}
 
         {isPC && (

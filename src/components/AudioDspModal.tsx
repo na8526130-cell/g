@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   X,
   Sliders,
@@ -11,9 +11,19 @@ import {
   Radio,
   Check,
   Tv,
+  RotateCcw,
+  BarChart3,
+  Gauge,
 } from 'lucide-react';
 import { usePlayer } from '../context/PlayerContext';
-import { AudioQualityMode, SpatialAudioPreset } from '../types/music';
+import { audioDspEngine } from '../services/audioDspEngine';
+import {
+  AudioQualityMode,
+  EQ_PRESETS,
+  EqualizerBands,
+  EqPresetId,
+  SpatialAudioPreset,
+} from '../types/music';
 
 const QUALITY_OPTIONS: {
   id: AudioQualityMode;
@@ -41,6 +51,19 @@ const SPATIAL_OPTIONS: {
   { id: 'concert', label: 'ライブアリーナ', tag: 'Concert', desc: '会場にいるような臨場感ある空間響き' },
 ];
 
+const EQ_BAND_META: {
+  key: keyof EqualizerBands;
+  freq: string;
+  name: string;
+}[] = [
+  { key: 'b60', freq: '60Hz', name: 'サブベース' },
+  { key: 'b170', freq: '170Hz', name: '重低音' },
+  { key: 'b450', freq: '450Hz', name: '中低域' },
+  { key: 'b1200', freq: '1.2kHz', name: 'ボーカル帯' },
+  { key: 'b3600', freq: '3.6kHz', name: 'プレゼンス' },
+  { key: 'b10000', freq: '10kHz', name: 'エアー高音' },
+];
+
 const CROSSFADE_PRESETS = [0, 2, 4, 6, 8, 12];
 
 export const AudioDspModal: React.FC = () => {
@@ -57,15 +80,79 @@ export const AudioDspModal: React.FC = () => {
     setCrossfadeDuration,
     djEqSweep,
     setDjEqSweep,
+    eqPreset,
+    eqBands,
+    setEqPreset,
+    setEqBandGain,
+    resetEq,
+    loudnessNormalize,
+    setLoudnessNormalize,
     audioStreamMeta,
+    shouldUseDirectDsp,
+    isPlaying,
     playerMode,
     togglePlayerMode,
     currentTrack,
   } = usePlayer();
 
+  const spectrumCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!dspModalOpen) return;
+    const canvas = spectrumCanvasRef.current;
+    if (!canvas) return;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) return;
+
+    let rafId = 0;
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    const draw = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx2d.clearRect(0, 0, w, h);
+
+      const barsCount = 32;
+      const bars =
+        isPlaying && audioStreamMeta?.usingDirectDsp
+          ? audioDspEngine.getSpectrumBars(barsCount)
+          : new Array(barsCount).fill(0);
+
+      const gap = 3;
+      const barW = Math.max(2, (w - gap * (barsCount - 1)) / barsCount);
+      for (let i = 0; i < barsCount; i++) {
+        const amp = Math.max(0.06, bars[i] || 0);
+        const barH = Math.max(2, amp * (h - 4));
+        const x = i * (barW + gap);
+        const y = h - barH;
+
+        const grad = ctx2d.createLinearGradient(0, y, 0, h);
+        grad.addColorStop(0, '#f43f5e');
+        grad.addColorStop(0.55, '#ef4444');
+        grad.addColorStop(1, '#7f1d1d');
+        ctx2d.fillStyle = amp > 0.08 ? grad : 'rgba(255,255,255,0.12)';
+        ctx2d.beginPath();
+        ctx2d.roundRect(x, y, barW, barH, 2);
+        ctx2d.fill();
+      }
+
+      if (!prefersReducedMotion && isPlaying && audioStreamMeta?.usingDirectDsp) {
+        rafId = requestAnimationFrame(draw);
+      }
+    };
+
+    draw();
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [dspModalOpen, isPlaying, audioStreamMeta?.usingDirectDsp, eqBands, spatialAudio, vocalLevel]);
+
   if (!dspModalOpen) return null;
 
   const isSingActive = vocalLevel < 100;
+  const hasEqOffset = Object.values(eqBands).some((v) => Math.abs(v) > 0.05);
 
   return (
     <div
@@ -84,17 +171,17 @@ export const AudioDspModal: React.FC = () => {
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
-                高音質 DSP・空間オーディオ・Singスタジオ
+                イコライザー・高音質DSP・Singスタジオ
               </h2>
               <p className="text-xs text-neutral-400">
-                Web Audio リアルタイム音響エンジン（ロスレス / 立体音響 / カラオケ / DJクロスフェード）
+                6バンドEQ / 音量均一化 / 空間オーディオ / カラオケ / DJクロスフェード
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={() => setDspModalOpen(false)}
-            className="w-8 h-8 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
+            className="w-9 h-9 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white flex items-center justify-center cursor-pointer transition-colors"
             aria-label="閉じる"
           >
             <X className="w-4 h-4" />
@@ -102,50 +189,182 @@ export const AudioDspModal: React.FC = () => {
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
-          {/* Live Telemetry Banner */}
-          <div className="p-3.5 rounded-xl bg-[#14141d] border border-neutral-800 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <Activity
-                className={`w-4 h-4 shrink-0 ${
-                  audioStreamMeta?.usingDirectDsp ? 'text-emerald-400' : 'text-amber-400'
-                }`}
-              />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
-                  <span>
-                    {audioStreamMeta?.usingDirectDsp
-                      ? 'Web Audio DSP エンジン稼働中'
-                      : playerMode === 'video'
-                      ? 'MV動画モード再生中'
-                      : '標準プレーヤー再生中'}
-                  </span>
-                  {audioStreamMeta && (
-                    <span className="text-[11px] font-mono text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md">
-                      {audioStreamMeta.codec} ·{' '}
-                      {Math.round((audioStreamMeta.sampleRateHz || 48000) / 100) / 10}kHz ·{' '}
-                      {audioStreamMeta.bitrateKbps}kbps
+          {/* Live Telemetry + Real-time FFT Spectrum Banner */}
+          <div className="p-3.5 rounded-xl bg-[#14141d] border border-neutral-800 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Activity
+                  className={`w-4 h-4 shrink-0 ${
+                    audioStreamMeta?.usingDirectDsp ? 'text-emerald-400' : 'text-amber-400'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
+                    <span>
+                      {audioStreamMeta?.usingDirectDsp
+                        ? 'Web Audio DSP エンジン稼働中'
+                        : playerMode === 'video'
+                        ? 'MV動画モード再生中'
+                        : shouldUseDirectDsp
+                        ? 'ダイレクト高音質再生（待機）'
+                        : 'YouTube Embed再生中'}
                     </span>
-                  )}
+                    {audioStreamMeta && (
+                      <span className="text-[11px] font-mono tabular-nums text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md">
+                        {audioStreamMeta.codec} ·{' '}
+                        {Math.round((audioStreamMeta.sampleRateHz || 48000) / 100) / 10}kHz ·{' '}
+                        {audioStreamMeta.bitrateKbps}kbps
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-0.5 truncate">
+                    {currentTrack
+                      ? `対象トラック: ${currentTrack.title} — ${currentTrack.artist}`
+                      : '曲やポッドキャストを再生するとリアルタイムDSPが適用されます'}
+                  </p>
                 </div>
-                <p className="text-[11px] text-neutral-400 mt-0.5 truncate">
-                  {currentTrack
-                    ? `対象トラック: ${currentTrack.title} — ${currentTrack.artist}`
-                    : '曲やポッドキャストを再生するとリアルタイムDSPが適用されます'}
-                </p>
               </div>
+
+              {playerMode === 'video' && currentTrack && (
+                <button
+                  type="button"
+                  onClick={togglePlayerMode}
+                  className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <Tv className="w-3.5 h-3.5" />
+                  <span>音声モードへ戻す</span>
+                </button>
+              )}
             </div>
 
-            {playerMode === 'video' && currentTrack && (
+            {!shouldUseDirectDsp && currentTrack && (
+              <p className="text-[11px] text-amber-300/80 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2.5 py-1.5 leading-snug">
+                ※ イコライザー・空間オーディオ・Sing減衰は共有オフライン・ローカル音源・オフライン保存済み曲の再生時にリアルタイム適用されます。
+              </p>
+            )}
+
+            <div className="pt-1">
+              <canvas
+                ref={spectrumCanvasRef}
+                width={520}
+                height={42}
+                className="w-full h-10 rounded-lg bg-black/40 border border-white/5"
+              />
+            </div>
+          </div>
+
+          {/* Section 0: 6-Band Graphic Equalizer + Loudness Normalization */}
+          <section className="p-4 rounded-xl bg-neutral-900/70 border border-neutral-800 space-y-4">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-red-400" />
+                  <span>6バンド グラフィックイコライザー</span>
+                </h3>
+                <p className="text-[11px] text-neutral-400 mt-0.5">
+                  音域ごとに -12dB 〜 +12dB までリアルタイム調整（プリセット選択可）
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={togglePlayerMode}
-                className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                onClick={resetEq}
+                disabled={!hasEqOffset && eqPreset === 'flat'}
+                className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-xs font-semibold text-neutral-200 flex items-center gap-1.5 cursor-pointer transition-colors"
               >
-                <Tv className="w-3.5 h-3.5" />
-                <span>音声モードへ戻す（DSP有効化）</span>
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>リセット</span>
               </button>
-            )}
-          </div>
+            </div>
+
+            {/* Preset Selector */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {(Object.keys(EQ_PRESETS) as Exclude<EqPresetId, 'custom'>[]).map((pid) => {
+                const preset = EQ_PRESETS[pid];
+                const active = eqPreset === pid;
+                return (
+                  <button
+                    key={pid}
+                    type="button"
+                    onClick={() => setEqPreset(pid)}
+                    title={preset.desc}
+                    className={`px-2.5 py-2 rounded-xl border text-left transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-red-600/20 border-red-500/70 text-white'
+                        : 'bg-neutral-950/60 border-neutral-800 text-neutral-300 hover:border-neutral-700 hover:text-white'
+                    }`}
+                  >
+                    <div className="text-xs font-bold truncate">{preset.label}</div>
+                    <div className="text-[10px] text-neutral-400 truncate mt-0.5">{preset.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 6 Band Sliders */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {EQ_BAND_META.map((band) => {
+                const val = eqBands[band.key] ?? 0;
+                const formatted = val > 0 ? `+${val.toFixed(1)} dB` : `${val.toFixed(1)} dB`;
+                return (
+                  <div
+                    key={band.key}
+                    className="p-2.5 rounded-xl bg-black/35 border border-white/5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-white">{band.freq}</span>
+                        <span className="text-[11px] text-neutral-400">{band.name}</span>
+                      </div>
+                      <span
+                        className={`font-mono tabular-nums text-xs font-bold ${
+                          val > 0 ? 'text-red-400' : val < 0 ? 'text-sky-400' : 'text-neutral-400'
+                        }`}
+                      >
+                        {formatted}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-12}
+                      max={12}
+                      step={0.5}
+                      value={val}
+                      onChange={(e) => setEqBandGain(band.key, Number(e.target.value))}
+                      className="w-full accent-red-500 h-2 bg-neutral-800 rounded-lg cursor-pointer"
+                      aria-label={`${band.freq} ${band.name}`}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Loudness Normalization Switch */}
+            <div className="flex items-center justify-between gap-3 pt-2 border-t border-neutral-800">
+              <div>
+                <p className="text-xs font-bold text-neutral-100 flex items-center gap-1.5">
+                  <Gauge className="w-3.5 h-3.5 text-amber-400" />
+                  <span>音量均一化（ラウドネス補正）</span>
+                </p>
+                <p className="text-[11px] text-neutral-400 mt-0.5">
+                  曲ごとの録音音量のバラつきを抑えて聴きやすい音量感に自動調整します
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLoudnessNormalize(!loudnessNormalize)}
+                className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                  loudnessNormalize ? 'bg-red-500' : 'bg-neutral-700'
+                }`}
+                aria-label="音量均一化"
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                    loudnessNormalize ? 'left-5' : 'left-0.5'
+                  }`}
+                />
+              </button>
+            </div>
+          </section>
 
           {/* Section 1: Lossless / Hi-Res Quality */}
           <section className="space-y-3">
@@ -247,7 +466,7 @@ export const AudioDspModal: React.FC = () => {
                 </p>
               </div>
               <span
-                className={`text-sm font-mono font-extrabold px-2.5 py-1 rounded-lg ${
+                className={`text-sm font-mono tabular-nums font-extrabold px-2.5 py-1 rounded-lg ${
                   isSingActive
                     ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                     : 'bg-neutral-800 text-neutral-200'
@@ -320,7 +539,7 @@ export const AudioDspModal: React.FC = () => {
                   前の曲と次の曲を同時に再生して滑らかにオーバーラップ遷移させます
                 </p>
               </div>
-              <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              <span className="text-xs font-mono tabular-nums font-bold px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                 {crossfadeDuration === 0 ? 'OFF' : `${crossfadeDuration}秒`}
               </span>
             </div>

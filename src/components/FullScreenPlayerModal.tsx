@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 import { api } from '../services/api';
+import { audioDspEngine } from '../services/audioDspEngine';
 import { SafeImage } from './SafeImage';
 import { SyncedLine, Track } from '../types/music';
 import { isSameArtist } from '../utils/artistNames';
@@ -54,6 +55,7 @@ import {
   ArrowDownToLine,
   Loader2,
   Globe,
+  Repeat2,
 } from 'lucide-react';
 
 interface MvCanvasMeta {
@@ -185,6 +187,13 @@ export const FullScreenPlayerModal: React.FC = () => {
     downloadingOfflineIds,
     downloadTrackOffline,
     removeTrackOfflineCache,
+    abRepeat,
+    toggleAbRepeatPoint,
+    clearAbRepeat,
+    isBuffering,
+    bufferedPercent,
+    eqPreset,
+    audioStreamMeta,
   } = usePlayer();
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -192,6 +201,11 @@ export const FullScreenPlayerModal: React.FC = () => {
   const [inlineLyricsExpanded, setInlineLyricsExpanded] = useState(false);
   const [timestampsExpanded, setTimestampsExpanded] = useState(false);
   const lyricsSheetRef = useRef<HTMLDivElement>(null);
+  const [isDraggingProgress, setIsDraggingProgress] = useState(false);
+  const [dragPreviewSec, setDragPreviewSec] = useState<number | null>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
+  const gestureStartRef = useRef<{ x: number; y: number } | null>(null);
+  const spectrumStripCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Canvas MV background state (null = no MV found -> show jacket image)
   const [canvasVideoId, setCanvasVideoId] = useState<string | null>(null);
@@ -548,15 +562,109 @@ export const FullScreenPlayerModal: React.FC = () => {
     scheduleHudReveal,
   ]);
 
+  // Subtle Live Spectrum Strip above timeline when DSP Engine is running
+  useEffect(() => {
+    if (!fullScreenPlayerOpen || !isPlaying || !audioStreamMeta?.usingDirectDsp) return;
+    const canvas = spectrumStripCanvasRef.current;
+    if (!canvas) return;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) return;
+
+    let rafId = 0;
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    const renderBars = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx2d.clearRect(0, 0, w, h);
+      const bars = audioDspEngine.getSpectrumBars(28);
+      const gap = 4;
+      const barW = Math.max(2, (w - gap * (bars.length - 1)) / bars.length);
+      for (let i = 0; i < bars.length; i++) {
+        const amp = Math.max(0.08, bars[i] || 0);
+        const barH = Math.max(2, amp * h);
+        const x = i * (barW + gap);
+        const y = h - barH;
+        ctx2d.fillStyle = amp > 0.45 ? 'rgba(248, 113, 113, 0.85)' : 'rgba(255, 255, 255, 0.38)';
+        ctx2d.beginPath();
+        ctx2d.roundRect(x, y, barW, barH, 2);
+        ctx2d.fill();
+      }
+      if (!prefersReducedMotion) {
+        rafId = requestAnimationFrame(renderBars);
+      }
+    };
+
+    renderBars();
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [fullScreenPlayerOpen, isPlaying, audioStreamMeta?.usingDirectDsp]);
+
   if (!fullScreenPlayerOpen || !currentTrack) return null;
 
   const isLiked = likedTrackIds.has(currentTrack.id);
-  const percent = duration > 0 ? Math.min(100, Math.max(0, (progress / duration) * 100)) : 0;
+  const displayProgress = isDraggingProgress && dragPreviewSec !== null ? dragPreviewSec : progress;
+  const percent = duration > 0 ? Math.min(100, Math.max(0, (displayProgress / duration) * 100)) : 0;
+  const abAPercent = duration > 0 && abRepeat.a !== null ? Math.min(100, Math.max(0, (abRepeat.a / duration) * 100)) : null;
+  const abBPercent = duration > 0 && abRepeat.b !== null ? Math.min(100, Math.max(0, (abRepeat.b / duration) * 100)) : null;
 
-  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    seekTo(pos * duration);
+  const getPointerSec = (clientX: number, rect: DOMRect) => {
+    if (rect.width <= 0 || duration <= 0) return 0;
+    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return pos * duration;
+  };
+
+  const handleScrubPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (duration <= 0) return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragPointerIdRef.current = e.pointerId;
+    } catch {}
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    setIsDraggingProgress(true);
+    setDragPreviewSec(sec);
+  };
+
+  const handleScrubPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgress || dragPointerIdRef.current !== e.pointerId) return;
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    setDragPreviewSec(sec);
+  };
+
+  const handleScrubPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingProgress) return;
+    const sec = getPointerSec(e.clientX, e.currentTarget.getBoundingClientRect());
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+    dragPointerIdRef.current = null;
+    setIsDraggingProgress(false);
+    setDragPreviewSec(null);
+    seekTo(sec);
+  };
+
+  const handleGestureTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    gestureStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+
+  const handleGestureTouchEnd = (e: React.TouchEvent) => {
+    const start = gestureStartRef.current;
+    gestureStartRef.current = null;
+    if (!start || e.changedTouches.length === 0) return;
+    const dx = e.changedTouches[0].clientX - start.x;
+    const dy = e.changedTouches[0].clientY - start.y;
+    if (Math.abs(dx) > 58 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+      if (dx < 0) nextTrack(true);
+      else prevTrack();
+    } else if (dy > 85 && dy > Math.abs(dx) * 1.5) {
+      setFullScreenPlayerOpen(false);
+    }
   };
 
   // Find active line of synced lyrics
@@ -658,12 +766,16 @@ export const FullScreenPlayerModal: React.FC = () => {
       </div>
 
       <div className="relative z-10 max-w-lg w-full mx-auto min-h-full flex flex-col justify-between p-5 sm:p-8 pb-6">
-        {/* Top Context Header Bar */}
-        <header className="flex items-center justify-between gap-4 py-1.5">
+        {/* Top Context Header Bar (supports downward swipe to minimize) */}
+        <header
+          className="flex items-center justify-between gap-4 py-1.5"
+          onTouchStart={handleGestureTouchStart}
+          onTouchEnd={handleGestureTouchEnd}
+        >
           <button
             type="button"
             onClick={() => setFullScreenPlayerOpen(false)}
-            className="p-2 -ml-2 text-neutral-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+            className="min-w-[44px] min-h-[44px] -ml-2 flex items-center justify-center text-neutral-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
             title="閉じる"
           >
             <ChevronDown className="w-6 h-6" />
@@ -1118,17 +1230,25 @@ export const FullScreenPlayerModal: React.FC = () => {
           </div>
         )}
 
-        {/* Center Artwork (Shown when there is NO MV or Canvas is OFF/loading; hidden once MV Canvas is playing) */}
+        {/* Center Artwork (supports horizontal swipe next/prev & downward swipe minimize) */}
         {isCanvasLayoutActive ? (
-          <div className="flex-1 min-h-[180px] sm:min-h-[240px]" />
+          <div
+            className="flex-1 min-h-[180px] sm:min-h-[240px]"
+            onTouchStart={handleGestureTouchStart}
+            onTouchEnd={handleGestureTouchEnd}
+          />
         ) : (
-          <div className="my-auto py-4 flex items-center justify-center">
+          <div
+            className="my-auto py-4 flex items-center justify-center touch-pan-y"
+            onTouchStart={handleGestureTouchStart}
+            onTouchEnd={handleGestureTouchEnd}
+          >
             <div className="relative w-full aspect-square max-w-[310px] sm:max-w-[350px] rounded-xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] bg-neutral-900 ring-1 ring-white/10">
               <SafeImage
                 src={currentTrack.thumbnail}
                 alt={currentTrack.title}
                 useBase64
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover select-none"
               />
               {currentTrack.isSharedOffline && (
                 <span className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/70 backdrop-blur-md border border-emerald-400/40 text-emerald-300 text-[11px] font-bold shadow-lg">
@@ -1243,16 +1363,59 @@ export const FullScreenPlayerModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Scrubber Timeline */}
+          {/* Live FFT Spectrum Strip (when Web Audio DSP engine active) */}
+          {isPlaying && audioStreamMeta?.usingDirectDsp && (
+            <div className="pt-0.5">
+              <canvas
+                ref={spectrumStripCanvasRef}
+                width={420}
+                height={20}
+                className="w-full h-5 opacity-85 pointer-events-none"
+              />
+            </div>
+          )}
+
+          {/* Scrubber Timeline (smooth pointer-drag + buffer bar + A-B repeat markers) */}
           <div className="space-y-1.5">
             <div
-              className="relative h-1.5 bg-white/25 hover:h-2 rounded-full cursor-pointer group transition-all"
-              onClick={handleProgressClick}
+              className="relative h-2 hover:h-2.5 bg-white/20 rounded-full cursor-pointer group transition-all touch-none"
+              onPointerDown={handleScrubPointerDown}
+              onPointerMove={handleScrubPointerMove}
+              onPointerUp={handleScrubPointerUp}
+              onPointerCancel={handleScrubPointerUp}
             >
+              {bufferedPercent > 0 && (
+                <div
+                  className="absolute inset-y-0 left-0 bg-white/25 rounded-full pointer-events-none"
+                  style={{ width: `${bufferedPercent}%` }}
+                />
+              )}
+              {abAPercent !== null && abBPercent !== null && (
+                <div
+                  className="absolute inset-y-0 bg-emerald-400/55 rounded-full pointer-events-none z-10"
+                  style={{
+                    left: `${abAPercent}%`,
+                    width: `${Math.max(0.5, abBPercent - abAPercent)}%`,
+                  }}
+                />
+              )}
+              {abAPercent !== null && (
+                <span
+                  className="absolute -top-1 -bottom-1 w-0.5 bg-emerald-300 z-30 pointer-events-none"
+                  style={{ left: `${abAPercent}%` }}
+                />
+              )}
+              {abBPercent !== null && (
+                <span
+                  className="absolute -top-1 -bottom-1 w-0.5 bg-emerald-300 z-30 pointer-events-none"
+                  style={{ left: `${abBPercent}%` }}
+                />
+              )}
               {trackTimestamps?.heatMarkers?.map((m, idx) => (
                 <button
                   key={idx}
                   type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     seekTo(m.timeSeconds);
@@ -1270,12 +1433,24 @@ export const FullScreenPlayerModal: React.FC = () => {
                 className="h-full bg-white rounded-full relative group-hover:bg-red-500 transition-colors z-20 pointer-events-none"
                 style={{ width: `${percent}%` }}
               >
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-md" />
+                <div
+                  className={`absolute right-0 top-1/2 -translate-y-1/2 rounded-full shadow-md transition-transform ${
+                    isDraggingProgress ? 'w-4 h-4 bg-red-400 scale-110' : 'w-3 h-3 bg-white'
+                  }`}
+                />
               </div>
+              {isDraggingProgress && dragPreviewSec !== null && duration > 0 && (
+                <div
+                  className="absolute -top-8 -translate-x-1/2 px-2 py-0.5 rounded bg-black/90 border border-white/20 text-[11px] text-white font-mono tabular-nums pointer-events-none whitespace-nowrap z-30 shadow-lg"
+                  style={{ left: `${Math.min(96, Math.max(4, percent))}%` }}
+                >
+                  {formatSeconds(dragPreviewSec)}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between text-xs font-mono text-neutral-400 tabular-nums">
-              <span>{formatSeconds(progress)}</span>
+              <span>{formatSeconds(displayProgress)}</span>
               {trackTimestamps && trackTimestamps.heatMarkers.length > 0 && (
                 <button
                   type="button"
@@ -1292,12 +1467,12 @@ export const FullScreenPlayerModal: React.FC = () => {
           </div>
 
           {/* Primary Controls Row */}
-          <div className="flex items-center justify-between pt-0.5">
+          <div className="flex items-center justify-between pt-0.5 gap-0.5">
             <div className="relative flex flex-col items-center">
               <button
                 type="button"
                 onClick={cycleShuffleMode}
-                className={`min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer relative ${
+                className={`min-w-[38px] sm:min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer relative ${
                   shuffleMode !== 'off' ? 'text-red-500' : 'text-neutral-300 hover:text-white'
                 }`}
                 title={
@@ -1308,7 +1483,7 @@ export const FullScreenPlayerModal: React.FC = () => {
                     : 'シャッフル再生: OFF'
                 }
               >
-                <Shuffle className="w-5 h-5" />
+                <Shuffle className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 {shuffleMode === 'smart' && (
                   <span className="absolute top-1 right-1 text-[10px] font-black text-red-400">
                     ✨
@@ -1318,34 +1493,46 @@ export const FullScreenPlayerModal: React.FC = () => {
               {shuffleMode !== 'off' && <span className="w-1 h-1 rounded-full bg-red-500 -mt-1.5" />}
             </div>
 
-            {currentTrack.trackType === 'podcast' && (
+            {currentTrack.trackType === 'podcast' ? (
               <button
                 type="button"
                 onClick={() => skipBySeconds(-15)}
-                className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                className="min-w-[38px] sm:min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
                 title="15秒戻る"
               >
-                <RotateCcw className="w-5 h-5" />
+                <RotateCcw className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 <span className="text-[10px] font-mono font-bold leading-none mt-0.5">-15s</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => skipBySeconds(-10)}
+                className="min-w-[38px] sm:min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-neutral-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                title="10秒戻る"
+              >
+                <RotateCcw className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
+                <span className="text-[10px] font-mono font-bold leading-none mt-0.5">-10s</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={prevTrack}
-              className="min-w-[48px] min-h-[48px] flex items-center justify-center text-white hover:text-neutral-200 transition-transform active:scale-90 cursor-pointer"
+              className="min-w-[40px] sm:min-w-[48px] min-h-[48px] flex items-center justify-center text-white hover:text-neutral-200 transition-transform active:scale-90 cursor-pointer"
               title="前の曲"
             >
-              <SkipBack className="w-8 h-8 fill-current" />
+              <SkipBack className="w-6 h-6 sm:w-8 sm:h-8 fill-current" />
             </button>
 
             <button
               type="button"
               onClick={togglePlay}
-              className="w-16 h-16 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-2xl cursor-pointer"
+              className="w-15 h-15 sm:w-16 sm:h-16 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-2xl cursor-pointer shrink-0"
               title={isPlaying ? '一時停止' : '再生'}
             >
-              {isPlaying ? (
+              {isBuffering ? (
+                <Loader2 className="w-7 h-7 animate-spin text-red-600" />
+              ) : isPlaying ? (
                 <Pause className="w-7 h-7 fill-black" />
               ) : (
                 <Play className="w-7 h-7 fill-black ml-1" />
@@ -1355,21 +1542,31 @@ export const FullScreenPlayerModal: React.FC = () => {
             <button
               type="button"
               onClick={() => nextTrack(true)}
-              className="min-w-[48px] min-h-[48px] flex items-center justify-center text-white hover:text-neutral-200 transition-transform active:scale-90 cursor-pointer"
+              className="min-w-[40px] sm:min-w-[48px] min-h-[48px] flex items-center justify-center text-white hover:text-neutral-200 transition-transform active:scale-90 cursor-pointer"
               title="次の曲"
             >
-              <SkipForward className="w-8 h-8 fill-current" />
+              <SkipForward className="w-6 h-6 sm:w-8 sm:h-8 fill-current" />
             </button>
 
-            {currentTrack.trackType === 'podcast' && (
+            {currentTrack.trackType === 'podcast' ? (
               <button
                 type="button"
                 onClick={() => skipBySeconds(30)}
-                className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                className="min-w-[38px] sm:min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-emerald-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
                 title="30秒進む"
               >
-                <RotateCw className="w-5 h-5" />
+                <RotateCw className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 <span className="text-[10px] font-mono font-bold leading-none mt-0.5">+30s</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => skipBySeconds(10)}
+                className="min-w-[38px] sm:min-w-[44px] min-h-[44px] flex flex-col items-center justify-center text-neutral-300 hover:text-white transition-transform active:scale-90 cursor-pointer"
+                title="10秒進む"
+              >
+                <RotateCw className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
+                <span className="text-[10px] font-mono font-bold leading-none mt-0.5">+10s</span>
               </button>
             )}
 
@@ -1377,15 +1574,15 @@ export const FullScreenPlayerModal: React.FC = () => {
               <button
                 type="button"
                 onClick={cycleRepeat}
-                className={`min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer ${
+                className={`min-w-[38px] sm:min-w-[44px] min-h-[44px] flex items-center justify-center transition-colors cursor-pointer ${
                   repeatMode !== 'off' ? 'text-red-500' : 'text-neutral-300 hover:text-white'
                 }`}
                 title={`リピート: ${repeatMode}`}
               >
                 {repeatMode === 'one' ? (
-                  <Repeat1 className="w-5 h-5" />
+                  <Repeat1 className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 ) : (
-                  <Repeat className="w-5 h-5" />
+                  <Repeat className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
                 )}
               </button>
               {repeatMode !== 'off' && <span className="w-1 h-1 rounded-full bg-red-500 -mt-1.5" />}
@@ -1409,23 +1606,25 @@ export const FullScreenPlayerModal: React.FC = () => {
                 type="button"
                 onClick={() => setDspModalOpen(true)}
                 className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer border ${
-                  vocalLevel < 100 || spatialAudio !== 'off' || audioQuality === 'lossless' || audioQuality === 'hires'
+                  vocalLevel < 100 || spatialAudio !== 'off' || audioQuality === 'lossless' || audioQuality === 'hires' || eqPreset !== 'flat'
                     ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                     : 'bg-white/5 text-neutral-300 border-white/10 hover:text-white hover:bg-white/10'
                 }`}
-                title="高音質DSP / 空間オーディオ / Singカラオケ"
+                title="イコライザー / 高音質DSP / 空間オーディオ / Singカラオケ"
               >
                 <Sliders className="w-3.5 h-3.5" />
                 <span>
                   {vocalLevel < 100
                     ? `Sing ${vocalLevel}%`
+                    : eqPreset !== 'flat'
+                    ? 'EQ/DSP'
                     : spatialAudio !== 'off'
                     ? '空間3D'
                     : audioQuality === 'hires'
                     ? 'Hi-Res'
                     : audioQuality === 'lossless'
                     ? 'Lossless'
-                    : 'DSP/Sing'}
+                    : 'EQ/DSP'}
                 </span>
               </button>
               <button
@@ -1460,13 +1659,13 @@ export const FullScreenPlayerModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Secondary Utility Pills (Speed, Digest, Emotion Radio, Timestamps) */}
+          {/* Secondary Utility Pills (Speed, A-B Repeat, Digest, Emotion Radio, Timestamps) */}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-neutral-400 border-t border-white/10 relative">
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setSpeedMenuOpen((prev) => !prev)}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                className={`px-2.5 py-1 rounded-full text-[11px] font-mono tabular-nums font-bold flex items-center gap-1 transition-all cursor-pointer ${
                   playbackRate !== 1.0
                     ? 'bg-red-600/30 text-red-300 border border-red-500/40'
                     : 'bg-white/10 text-neutral-300 hover:text-white'
@@ -1485,12 +1684,12 @@ export const FullScreenPlayerModal: React.FC = () => {
                   <div className="px-2 py-1 text-[10px] font-bold text-neutral-500 uppercase">
                     再生速度
                   </div>
-                  {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+                  {[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((rate) => (
                     <button
                       key={rate}
                       type="button"
                       onClick={() => setPlaybackRate(rate)}
-                      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-mono flex items-center justify-between transition-colors ${
+                      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs font-mono tabular-nums flex items-center justify-between transition-colors ${
                         playbackRate === rate
                           ? 'bg-red-600 text-white font-bold'
                           : 'text-neutral-300 hover:bg-white/5'
@@ -1503,6 +1702,32 @@ export const FullScreenPlayerModal: React.FC = () => {
                 </div>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={toggleAbRepeatPoint}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                clearAbRepeat();
+              }}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-mono tabular-nums font-bold flex items-center gap-1 transition-colors cursor-pointer ${
+                abRepeat.a !== null && abRepeat.b !== null
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                  : abRepeat.a !== null
+                  ? 'bg-amber-600/80 text-white'
+                  : 'bg-white/10 text-neutral-300 hover:text-white'
+              }`}
+              title="A-B区間リピート（1タップ目でA地点、2タップ目でB地点、3タップ目で解除）"
+            >
+              <Repeat2 className="w-3.5 h-3.5" />
+              <span>
+                {abRepeat.a !== null && abRepeat.b !== null
+                  ? `A-B ${formatSeconds(abRepeat.a)}-${formatSeconds(abRepeat.b)}`
+                  : abRepeat.a !== null
+                  ? `A:${formatSeconds(abRepeat.a)}→B?`
+                  : 'A-B'}
+              </span>
+            </button>
 
             <button
               type="button"

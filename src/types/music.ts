@@ -249,7 +249,87 @@ export interface ArtistLiveSetlist {
   tracks: (Track & { setlistIndex: number; timestampSec?: number })[];
 }
 
-export type ViewType = 'home' | 'search' | 'library' | 'artist' | 'album' | 'playlist' | 'party' | 'podcasts';
+export type ViewType = 'home' | 'search' | 'library' | 'artist' | 'album' | 'playlist' | 'party' | 'podcasts' | 'tools';
 export type PlayerMode = 'cover' | 'video';
 export type VideoLayout = 'theater' | 'pip';
 export type RepeatMode = 'off' | 'all' | 'one';
+
+export type EqPresetId =
+  | 'flat'
+  | 'bass_boost'
+  | 'vocal_boost'
+  | 'rock'
+  | 'electronic'
+  | 'acoustic'
+  | 'treble_clear'
+  | 'late_night'
+  | 'custom';
+
+export interface EqualizerBands {
+  b60: number;
+  b170: number;
+  b450: number;
+  b1200: number;
+  b3600: number;
+  b10000: number;
+}
+
+export const DEFAULT_EQ_BANDS: EqualizerBands = {
+  b60: 0,
+  b170: 0,
+  b450: 0,
+  b1200: 0,
+  b3600: 0,
+  b10000: 0,
+};
+
+export const EQ_PRESETS: Record<
+  Exclude<EqPresetId, 'custom'>,
+  { label: string; desc: string; bands: EqualizerBands }
+> = {
+  flat: {
+    label: 'フラット',
+    desc: '原音そのままのバランス',
+    bands: { b60: 0, b170: 0, b450: 0, b1200: 0, b3600: 0, b10000: 0 },
+  },
+  bass_boost: {
+    label: '重低音',
+    desc: 'バスとキックの迫力を強化',
+    bands: { b60: 7, b170: 5, b450: 1, b1200: -1, b3600: 1, b10000: 2 },
+  },
+  vocal_boost: {
+    label: 'ボーカル強調',
+    desc: '歌声と歌詞を前面にクッキリ',
+    bands: { b60: -2, b170: -1, b450: 2, b1200: 5, b3600: 4, b10000: 2 },
+  },
+  rock: {
+    label: 'ロック',
+    desc: 'ギターとドラムのライブ感ある音圧',
+    bands: { b60: 4, b170: 3, b450: -1, b1200: 2, b3600: 4, b10000: 5 },
+  },
+  electronic: {
+    label: 'EDM / ダンス',
+    desc: 'サブベースと高域シンセを際立たせる',
+    bands: { b60: 6, b170: 4, b450: -2, b1200: 1, b3600: 3, b10000: 6 },
+  },
+  acoustic: {
+    label: 'アコースティック',
+    desc: '生楽器の温かみと自然な空気感',
+    bands: { b60: 2, b170: 3, b450: 2, b1200: 2, b3600: 3, b10000: 3 },
+  },
+  treble_clear: {
+    label: 'クリア高音',
+    desc: 'こもりを抑え輪郭をシャープに',
+    bands: { b60: -1, b170: 0, b450: 0, b1200: 2, b3600: 5, b10000: 6 },
+  },
+  late_night: {
+    label: '深夜・小音量',
+    desc: '小音量でも聴き取りやすいバランス',
+    bands: { b60: 3, b170: 2, b450: 1, b1200: 3, b3600: 2, b10000: 1 },
+  },
+};
+
+export interface ABRepeatState {
+  a: number | null;
+  b: number | null;
+}
