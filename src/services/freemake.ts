@@ -327,7 +327,7 @@ export function triggerBlobDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 }
 
-export async function createSquareArtworkBlob(imageUrl: string, targetSize = 720): Promise<Blob | null> {
+export async function createSquareArtworkBlob(imageUrl: string, targetSize = 1200): Promise<Blob | null> {
   const cleanUrl = String(imageUrl || '').trim();
   if (!cleanUrl) return null;
 
@@ -361,7 +361,7 @@ export async function createSquareArtworkBlob(imageUrl: string, targetSize = 720
       const side = Math.min(iw, ih);
       const sx = Math.floor((iw - side) / 2);
       const sy = Math.floor((ih - side) / 2);
-      const outSize = Math.min(targetSize, Math.max(side, 512));
+      const outSize = side >= 256 ? Math.min(targetSize, side) : Math.max(side, 256);
 
       const canvas = document.createElement('canvas');
       canvas.width = outSize;
@@ -374,7 +374,7 @@ export async function createSquareArtworkBlob(imageUrl: string, targetSize = 720
       ctx.drawImage(img, sx, sy, side, side, 0, 0, outSize, outSize);
 
       const croppedBlob = await new Promise<Blob | null>((resolve) => {
-        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.9);
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.94);
       });
       return croppedBlob || rawBlob;
     } finally {
@@ -385,9 +385,70 @@ export async function createSquareArtworkBlob(imageUrl: string, targetSize = 720
   }
 }
 
+export async function fetchFullResArtworkBlob(
+  imageUrl: string
+): Promise<{ blob: Blob; resolvedUrl?: string } | null> {
+  const cleanUrl = String(imageUrl || '').trim();
+  if (!cleanUrl) return null;
+
+  try {
+    const fetchUrl = /^https?:\/\//i.test(cleanUrl)
+      ? `/api/freemake/artwork?url=${encodeURIComponent(cleanUrl)}`
+      : cleanUrl;
+
+    const resp = await fetch(fetchUrl);
+    if (!resp.ok) return null;
+    const resolvedUrl = resp.headers.get('X-Artwork-Source-Url') || undefined;
+    const rawBlob = await resp.blob();
+    if (!rawBlob || rawBlob.size < 64) return null;
+
+    const mime = rawBlob.type.toLowerCase();
+    if (mime === 'image/jpeg' || mime === 'image/jpg' || mime === 'image/png') {
+      return { blob: rawBlob, resolvedUrl };
+    }
+
+    if (typeof document === 'undefined' || typeof Image === 'undefined') {
+      return { blob: rawBlob, resolvedUrl };
+    }
+
+    const objUrl = URL.createObjectURL(rawBlob);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Image decode failed'));
+        el.src = objUrl;
+      });
+
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return { blob: rawBlob, resolvedUrl };
+
+      const canvas = document.createElement('canvas');
+      canvas.width = iw;
+      canvas.height = ih;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return { blob: rawBlob, resolvedUrl };
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, iw, ih);
+
+      const encodedBlob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.96);
+      });
+      return { blob: encodedBlob || rawBlob, resolvedUrl };
+    } finally {
+      URL.revokeObjectURL(objUrl);
+    }
+  } catch {
+    return null;
+  }
+}
+
 export async function cacheSquareArtworkDataUrl(imageUrl?: string): Promise<string | undefined> {
   if (!imageUrl) return undefined;
-  const blob = await createSquareArtworkBlob(imageUrl, 640);
+  const blob = await createSquareArtworkBlob(imageUrl, 1400);
   if (!blob) {
     return imageUrl.startsWith('data:image/') || imageUrl.startsWith('/') ? imageUrl : undefined;
   }
@@ -402,25 +463,39 @@ export async function cacheSquareArtworkDataUrl(imageUrl?: string): Promise<stri
 }
 
 export async function downloadArtworkImageFile(imageUrl: string, filenameBase: string): Promise<boolean> {
-  const blob = await createSquareArtworkBlob(imageUrl, 1000);
-  if (!blob) return false;
+  const result = await fetchFullResArtworkBlob(imageUrl);
+  if (!result) return false;
+
+  const isPng = result.blob.type.toLowerCase() === 'image/png';
+  const ext = isPng ? 'png' : 'jpg';
+  const mimeType = isPng ? 'image/png' : 'image/jpeg';
+
   const cleanBase =
     filenameBase
       .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 100) || 'artwork';
-  const outName = `${cleanBase}_cover.jpg`;
-  triggerBlobDownload(blob, outName);
+  const outName = `${cleanBase}_cover.${ext}`;
+
+  if (isIosStandalonePwa()) {
+    const shared = await shareBlobFile(result.blob, outName);
+    if (!shared) {
+      triggerBlobDownload(result.blob, outName);
+    }
+  } else {
+    triggerBlobDownload(result.blob, outName);
+  }
+
   recordDownloadHistory({
     title: filenameBase || 'ジャケット画像',
-    artist: 'アートワーク保存',
+    artist: '高画質アートワーク保存',
     filename: outName,
-    formatExt: 'jpg',
-    mimeType: 'image/jpeg',
-    fileSize: blob.size,
-    thumbnail: imageUrl,
-    sourceLabel: 'ジャケット画像保存',
+    formatExt: ext,
+    mimeType,
+    fileSize: result.blob.size,
+    thumbnail: result.resolvedUrl || imageUrl,
+    sourceLabel: '高画質サムネ保存',
     target: 'artwork',
   });
   return true;

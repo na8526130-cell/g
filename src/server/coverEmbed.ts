@@ -18,7 +18,7 @@ export interface AudioTagMetadata {
 }
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const MAX_COVER_BYTES = 5 * 1024 * 1024;
+const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const PUBLIC_ROOT = path.resolve(process.cwd(), 'public');
 
 export function isPrivateOrReservedIp(ipRaw: string): boolean {
@@ -112,7 +112,7 @@ export async function fetchSafeExternalImage(rawUrl: string, timeoutMs = 4500): 
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        Accept: 'image/jpeg,image/png,image/*;q=0.8',
+        Accept: 'image/jpeg,image/png;q=0.95,image/*;q=0.5',
       },
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
@@ -144,7 +144,112 @@ export async function fetchSafeExternalImage(rawUrl: string, timeoutMs = 4500): 
   return null;
 }
 
-export async function fetchBestCoverImage(candidates: Array<string | undefined | null>): Promise<CoverImageAsset | null> {
+export function expandHighResCoverCandidates(rawUrl?: string | null): string[] {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('/assets/')) {
+    return [trimmed];
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return [trimmed];
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return [trimmed];
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const candidates: string[] = [];
+
+  // 1. YouTube thumbnails: strictly prioritize maxresdefault (1280x720) -> sddefault (640x480) -> hqdefault (480x360)
+  if (/(?:^|\.)ytimg\.com$/i.test(host)) {
+    const ytMatch = parsed.pathname.match(
+      /\/vi(?:_webp)?\/([A-Za-z0-9_-]{11})\/([a-z0-9_]+)\.(?:jpg|jpeg|webp)/i
+    );
+    if (ytMatch?.[1]) {
+      const vid = ytMatch[1];
+      const variant = ytMatch[2].toLowerCase();
+      candidates.push(`https://i.ytimg.com/vi/${vid}/maxresdefault.jpg`);
+      if (
+        variant !== 'maxresdefault' &&
+        variant !== 'sddefault' &&
+        variant !== 'hqdefault' &&
+        variant !== 'mqdefault' &&
+        variant !== 'default'
+      ) {
+        candidates.push(trimmed);
+      }
+      candidates.push(`https://i.ytimg.com/vi/${vid}/sddefault.jpg`);
+      candidates.push(`https://i.ytimg.com/vi/${vid}/hqdefault.jpg`);
+      return [...new Set(candidates)];
+    }
+  }
+
+  // 2. Apple / iTunes artwork: upgrade 60/100px URLs up to 3000x3000 / 1400x1400 / 1000x1000 masters
+  if (/mzstatic\.com$/i.test(host)) {
+    const itunesPattern = /\/\d+x\d+bb(?:-\d+)?\.(?:jpg|jpeg|png|webp)(\?.*)?$/i;
+    if (itunesPattern.test(trimmed)) {
+      candidates.push(
+        trimmed.replace(itunesPattern, '/3000x3000bb.jpg'),
+        trimmed.replace(itunesPattern, '/1400x1400bb.jpg'),
+        trimmed.replace(itunesPattern, '/1000x1000bb.jpg'),
+        trimmed
+      );
+      return [...new Set(candidates)];
+    }
+  }
+
+  // 3. Google / YouTube Music artwork: upgrade =w120-h120 / =s176 sizes up to 1600px
+  if (/(?:^|\.)(?:googleusercontent\.com|ggpht\.com)$/i.test(host)) {
+    if (/=w\d+-h\d+[^/?&]*/i.test(trimmed)) {
+      candidates.push(
+        trimmed.replace(/=w\d+-h\d+[^/?&]*/i, '=w1600-h1600-l95-rj'),
+        trimmed.replace(/=w\d+-h\d+[^/?&]*/i, '=w1200-h1200-l90-rj')
+      );
+    }
+    if (/=s\d+[^/?&]*/i.test(trimmed)) {
+      candidates.push(
+        trimmed.replace(/=s\d+([^/?&]*)/i, '=s1600$1'),
+        trimmed.replace(/=s\d+[^/?&]*/i, '=s1600')
+      );
+    }
+    candidates.push(trimmed);
+    return [...new Set(candidates)];
+  }
+
+  // 4. SoundCloud artwork: upgrade small/large thumbnails to -original / -t500x500
+  if (/sndcdn\.com$/i.test(host)) {
+    const scPattern = /-(?:tiny|small|badge|t67x67|large|t300x300|crop|t500x500)\.(?:jpg|jpeg|png|webp)(\?.*)?$/i;
+    if (scPattern.test(trimmed)) {
+      candidates.push(
+        trimmed.replace(scPattern, '-original.jpg'),
+        trimmed.replace(scPattern, '-t500x500.jpg'),
+        trimmed
+      );
+      return [...new Set(candidates)];
+    }
+  }
+
+  // 5. Bilibili artwork: strip resize suffix (@...w_...h) to fetch original high-res image
+  if (/hdslb\.com$/i.test(host)) {
+    const biliPattern = /\.(jpg|jpeg|png|webp)@\d+w.*$/i;
+    if (biliPattern.test(trimmed)) {
+      candidates.push(trimmed.replace(biliPattern, '.$1'), trimmed);
+      return [...new Set(candidates)];
+    }
+  }
+
+  return [trimmed];
+}
+
+export async function fetchBestCoverImage(
+  candidates: Array<string | undefined | null>,
+  timeoutMs = 4500
+): Promise<CoverImageAsset | null> {
   const seen = new Set<string>();
   for (const rawCandidate of candidates) {
     const candidate = String(rawCandidate || '').trim();
@@ -188,7 +293,7 @@ export async function fetchBestCoverImage(candidates: Array<string | undefined |
       }
 
       if (/^https?:\/\//i.test(candidate)) {
-        const fetched = await fetchSafeExternalImage(candidate);
+        const fetched = await fetchSafeExternalImage(candidate, timeoutMs);
         if (fetched) return fetched;
       }
     } catch {

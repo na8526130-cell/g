@@ -18,6 +18,7 @@ import {
   assertSafePublicHttpUrl,
   CoverImageAsset,
   embedMetadataAndCoverFile,
+  expandHighResCoverCandidates,
   fetchBestCoverImage,
   fetchSafeExternalImage,
 } from './coverEmbed.js';
@@ -711,7 +712,7 @@ function isYtimgWideThumb(url?: string | null): boolean {
 
 function upgradeItunesArtworkUrl(url?: string | null): string | undefined {
   if (!url || typeof url !== 'string') return undefined;
-  return url.replace(/\/\d+x\d+bb\.(jpg|png|webp)(\?.*)?$/i, '/1000x1000bb.jpg');
+  return url.replace(/\/\d+x\d+bb(?:-\d+)?\.(?:jpg|jpeg|png|webp)(\?.*)?$/i, '/1400x1400bb.jpg');
 }
 
 async function resolveMetadataForTrack(params: {
@@ -862,26 +863,27 @@ async function resolveMetadataForTrack(params: {
 
   const ytCandidates = params.videoId
     ? [
+        `https://i.ytimg.com/vi/${params.videoId}/maxresdefault.jpg`,
         `https://i.ytimg.com/vi/${params.videoId}/sddefault.jpg`,
         `https://i.ytimg.com/vi/${params.videoId}/hqdefault.jpg`,
       ]
     : [];
 
-  // Prefer crisp 1:1 square artwork (custom album cover or 1000x1000 iTunes jacket) over wide 16:9 ytimg
+  // Prefer crisp highest-resolution artwork (upgraded 1600px YT Music / 3000px iTunes / maxresdefault 1280x720)
   const orderedCandidates: string[] = [];
   if (clientThumb && !isYtimgWideThumb(clientThumb)) {
-    orderedCandidates.push(clientThumb);
+    orderedCandidates.push(...expandHighResCoverCandidates(clientThumb));
   }
   if (itunesArtworkUrl) {
-    orderedCandidates.push(itunesArtworkUrl);
-  }
-  if (clientThumb) {
-    orderedCandidates.push(clientThumb);
-  }
-  if (ytOembedThumb) {
-    orderedCandidates.push(ytOembedThumb);
+    orderedCandidates.push(...expandHighResCoverCandidates(itunesArtworkUrl));
   }
   orderedCandidates.push(...ytCandidates);
+  if (clientThumb) {
+    orderedCandidates.push(...expandHighResCoverCandidates(clientThumb));
+  }
+  if (ytOembedThumb) {
+    orderedCandidates.push(...expandHighResCoverCandidates(ytOembedThumb));
+  }
 
   const uniqueCandidates = [...new Set(orderedCandidates.filter(Boolean))];
   const thumbnailUrl = uniqueCandidates[0];
@@ -4124,7 +4126,7 @@ export function registerFreemakeRoutes(
       isVercel: IS_VERCEL,
     };
 
-    const [biliRes, scRes, multiRes] = await Promise.allSettled([
+    const [biliRes, scRes, multiRes, bestCoverRes] = await Promise.allSettled([
       searchBilibiliCandidates(meta.title, meta.artist, meta.expectedDurationSec),
       searchSoundCloudCandidates(meta.title, meta.artist, meta.expectedDurationSec),
       searchMultiSiteCandidates({
@@ -4133,7 +4135,15 @@ export function registerFreemakeRoutes(
         expectedDurationSec: meta.expectedDurationSec,
         helpers,
       }),
+      fetchBestCoverImage(meta.coverCandidates, 3500),
     ]);
+
+    const verifiedThumbUrl =
+      bestCoverRes.status === 'fulfilled' &&
+      bestCoverRes.value?.sourceUrl &&
+      /^https?:\/\//i.test(bestCoverRes.value.sourceUrl)
+        ? bestCoverRes.value.sourceUrl
+        : undefined;
 
     const topBili = biliRes.status === 'fulfilled' ? biliRes.value[0] : undefined;
     const topSc = scRes.status === 'fulfilled' ? scRes.value[0] : undefined;
@@ -4193,7 +4203,7 @@ export function registerFreemakeRoutes(
       resolvedSiteName: extPage?.siteName || (videoId ? 'YouTube' : bestMatch?.siteName || null),
       resolvedUrl: extPage?.pageUrl || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : null),
       resolvedArtist: meta.artist || extPage?.artist || null,
-      thumbnailUrl: meta.thumbnailUrl || extPage?.thumbnailUrl || null,
+      thumbnailUrl: verifiedThumbUrl || meta.thumbnailUrl || extPage?.thumbnailUrl || null,
       album: meta.album || extPage?.album || null,
       playlistId: playlistId || null,
       playlistTitle: playlistData?.playlistTitle || null,
@@ -4216,20 +4226,34 @@ export function registerFreemakeRoutes(
     });
   });
 
-  // 2b. SSRF-safe artwork image proxy so client canvas can crop & save square album jackets offline
+  // 2b. SSRF-safe artwork image proxy that automatically upgrades & resolves highest-resolution cover
   app.get('/api/freemake/artwork', async (req: Request, res: Response) => {
     const rawUrl = String(req.query.url || '').trim();
     if (!rawUrl) {
       return res.status(400).json({ error: 'Missing url parameter' });
     }
     try {
-      const asset = await fetchSafeExternalImage(rawUrl, 6000);
+      const isHttp = /^https?:\/\//i.test(rawUrl);
+      const isLocalAsset = rawUrl.startsWith('/assets/');
+      if (!isHttp && !isLocalAsset) {
+        return res.status(400).json({ error: 'Invalid artwork URL protocol' });
+      }
+      if (isHttp) {
+        await assertSafePublicHttpUrl(rawUrl);
+      }
+
+      const candidates = expandHighResCoverCandidates(rawUrl);
+      const asset = await fetchBestCoverImage(candidates, 6000);
       if (!asset) {
         return res.status(404).json({ error: 'Artwork image unavailable' });
       }
       res.setHeader('Content-Type', asset.mimeType);
       res.setHeader('Content-Length', String(asset.buffer.length));
       res.setHeader('Cache-Control', 'public, max-age=86400');
+      if (/^https?:\/\//i.test(asset.sourceUrl)) {
+        res.setHeader('X-Artwork-Source-Url', asset.sourceUrl);
+        res.setHeader('Access-Control-Expose-Headers', 'X-Artwork-Source-Url');
+      }
       return res.send(asset.buffer);
     } catch (err: any) {
       return res.status(400).json({ error: err?.message || 'Invalid artwork URL' });

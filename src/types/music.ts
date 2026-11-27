@@ -54,6 +54,7 @@ export interface Track {
   fileName?: string;
   fileExt?: string;
   isCachedOffline?: boolean;
+  savedLocalFallback?: boolean;
   commentEmotion?: CommentEmotionData;
   // Podcast & AI & Jam extensions
   trackType?: 'music' | 'podcast';

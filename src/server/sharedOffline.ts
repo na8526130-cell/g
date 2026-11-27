@@ -4,13 +4,16 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Transform } from 'stream';
+import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { detectImageBufferType, fetchBestCoverImage } from './coverEmbed.js';
 
 const execFileAsync = promisify(execFile);
 
 const MAX_UPLOAD_BYTES = 150 * 1024 * 1024; // 150 MiB
-const CHUNK_SIZE_BYTES = 1024 * 1024; // 1 MiB
+const CHUNK_SIZE_BYTES = 2 * 1024 * 1024; // 2 MiB
+const isVercelRuntime = Boolean(process.env.VERCEL);
+const hasVercelBlobStorage = Boolean((process.env.BLOB_READ_WRITE_TOKEN || '').trim());
 const XOR_KEY = crypto
   .createHash('sha256')
   .update('zero-music-shared-offline-xor-obfuscation-key-v1')
@@ -452,12 +455,18 @@ export function registerSharedOfflineRoutes(
     try {
       ensureDirs();
       if (fs.existsSync(indexFile)) return;
-      const seedDir = path.resolve(process.cwd(), 'data');
-      if (path.resolve(dataDir) === seedDir) return;
+      const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+      const seedCandidates = [
+        path.resolve(process.cwd(), 'data'),
+        path.resolve(moduleDir, '..', '..', 'data'),
+      ];
+      const seedDir = seedCandidates.find((dir) =>
+        fs.existsSync(path.join(dir, 'shared_offline_index.json'))
+      );
+      if (!seedDir || path.resolve(dataDir) === path.resolve(seedDir)) return;
       const seedIndex = path.join(seedDir, 'shared_offline_index.json');
       const seedFilesDir = path.join(seedDir, 'shared_offline_files');
       const seedCoversDir = path.join(seedDir, 'shared_offline_covers');
-      if (!fs.existsSync(seedIndex)) return;
       const raw = fs.readFileSync(seedIndex, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
@@ -897,6 +906,9 @@ export function registerSharedOfflineRoutes(
       totalCount: sorted.length,
       totalBytes,
       deletedIds: Array.from(deletedIds),
+      runtime: isVercelRuntime ? 'vercel-serverless' : 'node-server',
+      ephemeralStorage: isVercelRuntime && !hasVercelBlobStorage,
+      maxDirectUploadBytes: isVercelRuntime ? 3_670_016 : 25_000_000,
     });
   });
 
@@ -1140,6 +1152,14 @@ export function registerSharedOfflineRoutes(
       ensureDirs();
       sessionDir = path.join(tmpDir, uploadId);
       if (!fs.existsSync(sessionDir)) {
+        if (isVercelRuntime && !hasVercelBlobStorage) {
+          return res.status(409).json({
+            code: 'VERCEL_EPHEMERAL_CHUNKS_LOST',
+            isVercel: true,
+            error:
+              'Vercelのサーバーレス環境では4.5MB超の分割アップロード一時領域がコンテナ間で共有されません。端末内キャッシュへ直接保存してください。',
+          });
+        }
         return res.status(404).json({ error: 'アップロードセッションが見つかりません' });
       }
 
@@ -1182,9 +1202,25 @@ export function registerSharedOfflineRoutes(
         }
       }
 
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkPath = path.join(sessionDir, `chunk_${String(i).padStart(6, '0')}.part`);
+        if (!fs.existsSync(chunkPath)) {
+          if (isVercelRuntime && !hasVercelBlobStorage) {
+            return res.status(409).json({
+              code: 'VERCEL_EPHEMERAL_CHUNKS_LOST',
+              isVercel: true,
+              error: `分割データ(${i + 1}/${totalChunks})が見つかりません（Vercel一時ストレージ制限）`,
+            });
+          }
+          return res.status(409).json({
+            error: `分割データ(${i + 1}/${totalChunks})が不足しています`,
+          });
+        }
+      }
+
       const id =
         preserveId ||
-        `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        `shared_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
       const diskPath = path.join(filesDir, `${id}${ext}`);
       const plainAssembledPath = path.join(sessionDir, `assembled${ext}`);
       const xorWriteStream = fs.createWriteStream(diskPath);
@@ -1194,9 +1230,6 @@ export function registerSharedOfflineRoutes(
       try {
         for (let i = 0; i < totalChunks; i++) {
           const chunkPath = path.join(sessionDir, `chunk_${String(i).padStart(6, '0')}.part`);
-          if (!fs.existsSync(chunkPath)) {
-            throw new Error(`分割データ(${i + 1}/${totalChunks})が不足しています`);
-          }
           const chunkData = await fs.promises.readFile(chunkPath);
           const xorData = xorBufferAtOffset(chunkData, totalSize);
           totalSize += chunkData.length;

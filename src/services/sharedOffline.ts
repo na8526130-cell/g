@@ -22,6 +22,7 @@ import { isIosStandalonePwa, shareBlobFile, triggerBlobDownload } from './freema
 import { recordDownloadHistory } from './downloadHistory';
 import { BackupSharedOfflineTrack } from '../utils/userBackupJson';
 import { toBase64Image } from '../utils/imageBase64';
+import { extractClientId3Metadata } from './id3Client';
 
 export interface ServerSharedOfflineItem {
   id: string;
@@ -42,11 +43,56 @@ export interface ServerSharedOfflineItem {
 
 const SHARED_CATALOG_META_KEY = 'shared_offline_catalog_v1';
 
-const CHUNK_THRESHOLD_BYTES = 1024 * 1024; // 1 MiB
-const CHUNK_SIZE_BYTES = 1024 * 1024; // 1 MiB per chunk
+const CHUNK_THRESHOLD_BYTES = Math.floor(3.5 * 1024 * 1024); // 3.5 MiB (fits within Vercel 4.5 MiB payload limit)
+const CHUNK_SIZE_BYTES = 2 * 1024 * 1024; // 2 MiB per chunk
 const MAX_UPLOAD_BYTES = 150 * 1024 * 1024; // 150 MiB max
 
+interface ServerCapabilities {
+  runtime: 'vercel-serverless' | 'node-server' | 'unknown';
+  ephemeralStorage: boolean;
+  maxDirectUploadBytes: number;
+}
+
+let cachedCapabilities: ServerCapabilities | null = null;
 let activeSyncPromise: Promise<{ cached: number; total: number }> | null = null;
+
+function updateCapabilitiesFromApi(data: any) {
+  if (!data || typeof data !== 'object') return;
+  const runtimeRaw = String(data.runtime || '');
+  const runtime: ServerCapabilities['runtime'] =
+    runtimeRaw === 'vercel-serverless'
+      ? 'vercel-serverless'
+      : runtimeRaw === 'node-server'
+      ? 'node-server'
+      : cachedCapabilities?.runtime || 'unknown';
+  const ephemeralStorage =
+    typeof data.ephemeralStorage === 'boolean'
+      ? data.ephemeralStorage
+      : runtime === 'vercel-serverless';
+  const maxDirectUploadBytes =
+    typeof data.maxDirectUploadBytes === 'number' && data.maxDirectUploadBytes > 0
+      ? data.maxDirectUploadBytes
+      : ephemeralStorage
+      ? CHUNK_THRESHOLD_BYTES
+      : 25_000_000;
+  cachedCapabilities = { runtime, ephemeralStorage, maxDirectUploadBytes };
+}
+
+async function getSharedOfflineCapabilities(): Promise<ServerCapabilities> {
+  if (cachedCapabilities) return cachedCapabilities;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { runtime: 'unknown', ephemeralStorage: false, maxDirectUploadBytes: CHUNK_THRESHOLD_BYTES };
+  }
+  try {
+    const res = await fetch('/api/shared-offline', { signal: AbortSignal.timeout(2500) });
+    if (res.ok) {
+      const data = await res.json();
+      updateCapabilitiesFromApi(data);
+      if (cachedCapabilities) return cachedCapabilities;
+    }
+  } catch {}
+  return { runtime: 'unknown', ephemeralStorage: false, maxDirectUploadBytes: CHUNK_THRESHOLD_BYTES };
+}
 
 function mapServerItemToTrack(item: ServerSharedOfflineItem, cachedIds: Set<string>): Track {
   const activeBlobUrl = getActiveOfflineBlobUrl(item.id);
@@ -119,23 +165,50 @@ function formatDurationLabel(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-async function extractErrorMessage(resp: Response, fallback: string): Promise<string> {
+async function extractErrorInfo(
+  resp: Response,
+  fallback: string
+): Promise<{ message: string; code?: string; status: number }> {
   try {
     const contentType = resp.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const errJson = await resp.json();
-      if (errJson?.error) return String(errJson.error);
+      if (errJson?.error) {
+        return {
+          message: String(errJson.error),
+          code: typeof errJson.code === 'string' ? errJson.code : undefined,
+          status: resp.status,
+        };
+      }
     } else {
       const text = await resp.text();
       if (resp.status === 413) {
-        return 'ファイルサイズがサーバー送信上限を超えました';
+        return {
+          message: 'ファイルサイズがサーバー送信上限(4.5MB)を超えました',
+          code: 'PAYLOAD_TOO_LARGE',
+          status: 413,
+        };
       }
       if (text && !text.trim().startsWith('<')) {
-        return text.trim().slice(0, 140);
+        return { message: text.trim().slice(0, 140), status: resp.status };
       }
     }
   } catch {}
-  return `${fallback} (HTTP ${resp.status})`;
+  return { message: `${fallback} (HTTP ${resp.status})`, status: resp.status };
+}
+
+async function extractErrorMessage(resp: Response, fallback: string): Promise<string> {
+  return (await extractErrorInfo(resp, fallback)).message;
+}
+
+class UploadHttpError extends Error {
+  code?: string;
+  status: number;
+  constructor(info: { message: string; code?: string; status: number }) {
+    super(info.message);
+    this.code = info.code;
+    this.status = info.status;
+  }
 }
 
 /**
@@ -159,6 +232,7 @@ export async function loadSharedOfflineTracks(): Promise<{
       });
       if (res.ok) {
         const data = await res.json();
+        updateCapabilitiesFromApi(data);
         const items: ServerSharedOfflineItem[] = Array.isArray(data?.tracks) ? data.tracks : [];
         const deletedIds = new Set<string>(
           Array.isArray(data?.deletedIds)
@@ -290,9 +364,113 @@ export async function removeDeletedSharedOfflineTrackLocal(trackId: string): Pro
   await removeDeletedSharedOfflineCaches(trackId);
 }
 
+async function saveSharedOfflineLocallyFallback(params: {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: string;
+  durationSeconds: number;
+  thumbnail?: string;
+  filename: string;
+  mimeType: string;
+  uploadedBy: string;
+  uploadedAt: string;
+  blob: Blob;
+  onProgress?: (percent: number, stageLabel?: string) => void;
+}): Promise<Track> {
+  params.onProgress?.(85, '端末の共有オフラインへ保存中…');
+  const extMatch = params.filename.match(/\.([a-zA-Z0-9]{2,6})$/);
+  const cleanExt = (extMatch?.[1] || 'mp3').toLowerCase();
+  const displayThumb =
+    params.thumbnail && !isLegacyPlaceholderThumbnail(params.thumbnail)
+      ? params.thumbnail
+      : buildSharedCoverUrl(params.id);
+
+  let blobUrl = '';
+  let isCachedOffline = false;
+  try {
+    blobUrl = await saveSharedOfflineBlob(
+      {
+        id: params.id,
+        title: params.title,
+        artist: params.artist,
+        album: params.album,
+        duration: params.duration,
+        durationSeconds: params.durationSeconds,
+        thumbnail: displayThumb,
+        fileName: params.filename,
+        fileType: params.mimeType,
+        fileSize: params.blob.size,
+        uploadedBy: params.uploadedBy,
+        uploadedAt: params.uploadedAt,
+      },
+      params.blob
+    );
+    isCachedOffline = true;
+  } catch (err: any) {
+    throw new Error(err?.message || '端末内ストレージへの保存に失敗しました');
+  }
+
+  const catalogEntry: ServerSharedOfflineItem = {
+    id: params.id,
+    title: params.title,
+    artist: params.artist,
+    album: params.album,
+    duration: params.duration,
+    durationSeconds: params.durationSeconds,
+    thumbnail:
+      displayThumb.startsWith('data:image/') || !displayThumb.startsWith('/api/')
+        ? displayThumb
+        : undefined,
+    fileName: params.filename,
+    fileExt: `.${cleanExt}`,
+    mimeType: params.mimeType,
+    fileSize: params.blob.size,
+    uploadedBy: params.uploadedBy,
+    uploadedAt: params.uploadedAt,
+    plays: 0,
+  };
+
+  try {
+    const existingCatalog =
+      (await getOfflineMeta<ServerSharedOfflineItem[]>(SHARED_CATALOG_META_KEY)) || [];
+    await saveOfflineMeta(SHARED_CATALOG_META_KEY, [
+      catalogEntry,
+      ...existingCatalog.filter((x) => x.id !== params.id),
+    ]);
+  } catch {}
+
+  const finalThumb = resolveSharedTrackDisplayThumbnail(params.id, displayThumb);
+  params.onProgress?.(100, '完了');
+  notifySharedOfflineChanged();
+
+  return {
+    id: params.id,
+    title: params.title,
+    artist: params.artist,
+    album: params.album,
+    duration: params.duration,
+    durationSeconds: params.durationSeconds,
+    thumbnail: finalThumb,
+    isLocal: true,
+    isSharedOffline: true,
+    isCachedOffline,
+    savedLocalFallback: true,
+    uploadedBy: params.uploadedBy,
+    uploadedAt: params.uploadedAt,
+    fileSize: params.blob.size,
+    fileName: params.filename,
+    fileExt: cleanExt,
+    audioMimeType: params.mimeType,
+    audioUrl: blobUrl,
+  };
+}
+
 /**
  * Upload an audio/video file to Shared Offline (persisted indefinitely with no expiration).
- * Uses 1 MiB chunked upload (begin -> chunk -> complete, with abort cleanup) for files > 1 MiB.
+ * Direct upload for files <= 3.5 MiB (fits Vercel payload cap), chunked upload for larger Node servers,
+ * and automatic client-side IndexedDB Shared Offline fallback on Vercel serverless ephemeral/size limits.
  */
 export async function uploadSharedOfflineFile(
   file: File | Blob,
@@ -332,157 +510,118 @@ export async function uploadSharedOfflineFile(
     if (parts.slice(1).join(' - ').trim()) defaultTitle = parts.slice(1).join(' - ').trim();
   }
 
-  const finalTitle = options?.title?.trim() || defaultTitle;
-  const finalArtist = options?.artist?.trim() || defaultArtist;
-  const finalAlbum = options?.album?.trim() || '共有オフライン';
-  const finalUploadedBy = options?.uploadedBy?.trim() || 'ゲスト';
+  options?.onProgress?.(2, 'メタデータ解析中…');
 
-  options?.onProgress?.(2, '準備中…');
+  const id3Meta = await extractClientId3Metadata(standaloneBlob).catch(
+    () => ({} as { title?: string; artist?: string; album?: string; coverDataUrl?: string })
+  );
+
+  const finalTitle = options?.title?.trim() || id3Meta.title || defaultTitle;
+  const finalArtist = options?.artist?.trim() || id3Meta.artist || defaultArtist;
+  const finalAlbum = options?.album?.trim() || id3Meta.album || '共有オフライン';
+  const finalUploadedBy = options?.uploadedBy?.trim() || 'ゲスト';
 
   let durationSeconds = options?.durationSeconds || 0;
   if (durationSeconds <= 0) {
     durationSeconds = await readAudioDuration(standaloneBlob);
   }
+  const resolvedDurationSec = durationSeconds > 0 ? durationSeconds : 180;
   const duration =
-    options?.duration || (durationSeconds > 0 ? formatDurationLabel(durationSeconds) : '');
+    options?.duration || (durationSeconds > 0 ? formatDurationLabel(durationSeconds) : '3:00');
 
   const rawInputThumb =
     options?.thumbnail && !isLegacyPlaceholderThumbnail(options.thumbnail)
       ? options.thumbnail.trim()
-      : undefined;
+      : id3Meta.coverDataUrl || undefined;
 
-  let serverTrack: ServerSharedOfflineItem;
+  const fallbackId =
+    options?.preserveId ||
+    `shared_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const fallbackUploadedAt = options?.uploadedAt || new Date().toISOString();
 
-  if (standaloneBlob.size <= CHUNK_THRESHOLD_BYTES) {
-    const qs = new URLSearchParams({
-      filename,
+  const caps = await getSharedOfflineCapabilities();
+  const vercelDirectLimit = Math.min(CHUNK_THRESHOLD_BYTES, caps.maxDirectUploadBytes || CHUNK_THRESHOLD_BYTES);
+
+  // On Vercel serverless without Blob storage, payloads > 3.5 MiB cannot assemble reliably across stateless /tmp containers.
+  // Save directly into local Shared Offline (IndexedDB + catalog) with extracted ID3 cover art cleanly.
+  if (caps.ephemeralStorage && standaloneBlob.size > vercelDirectLimit) {
+    return saveSharedOfflineLocallyFallback({
+      id: fallbackId,
       title: finalTitle,
       artist: finalArtist,
       album: finalAlbum,
+      duration,
+      durationSeconds: resolvedDurationSec,
+      thumbnail: rawInputThumb,
+      filename,
+      mimeType,
       uploadedBy: finalUploadedBy,
-      mime: mimeType,
+      uploadedAt: fallbackUploadedAt,
+      blob: standaloneBlob,
+      onProgress: options?.onProgress,
     });
-    if (options?.preserveId) qs.set('preserveId', options.preserveId);
-    if (options?.uploadedAt) qs.set('uploadedAt', options.uploadedAt);
-    if (durationSeconds > 0) qs.set('durationSeconds', String(durationSeconds));
-    if (duration) qs.set('duration', duration);
-    if (rawInputThumb && /^https?:\/\//i.test(rawInputThumb) && rawInputThumb.length <= 1024) {
-      qs.set('thumbnail', rawInputThumb);
-    }
+  }
 
-    options?.onProgress?.(35, 'アップロード中…');
-    const buf = await standaloneBlob.arrayBuffer();
-    const resp = await fetch(`/api/shared-offline/upload?${qs.toString()}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-      body: buf,
-      signal: options?.signal,
-    });
+  let serverTrack: ServerSharedOfflineItem;
 
-    if (!resp.ok) {
-      throw new Error(await extractErrorMessage(resp, 'アップロードに失敗しました'));
-    }
+  try {
+    if (standaloneBlob.size <= CHUNK_THRESHOLD_BYTES) {
+      const qs = new URLSearchParams({
+        filename,
+        title: finalTitle,
+        artist: finalArtist,
+        album: finalAlbum,
+        uploadedBy: finalUploadedBy,
+        mime: mimeType,
+      });
+      if (options?.preserveId) qs.set('preserveId', options.preserveId);
+      if (options?.uploadedAt) qs.set('uploadedAt', options.uploadedAt);
+      if (durationSeconds > 0) qs.set('durationSeconds', String(durationSeconds));
+      if (duration) qs.set('duration', duration);
+      if (rawInputThumb && /^https?:\/\//i.test(rawInputThumb) && rawInputThumb.length <= 1024) {
+        qs.set('thumbnail', rawInputThumb);
+      }
 
-    const data = await resp.json();
-    if (!data?.track) {
-      throw new Error('サーバーからの応答が不正です');
-    }
-    serverTrack = data.track;
-    if (rawInputThumb && rawInputThumb.startsWith('data:image/')) {
-      await fetch(`/api/shared-offline/${encodeURIComponent(serverTrack.id)}/cover`, {
+      options?.onProgress?.(35, 'アップロード中…');
+      const buf = await standaloneBlob.arrayBuffer();
+      const resp = await fetch(`/api/shared-offline/upload?${qs.toString()}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thumbnail: rawInputThumb }),
-      }).catch(() => {});
-    }
-    options?.onProgress?.(94, '仕上げ処理中…');
-  } else {
-    let uploadId: string | null = null;
-    try {
-      const beginResp = await fetch('/api/shared-offline/upload-begin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          preserveId: options?.preserveId,
-          uploadedAt: options?.uploadedAt,
-          filename,
-          mimeType,
-          fileSize: standaloneBlob.size,
-          title: finalTitle,
-          artist: finalArtist,
-          album: finalAlbum,
-          thumbnail: rawInputThumb,
-          uploadedBy: finalUploadedBy,
-          durationSeconds,
-          duration,
-        }),
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: buf,
         signal: options?.signal,
       });
 
-      if (!beginResp.ok) {
-        throw new Error(await extractErrorMessage(beginResp, 'アップロード開始に失敗しました'));
+      if (!resp.ok) {
+        throw new UploadHttpError(await extractErrorInfo(resp, 'アップロードに失敗しました'));
       }
 
-      const started = await beginResp.json();
-      if (started?.alreadyExists && started?.track) {
-        serverTrack = started.track;
-        options?.onProgress?.(95, '既存曲を確認…');
-      } else {
-        uploadId = String(started.uploadId);
-        const chunkSize = Number(started.chunkSize) || CHUNK_SIZE_BYTES;
-        const totalChunks = Number(started.chunkCount) || Math.ceil(standaloneBlob.size / chunkSize);
-
-        for (let idx = 0; idx < totalChunks; idx++) {
-          if (options?.signal?.aborted) {
-            throw new DOMException('Aborted', 'AbortError');
-          }
-          const start = idx * chunkSize;
-          const end = Math.min(standaloneBlob.size, start + chunkSize);
-          const chunkBuf = await standaloneBlob.slice(start, end).arrayBuffer();
-
-          const cqs = new URLSearchParams({
-            uploadId,
-            chunkIndex: String(idx),
-            totalChunks: String(totalChunks),
-          });
-
-          const chunkResp = await fetch(`/api/shared-offline/upload-chunk?${cqs.toString()}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/octet-stream',
-            },
-            body: chunkBuf,
-            signal: options?.signal,
-          });
-
-          if (!chunkResp.ok) {
-            throw new Error(
-              await extractErrorMessage(
-                chunkResp,
-                `分割アップロード (${idx + 1}/${totalChunks}) に失敗しました`
-              )
-            );
-          }
-
-          const pct = Math.min(93, Math.round(((idx + 1) / totalChunks) * 88) + 5);
-          options?.onProgress?.(pct, `チャンク送信中 (${idx + 1}/${totalChunks})…`);
-        }
-
-        options?.onProgress?.(95, '結合・難読化処理中…');
-        const completeResp = await fetch('/api/shared-offline/upload-complete', {
+      const data = await resp.json();
+      if (!data?.track) {
+        throw new Error('サーバーからの応答が不正です');
+      }
+      serverTrack = data.track;
+      if (rawInputThumb && rawInputThumb.startsWith('data:image/')) {
+        await fetch(`/api/shared-offline/${encodeURIComponent(serverTrack.id)}/cover`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ thumbnail: rawInputThumb }),
+        }).catch(() => {});
+      }
+      options?.onProgress?.(94, '仕上げ処理中…');
+    } else {
+      let uploadId: string | null = null;
+      try {
+        const beginResp = await fetch('/api/shared-offline/upload-begin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            uploadId,
             preserveId: options?.preserveId,
             uploadedAt: options?.uploadedAt,
-            totalChunks,
             filename,
             mimeType,
+            fileSize: standaloneBlob.size,
             title: finalTitle,
             artist: finalArtist,
             album: finalAlbum,
@@ -494,30 +633,132 @@ export async function uploadSharedOfflineFile(
           signal: options?.signal,
         });
 
-        if (!completeResp.ok) {
-          throw new Error(await extractErrorMessage(completeResp, 'アップロード結合に失敗しました'));
+        if (!beginResp.ok) {
+          throw new UploadHttpError(
+            await extractErrorInfo(beginResp, 'アップロード開始に失敗しました')
+          );
         }
 
-        const completeData = await completeResp.json();
-        if (!completeData?.track) {
-          throw new Error('サーバーからの応答が不正です');
+        const started = await beginResp.json();
+        if (started?.alreadyExists && started?.track) {
+          serverTrack = started.track;
+          options?.onProgress?.(95, '既存曲を確認…');
+        } else {
+          uploadId = String(started.uploadId);
+          const chunkSize = Number(started.chunkSize) || CHUNK_SIZE_BYTES;
+          const totalChunks = Number(started.chunkCount) || Math.ceil(standaloneBlob.size / chunkSize);
+
+          for (let idx = 0; idx < totalChunks; idx++) {
+            if (options?.signal?.aborted) {
+              throw new DOMException('Aborted', 'AbortError');
+            }
+            const start = idx * chunkSize;
+            const end = Math.min(standaloneBlob.size, start + chunkSize);
+            const chunkBuf = await standaloneBlob.slice(start, end).arrayBuffer();
+
+            const cqs = new URLSearchParams({
+              uploadId,
+              chunkIndex: String(idx),
+              totalChunks: String(totalChunks),
+            });
+
+            const chunkResp = await fetch(`/api/shared-offline/upload-chunk?${cqs.toString()}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/octet-stream',
+              },
+              body: chunkBuf,
+              signal: options?.signal,
+            });
+
+            if (!chunkResp.ok) {
+              throw new UploadHttpError(
+                await extractErrorInfo(
+                  chunkResp,
+                  `分割アップロード (${idx + 1}/${totalChunks}) に失敗しました`
+                )
+              );
+            }
+
+            const pct = Math.min(93, Math.round(((idx + 1) / totalChunks) * 88) + 5);
+            options?.onProgress?.(pct, `チャンク送信中 (${idx + 1}/${totalChunks})…`);
+          }
+
+          options?.onProgress?.(95, '結合・難読化処理中…');
+          const completeResp = await fetch('/api/shared-offline/upload-complete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              uploadId,
+              preserveId: options?.preserveId,
+              uploadedAt: options?.uploadedAt,
+              totalChunks,
+              filename,
+              mimeType,
+              title: finalTitle,
+              artist: finalArtist,
+              album: finalAlbum,
+              thumbnail: rawInputThumb,
+              uploadedBy: finalUploadedBy,
+              durationSeconds,
+              duration,
+            }),
+            signal: options?.signal,
+          });
+
+          if (!completeResp.ok) {
+            throw new UploadHttpError(
+              await extractErrorInfo(completeResp, 'アップロード結合に失敗しました')
+            );
+          }
+
+          const completeData = await completeResp.json();
+          if (!completeData?.track) {
+            throw new Error('サーバーからの応答が不正です');
+          }
+          uploadId = null;
+          serverTrack = completeData.track;
         }
-        uploadId = null;
-        serverTrack = completeData.track;
+      } catch (innerErr: any) {
+        if (uploadId) {
+          fetch('/api/shared-offline/upload-abort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uploadId }),
+          }).catch(() => {});
+        }
+        throw innerErr;
       }
-    } catch (err: any) {
-      if (uploadId) {
-        fetch('/api/shared-offline/upload-abort', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uploadId }),
-        }).catch(() => {});
-      }
-      if (err?.name === 'AbortError') {
-        throw new Error('アップロードをキャンセルしました');
-      }
-      throw err;
     }
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error('アップロードをキャンセルしました');
+    }
+    const isVercelEphemeralFailure =
+      err instanceof UploadHttpError &&
+      (err.code === 'VERCEL_EPHEMERAL_CHUNKS_LOST' ||
+        err.status === 413 ||
+        (caps.runtime === 'vercel-serverless' && (err.status === 409 || err.status === 404)));
+    if (isVercelEphemeralFailure) {
+      return saveSharedOfflineLocallyFallback({
+        id: fallbackId,
+        title: finalTitle,
+        artist: finalArtist,
+        album: finalAlbum,
+        duration,
+        durationSeconds: resolvedDurationSec,
+        thumbnail: rawInputThumb,
+        filename,
+        mimeType,
+        uploadedBy: finalUploadedBy,
+        uploadedAt: fallbackUploadedAt,
+        blob: standaloneBlob,
+        onProgress: options?.onProgress,
+      });
+    }
+    throw err;
   }
 
   const resolvedCoverUrl = resolveSharedTrackDisplayThumbnail(
@@ -1029,10 +1270,15 @@ export async function restoreLocalCachedSharedToServer(): Promise<{
 
   let serverIds = new Set<string>();
   let deletedIds = new Set<string>();
+  let isEphemeralServer = false;
+  let serverDirectLimit = CHUNK_THRESHOLD_BYTES;
   try {
     const resp = await fetch('/api/shared-offline', { signal: AbortSignal.timeout(6000) });
     if (!resp.ok) return { checked: cachedList.length, restoredCount: 0 };
     const data = await resp.json();
+    updateCapabilitiesFromApi(data);
+    isEphemeralServer = Boolean(cachedCapabilities?.ephemeralStorage);
+    serverDirectLimit = cachedCapabilities?.maxDirectUploadBytes || CHUNK_THRESHOLD_BYTES;
     const items: ServerSharedOfflineItem[] = Array.isArray(data?.tracks) ? data.tracks : [];
     serverIds = new Set(items.map((x) => x.id));
     if (Array.isArray(data?.deletedIds)) {
@@ -1048,8 +1294,9 @@ export async function restoreLocalCachedSharedToServer(): Promise<{
     if (serverIds.has(track.id) || deletedIds.has(track.id)) continue;
     const rec = await getCachedSharedOfflineTrack(track.id);
     if (!rec?.blob || rec.blob.size < 32) continue;
+    if (isEphemeralServer && rec.blob.size > serverDirectLimit) continue;
     try {
-      await uploadSharedOfflineFile(rec.blob, {
+      const up = await uploadSharedOfflineFile(rec.blob, {
         preserveId: rec.id,
         uploadedAt: rec.uploadedAt,
         filename: rec.fileName || `${rec.title}.mp3`,
@@ -1061,7 +1308,9 @@ export async function restoreLocalCachedSharedToServer(): Promise<{
         durationSeconds: rec.durationSeconds,
         duration: rec.duration,
       });
-      restoredCount++;
+      if (!up.savedLocalFallback) {
+        restoredCount++;
+      }
     } catch {}
   }
 
@@ -1178,10 +1427,11 @@ export async function restoreSharedOfflineFromBackup(
       decodedBlob &&
       decodedBlob.size >= 32 &&
       !serverIds.has(item.id) &&
-      /^shared_[a-zA-Z0-9_-]{3,80}$/.test(item.id)
+      /^shared_[a-zA-Z0-9_-]{3,80}$/.test(item.id) &&
+      !(cachedCapabilities?.ephemeralStorage && decodedBlob.size > (cachedCapabilities?.maxDirectUploadBytes || CHUNK_THRESHOLD_BYTES))
     ) {
       try {
-        await uploadSharedOfflineFile(decodedBlob, {
+        const up = await uploadSharedOfflineFile(decodedBlob, {
           preserveId: item.id,
           uploadedAt: item.uploadedAt,
           filename: fileName,
@@ -1193,8 +1443,10 @@ export async function restoreSharedOfflineFromBackup(
           durationSeconds: item.durationSeconds,
           duration: item.duration,
         });
-        serverIds.add(item.id);
-        restoredServerCount++;
+        if (!up.savedLocalFallback) {
+          serverIds.add(item.id);
+          restoredServerCount++;
+        }
       } catch {}
     }
   }

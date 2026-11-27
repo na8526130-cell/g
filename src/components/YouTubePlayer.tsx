@@ -185,11 +185,23 @@ export const YouTubePlayer: React.FC = () => {
       onEndedCbRef.current();
     });
 
+    const bgAutoResumeRef = { count: 0, ts: 0 };
     const unsubState = audioDspEngine.onStateChange((playing) => {
       if (!shouldUseDirectDspRef.current) return;
       if (!playing && userIntendedPlayingRef.current && (document.hidden || !document.hasFocus())) {
-        audioDspEngine.play();
-        return;
+        const now = Date.now();
+        if (now - bgAutoResumeRef.ts > 4000) {
+          bgAutoResumeRef.count = 0;
+          bgAutoResumeRef.ts = now;
+        }
+        if (bgAutoResumeRef.count < 1) {
+          bgAutoResumeRef.count += 1;
+          audioDspEngine.play();
+          return;
+        }
+      }
+      if (playing) {
+        bgAutoResumeRef.count = 0;
       }
       onStateChangeCbRef.current(playing);
     });
@@ -347,7 +359,10 @@ export const YouTubePlayer: React.FC = () => {
           src: streamSrc,
           startSec: handoffSec > 0 ? handoffSec : undefined,
           autoplay: isPlayingRef.current || userIntendedPlayingRef.current,
-          crossfadeSec: handoffSec > 0 ? 0 : crossfadeDuration,
+          crossfadeSec:
+            handoffSec > 0 || (typeof document !== 'undefined' && document.hidden)
+              ? 0
+              : crossfadeDuration,
           djEqSweep,
         });
       } else if (isPlayingRef.current) {
@@ -664,9 +679,16 @@ export const YouTubePlayer: React.FC = () => {
     }
   };
 
-  // Web Audio API hardware session maintainer (prevents mobile OS from killing audio session)
+  // Web Audio API hardware session maintainer (strictly for YT.Player iframe mode only;
+  // Shared Offline / Local / Cached HTML5 <audio> holds iOS AVPlayer AudioSession directly)
   const startAudioHardwareKeepAlive = () => {
-    if (!backgroundPlaybackEnabled) return;
+    try {
+      const nav = navigator as any;
+      if (nav?.audioSession && nav.audioSession.type !== 'playback') {
+        nav.audioSession.type = 'playback';
+      }
+    } catch {}
+    if (!backgroundPlaybackEnabled || shouldUseDirectDspRef.current) return;
     try {
       if (!audioCtxRef.current) {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -712,13 +734,16 @@ export const YouTubePlayer: React.FC = () => {
     }
   };
 
-  // Listen to visibilitychange and blur events to aggressively prevent background pause
+  // Listen to visibilitychange and blur events to prevent background pause
   useEffect(() => {
     const handleBackgroundEvent = () => {
       if (backgroundPlaybackEnabled && userIntendedPlayingRef.current) {
         if (shouldUseDirectDspRef.current) {
-          audioDspEngine.play();
-          startAudioHardwareKeepAlive();
+          stopAudioHardwareKeepAlive();
+          const curEl = audioDspEngine.getCurrentElement();
+          if (curEl && curEl.paused) {
+            audioDspEngine.play();
+          }
           return;
         }
         sendIframePlayCommand();
@@ -825,11 +850,12 @@ export const YouTubePlayer: React.FC = () => {
   // Sync play/pause state
   useEffect(() => {
     if (shouldUseDirectDsp) {
+      // Never run competing silent keep-alive audio when HTML5/DSP engine is active
+      stopAudioHardwareKeepAlive();
       if (isPlaying) {
         if (Date.now() - dspLastLoadAtRef.current >= 150) {
           audioDspEngine.play();
         }
-        startAudioHardwareKeepAlive();
       } else {
         audioDspEngine.pause();
       }

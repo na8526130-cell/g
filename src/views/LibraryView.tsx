@@ -446,6 +446,7 @@ export const LibraryView: React.FC = () => {
     setIsUploadingShared(true);
 
     let successCount = 0;
+    let fallbackCount = 0;
     try {
       for (let i = 0; i < snapshots.length; i++) {
         const snap = snapshots[i];
@@ -470,15 +471,32 @@ export const LibraryView: React.FC = () => {
         });
         setSharedTracks((prev) => [uploaded, ...prev.filter((t) => t.id !== uploaded.id)]);
         successCount++;
+        if (uploaded.savedLocalFallback) {
+          fallbackCount++;
+        }
       }
       setSharedPickedFile(null);
       setSharedUploadTitle('');
       setSharedUploadArtist('');
-      showToast(
-        `${successCount}曲を「共有オフライン」に追加しました（期限なし）`,
-        'success',
-        3800
-      );
+      if (fallbackCount > 0 && fallbackCount === successCount) {
+        showToast(
+          `${successCount}曲をこの端末の「共有オフライン」に保存しました（Vercelの4.5MB制限のためローカル直接保存・オフライン/バックグラウンド再生＆JSON書き出し可）`,
+          'success',
+          5000
+        );
+      } else if (fallbackCount > 0) {
+        showToast(
+          `${successCount}曲を「共有オフライン」に追加しました（うち${fallbackCount}曲は4.5MB超のため端末に直接保存）`,
+          'success',
+          4600
+        );
+      } else {
+        showToast(
+          `${successCount}曲を「共有オフライン」に追加しました（期限なし）`,
+          'success',
+          3800
+        );
+      }
     } catch (err: any) {
       const errMsg = err?.message || '共有オフラインへのアップロードに失敗しました';
       setSharedUploadError(errMsg);
@@ -3923,7 +3941,7 @@ export const LibraryView: React.FC = () => {
                 <p className="text-[11px] text-neutral-500 flex items-start gap-1.5 leading-relaxed">
                   <Shield className="w-3.5 h-3.5 shrink-0 mt-0.5 text-neutral-500" />
                   <span>
-                    最大150 MiB（1 MiBチャンク分割送信）・保存期限なし。保存データには固定キーによる単純なXOR難読化を施しますが、これは暗号化ではなく、機密情報の保護には使えません。
+                    最大150 MiB（3.5 MiB超は2 MiBチャンク分割／Vercel等のサーバー制限時は端末内に自動保存）・保存期限なし。保存データには固定キーによる単純なXOR難読化を施しますが、これは暗号化ではなく、機密情報の保護には使えません。
                   </span>
                 </p>
           </div>

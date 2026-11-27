@@ -866,7 +866,7 @@ export const FreemakeModal: React.FC = () => {
                             statusNotice.artworkBaseName || 'artwork'
                           ).then((ok) => {
                             showToast(
-                              ok ? '正方形ジャケット画像 (.jpg) を保存しました' : 'ジャケット画像の取得に失敗しました',
+                              ok ? '高画質サムネ画像を保存しました' : 'サムネ画像の取得に失敗しました',
                               ok ? 'success' : 'warning',
                               2600
                             );
@@ -876,7 +876,7 @@ export const FreemakeModal: React.FC = () => {
                       className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-100 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                     >
                       <ImageIcon className="w-3.5 h-3.5 text-emerald-300" />
-                      <span>サムネ画像 (.jpg) も単体保存</span>
+                      <span>高画質サムネ画像も単体保存</span>
                     </button>
                   )}
                 </div>
@@ -960,41 +960,58 @@ export const FreemakeModal: React.FC = () => {
                   </div>
                 </div>
 
-                {((targetTrack && !customUrlInput.trim()) || (customUrlInput.trim() && (probeInfo?.thumbnailUrl || probeInfo?.fullTrackTitle))) && (
-                  <div className="flex items-center gap-3.5">
-                    <SafeImage
-                      src={
-                        customUrlInput.trim()
-                          ? probeInfo?.thumbnailUrl || undefined
-                          : probeInfo?.thumbnailUrl || targetTrack?.thumbnail
-                      }
-                      alt={
-                        customUrlInput.trim()
-                          ? probeInfo?.fullTrackTitle || 'Media Track'
-                          : targetTrack?.title || 'Track'
-                      }
-                      className="w-14 h-14 rounded-xl object-cover bg-neutral-800 shrink-0 shadow ring-1 ring-white/15"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
-                        {probeInfo?.resolvedSiteName
-                          ? `${probeInfo.resolvedSiteName} · ジャケット自動埋め込み`
-                          : 'ダウンロード対象 · ジャケット自動埋め込み'}
-                      </span>
-                      <h3 className="text-sm font-bold text-white truncate">
-                        {customUrlInput.trim()
-                          ? probeInfo?.fullTrackTitle || customUrlInput.trim()
-                          : targetTrack?.title}
-                      </h3>
-                      <p className="text-xs text-neutral-400 truncate">
-                        {customUrlInput.trim()
-                          ? [probeInfo?.resolvedArtist, probeInfo?.album].filter(Boolean).join(' · ') || 'URL指定解析済み'
-                          : targetTrack?.artist}
-                        {!customUrlInput.trim() && targetTrack?.duration ? ` · ${targetTrack.duration}` : ''}
-                      </p>
+                {((targetTrack && !customUrlInput.trim()) || (customUrlInput.trim() && (probeInfo?.thumbnailUrl || probeInfo?.fullTrackTitle))) && (() => {
+                  const previewThumb = customUrlInput.trim()
+                    ? probeInfo?.thumbnailUrl || undefined
+                    : probeInfo?.thumbnailUrl || targetTrack?.thumbnail;
+                  const previewTitle = customUrlInput.trim()
+                    ? probeInfo?.fullTrackTitle || customUrlInput.trim()
+                    : targetTrack?.title || 'Media Track';
+                  return (
+                    <div className="flex items-center gap-3.5">
+                      <SafeImage
+                        src={previewThumb}
+                        alt={previewTitle}
+                        className="w-14 h-14 rounded-xl object-cover bg-neutral-800 shrink-0 shadow ring-1 ring-white/15"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
+                          {probeInfo?.resolvedSiteName
+                            ? `${probeInfo.resolvedSiteName} · 高画質ジャケット自動埋め込み`
+                            : 'ダウンロード対象 · 高画質ジャケット自動埋め込み'}
+                        </span>
+                        <h3 className="text-sm font-bold text-white truncate">
+                          {previewTitle}
+                        </h3>
+                        <p className="text-xs text-neutral-400 truncate">
+                          {customUrlInput.trim()
+                            ? [probeInfo?.resolvedArtist, probeInfo?.album].filter(Boolean).join(' · ') || 'URL指定解析済み'
+                            : targetTrack?.artist}
+                          {!customUrlInput.trim() && targetTrack?.duration ? ` · ${targetTrack.duration}` : ''}
+                        </p>
+                      </div>
+                      {previewThumb && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            downloadArtworkImageFile(previewThumb, previewTitle).then((ok) => {
+                              showToast(
+                                ok ? '高画質サムネ画像を保存しました' : 'サムネ画像の取得に失敗しました',
+                                ok ? 'success' : 'warning',
+                                2600
+                              );
+                            });
+                          }}
+                          title="最高画質のサムネ・ジャケット画像を保存"
+                          className="shrink-0 px-2.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/35 text-emerald-200 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <ImageIcon className="w-3.5 h-3.5 text-emerald-300" />
+                          <span className="hidden sm:inline">高画質サムネ</span>
+                        </button>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-1.5">

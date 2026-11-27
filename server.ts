@@ -176,7 +176,7 @@ export async function createApp(options?: {
   const isVercel = Boolean(process.env.VERCEL);
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
 
   // Health check with KV cache stats
   app.get('/api/health', async (_req, res) => {

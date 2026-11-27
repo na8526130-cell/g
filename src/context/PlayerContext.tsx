@@ -2875,6 +2875,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Send raw commands to active player engine (AudioDspEngine or YouTube iframe)
   const dispatchPlayCommand = useCallback(() => {
+    try {
+      const nav = navigator as any;
+      if (nav?.audioSession && nav.audioSession.type !== 'playback') {
+        nav.audioSession.type = 'playback';
+      }
+    } catch {}
     const win = window as any;
     if (shouldUseDirectDspRef.current) {
       audioDspEngine.play();
@@ -3039,21 +3045,23 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cachedOfflineIdsRef.current.has(track.id) ||
         isCurrentlyOffline;
 
-      // Synchronously start playback if we already hold a live in-memory blob: URL so the user gesture never expires
+      // Synchronously start playback if we already hold a live blob: URL (or online shared stream) so the user gesture never expires
       const activeMemUrl = getActiveOfflineBlobUrl(track.id);
-      const syncBlobUrl =
+      const syncPlayUrl =
         activeMemUrl ||
-        (track.audioUrl?.startsWith('blob:') &&
-        !track.isSharedOffline &&
-        !track.id.startsWith('shared_')
+        (track.audioUrl &&
+        (track.audioUrl.startsWith('blob:') || track.audioUrl.startsWith('data:'))
           ? track.audioUrl
+          : !isCurrentlyOffline && (track.isSharedOffline || track.id.startsWith('shared_'))
+          ? track.audioUrl || `/api/shared-offline/file/${encodeURIComponent(track.id)}`
           : undefined);
-      if (syncBlobUrl && needsOfflineHydration) {
+      if (syncPlayUrl && needsOfflineHydration) {
         audioDspEngine.loadAndPlay({
           trackId: track.id,
-          src: syncBlobUrl,
+          src: syncPlayUrl,
           autoplay: true,
-          crossfadeSec: crossfadeDuration,
+          crossfadeSec:
+            typeof document !== 'undefined' && document.hidden ? 0 : crossfadeDuration,
           djEqSweep,
         });
       }
@@ -3404,6 +3412,41 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           cachedOfflineIdsRef.current.has(target.id) ||
           isOffline;
         if (needsOffline) {
+          const activeMemUrl = getActiveOfflineBlobUrl(target.id);
+          const syncSrc =
+            activeMemUrl ||
+            (target.audioUrl &&
+            (target.audioUrl.startsWith('blob:') || target.audioUrl.startsWith('data:'))
+              ? target.audioUrl
+              : !isOffline && (target.isSharedOffline || target.id.startsWith('shared_'))
+              ? target.audioUrl || `/api/shared-offline/file/${encodeURIComponent(target.id)}`
+              : undefined);
+          if (syncSrc) {
+            const syncTrack: Track = {
+              ...normalizeTrack(target),
+              audioUrl: syncSrc,
+              isCachedOffline:
+                target.isCachedOffline ||
+                syncSrc.startsWith('blob:') ||
+                cachedOfflineIdsRef.current.has(target.id),
+            };
+            audioDspEngine.loadAndPlay({
+              trackId: syncTrack.id,
+              src: syncSrc,
+              autoplay: true,
+              crossfadeSec:
+                typeof document !== 'undefined' && document.hidden ? 0 : crossfadeDuration,
+              djEqSweep,
+            });
+            setCurrentTrack(syncTrack);
+            userIntendedPlayingRef.current = true;
+            setIsPlaying(true);
+            if (!syncSrc.startsWith('blob:') && (target.isSharedOffline || target.id.startsWith('shared_'))) {
+              getPlayableOfflineTrack(target).catch(() => {});
+            }
+            return;
+          }
+
           nextTrackInFlightRef.current = true;
           (async () => {
             try {
@@ -3416,6 +3459,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                       resolved.audioUrl.startsWith('data:'))
                 );
               if (playable) {
+                if (resolved.audioUrl) {
+                  audioDspEngine.loadAndPlay({
+                    trackId: resolved.id,
+                    src: resolved.audioUrl,
+                    autoplay: true,
+                    crossfadeSec:
+                      typeof document !== 'undefined' && document.hidden ? 0 : crossfadeDuration,
+                    djEqSweep,
+                  });
+                }
                 setCurrentTrack(resolved);
                 userIntendedPlayingRef.current = true;
                 setIsPlaying(true);
@@ -3431,6 +3484,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     resCand.audioUrl.startsWith('data:'))
                 ) {
                   setQueueIndex(i);
+                  if (resCand.audioUrl) {
+                    audioDspEngine.loadAndPlay({
+                      trackId: resCand.id,
+                      src: resCand.audioUrl,
+                      autoplay: true,
+                      crossfadeSec:
+                        typeof document !== 'undefined' && document.hidden ? 0 : crossfadeDuration,
+                      djEqSweep,
+                    });
+                  }
                   setCurrentTrack(resCand);
                   userIntendedPlayingRef.current = true;
                   setIsPlaying(true);
@@ -3562,8 +3625,37 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cachedOfflineIdsRef.current.has(rawPrev.id) ||
         (typeof navigator !== 'undefined' && !navigator.onLine);
       if (needsOffline) {
+        const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+        const activeMemUrl = getActiveOfflineBlobUrl(rawPrev.id);
+        const syncSrc =
+          activeMemUrl ||
+          (rawPrev.audioUrl &&
+          (rawPrev.audioUrl.startsWith('blob:') || rawPrev.audioUrl.startsWith('data:'))
+            ? rawPrev.audioUrl
+            : !isOfflineNow && (rawPrev.isSharedOffline || rawPrev.id.startsWith('shared_'))
+            ? rawPrev.audioUrl || `/api/shared-offline/file/${encodeURIComponent(rawPrev.id)}`
+            : undefined);
+        if (syncSrc) {
+          const syncTrack: Track = {
+            ...normalizeTrack(rawPrev),
+            audioUrl: syncSrc,
+            isCachedOffline:
+              rawPrev.isCachedOffline ||
+              syncSrc.startsWith('blob:') ||
+              cachedOfflineIdsRef.current.has(rawPrev.id),
+          };
+          audioDspEngine.loadAndPlay({
+            trackId: syncTrack.id,
+            src: syncSrc,
+            autoplay: true,
+            crossfadeSec:
+              typeof document !== 'undefined' && document.hidden ? 0 : crossfadeDuration,
+            djEqSweep,
+          });
+          setCurrentTrack(syncTrack);
+          return;
+        }
         (async () => {
-          const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
           const resolved = normalizeTrack(await getPlayableOfflineTrack(rawPrev));
           const playable =
             !isOfflineNow ||
@@ -3620,7 +3712,22 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } else {
       seekTo(0);
     }
-  }, [progress, queueIndex, queue, seekTo, dispatchPlayCommand]);
+  }, [progress, queueIndex, queue, seekTo, dispatchPlayCommand, crossfadeDuration, djEqSweep]);
+
+  // Pre-warm upcoming Shared Offline / Local queue track blob URL so background track transition never stalls on IndexedDB I/O
+  useEffect(() => {
+    const nextCandidate = queue[queueIndex + 1] || (repeatMode === 'all' ? queue[0] : undefined);
+    if (!nextCandidate) return;
+    const isOfflineCandidate =
+      nextCandidate.isLocal ||
+      nextCandidate.isSharedOffline ||
+      nextCandidate.id.startsWith('shared_') ||
+      nextCandidate.isCachedOffline ||
+      cachedOfflineIdsRef.current.has(nextCandidate.id);
+    if (!isOfflineCandidate) return;
+    if (getActiveOfflineBlobUrl(nextCandidate.id)) return;
+    getPlayableOfflineTrack(nextCandidate).catch(() => {});
+  }, [currentTrack?.id, queueIndex, queue, repeatMode]);
 
   // Refs for stable MediaSession callbacks (prevents 80ms handler churn on iOS/Android)
   const progressRef = useRef<number>(0);
@@ -3758,6 +3865,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => {
     mediaActionsRef.current = {
       play: () => {
+        audioDspEngine.unlock();
         userIntendedPlayingRef.current = true;
         setIsPlaying(true);
         dispatchPlayCommand();
