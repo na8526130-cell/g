@@ -31,6 +31,7 @@
     "tsx": "^4.21.0",
     "vite": "^8.3.0",
     "vite-plugin-pwa": "^2.0.0",
+    "workbox-window": "^7.4.1",
     "ws": "^8.22.1",
     "youtubei.js": "^18.3.0"
   },
