@@ -131,6 +131,17 @@ interface HomeAlbumItem {
 
 const HIGEDAN_CHANNEL_ID = 'UC84Rm0a3gimYXPtqp5O_JRw';
 
+const HIGEDAN_STARDUST_TRACK: Track = {
+  id: 'vZuJfe-KhUA',
+  title: 'スターダスト',
+  artist: 'Official髭男dism',
+  album: 'スターダスト',
+  albumId: 'MPREb_kOpAUBFWAXl',
+  duration: '4:49',
+  durationSeconds: 289,
+  thumbnail: '/assets/covers/higedan-stardust.jpg',
+};
+
 const HIGEDAN_ALL_ALBUMS: HomeAlbumItem[] = [
   // スタジオ・フルアルバム
   {
@@ -1172,6 +1183,38 @@ export const HomeExploreView: React.FC = () => {
             </button>
           </div>
         </div>
+
+        <section aria-labelledby="higedan-stardust-title">
+          <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#101014] p-3 sm:p-4">
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-red-950/45 via-transparent to-transparent" />
+            <div className="relative flex items-center gap-3 sm:gap-4">
+              <SafeImage
+                src={HIGEDAN_STARDUST_TRACK.thumbnail}
+                alt="Official髭男dism『スターダスト』のジャケット"
+                useBase64
+                className="h-24 w-24 shrink-0 rounded-xl object-cover shadow-lg shadow-black/30 sm:h-28 sm:w-28"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="mb-1 text-[10px] font-bold tracking-[0.12em] text-red-300">
+                  髭男のピックアップ
+                </p>
+                <h2 id="higedan-stardust-title" className="truncate text-lg font-black text-white sm:text-xl">
+                  スターダスト
+                </h2>
+                <p className="mt-0.5 truncate text-xs text-neutral-300">Official髭男dism</p>
+                <p className="mt-1 text-[11px] text-neutral-500">シングル · 4:49</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => playTrack(HIGEDAN_STARDUST_TRACK)}
+                aria-label="スターダストを再生"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-lg shadow-red-950/40 transition hover:scale-105 hover:bg-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#101014]"
+              >
+                <Play className="ml-0.5 h-5 w-5 fill-current" />
+              </button>
+            </div>
+          </div>
+        </section>
 
         {/* Compact Studio Launcher Grid (Mobile & PC 1-tap access) */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 pt-0.5">
